@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+- initial forge setup (#2)
+
+### Changed
+- mover release skills a .claude/skills/ y actualizar Opus a 4.8
+
+
 ## [0.23.0] - 2026-06-18
 
 ### Added

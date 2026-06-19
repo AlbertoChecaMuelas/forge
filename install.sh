@@ -7,7 +7,7 @@ set -euo pipefail
 # Core constants
 # ---------------------------------------------------------------------------
 ARSENAL_ROOT="$(cd "$(dirname "$0")" && pwd)"
-FORGE_VERSION="0.1.0"
+FORGE_VERSION="0.2.0"
 ARSENAL_STATE_FILE="$HOME/.forge-state.json"
 
 # --- summary accumulator ---
