@@ -1,0 +1,14 @@
+{
+  "name": "forge",
+  "description": "Forge: token-optimized multi-agent pipeline for Claude Code.",
+  "owner": {
+    "name": "Alberto Checa Muelas"
+  },
+  "plugins": [
+    {
+      "name": "forge",
+      "source": "./",
+      "description": "Token-optimized multi-agent pipeline for Claude Code: senior/tech/applier/tester agents, template-based review dispatch, executable plans, MR tooling and branch-guard + RTK hooks."
+    }
+  ]
+}

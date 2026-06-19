@@ -1,0 +1,29 @@
+{
+  "symlinks": [
+    { "src": "skills/create-plan/SKILL.md",                        "dest": "skills/create-plan/SKILL.md" },
+    { "src": "skills/create-plan/reference/plan-format.md",        "dest": "skills/create-plan/reference/plan-format.md" },
+    { "src": "skills/create-plan/reference/constraints.md",         "dest": "skills/create-plan/reference/constraints.md" },
+    { "src": "skills/execute-plan/SKILL.md",                        "dest": "skills/execute-plan/SKILL.md" },
+    { "src": "skills/execute-plan/reference/batch-algorithm.md",    "dest": "skills/execute-plan/reference/batch-algorithm.md" },
+    { "src": "skills/execute-plan/reference/reviewer-and-close.md", "dest": "skills/execute-plan/reference/reviewer-and-close.md" },
+    { "src": "skills/execute-plan/reference/review-template.md", "dest": "skills/execute-plan/reference/review-template.md" },
+    { "src": "skills/review/SKILL.md",            "dest": "skills/review/SKILL.md" },
+    { "src": "skills/pr-description/SKILL.md",    "dest": "skills/pr-description/SKILL.md" },
+    { "src": "skills/create-pr/SKILL.md",         "dest": "skills/create-pr/SKILL.md" },
+    { "src": "skills/update-changelog/SKILL.md",  "dest": "skills/update-changelog/SKILL.md" },
+    { "src": "skills/sync-readme/SKILL.md",       "dest": "skills/sync-readme/SKILL.md" },
+    { "src": "skills/plan-format/SKILL.md",       "dest": "skills/plan-format/SKILL.md" },
+    { "src": "skills/testing-angular/SKILL.md",   "dest": "skills/testing-angular/SKILL.md" },
+    { "src": "skills/testing-spring-boot/SKILL.md", "dest": "skills/testing-spring-boot/SKILL.md" },
+    { "src": "skills/testing-pytest/SKILL.md",    "dest": "skills/testing-pytest/SKILL.md" },
+    { "src": "tools/release/bump-version.sh",       "dest": "tools/release/bump-version.sh" },
+    { "src": "tools/release/create-pr.sh",          "dest": "tools/release/create-pr.sh" },
+    { "src": "tools/release/mr-stamp.sh",           "dest": "tools/release/mr-stamp.sh" },
+    { "src": "tools/release/update-changelog.sh",   "dest": "tools/release/update-changelog.sh" },
+    { "src": "tools/release/commit-release.sh",     "dest": "tools/release/commit-release.sh" }
+  ],
+  "target_root_files": [],
+  "managed_paths": [],
+  "settings_key": null,
+  "claude_md_ref": null
+}
