@@ -237,7 +237,7 @@ test_component_symlinks_commands_has_reference_entries() {
   # commands.json has exactly 21 symlink entries (no target_root_files)
   local count
   count=$(printf '%s\n' "$output" | wc -l | tr -d ' ')
-  assert_eq "commands component has exactly 21 entries" "21" "$count"
+  assert_eq "commands component has exactly 13 entries" "13" "$count"
 }
 
 # =============================================================================

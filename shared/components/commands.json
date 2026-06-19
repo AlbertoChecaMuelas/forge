@@ -12,7 +12,7 @@
     { "src": "skills/plan-format/SKILL.md",       "dest": "skills/plan-format/SKILL.md" },
     { "src": "skills/testing-angular/SKILL.md",   "dest": "skills/testing-angular/SKILL.md" },
     { "src": "skills/testing-spring-boot/SKILL.md", "dest": "skills/testing-spring-boot/SKILL.md" },
-    { "src": "skills/testing-pytest/SKILL.md",    "dest": "skills/testing-pytest/SKILL.md" },
+    { "src": "skills/testing-pytest/SKILL.md",    "dest": "skills/testing-pytest/SKILL.md" }
   ],
   "target_root_files": [],
   "managed_paths": [],
