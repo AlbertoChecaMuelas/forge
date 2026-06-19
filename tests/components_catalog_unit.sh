@@ -128,8 +128,8 @@ test_core_json_managed_paths_match_agents() {
 test_core_json_symlink_dests() {
   local dests
   dests="$(jq -r '.symlinks[].dest' "$CORE_JSON" | sort | tr '\n' ' ')"
-  assert_eq "core.json: symlinks cover cost-report.sh and tools/release/*" \
-    "cost-report.sh tools/release/bump-version.sh tools/release/create-pr.sh " \
+  assert_eq "core.json: symlinks cover only cost-report.sh" \
+    "cost-report.sh " \
     "$dests"
 }
 

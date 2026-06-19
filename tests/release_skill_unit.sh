@@ -9,7 +9,7 @@
 set -euo pipefail
 
 ARSENAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SKILL_MD="$ARSENAL_ROOT/skills/create-pr/SKILL.md"
+SKILL_MD="$ARSENAL_ROOT/.claude/skills/create-pr/SKILL.md"
 
 UPDATE_CHANGELOG="$ARSENAL_ROOT/tools/release/update-changelog.sh"
 COMMIT_RELEASE="$ARSENAL_ROOT/tools/release/commit-release.sh"

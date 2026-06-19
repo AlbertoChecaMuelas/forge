@@ -25,5 +25,5 @@ tests/.tmp/
 .agents/
 skills-lock.json
 
-# Claude project-local workspace (HyperFrames + skills runtime)
-.claude/
+# .claude/ is tracked — forge-specific skills live there.
+# Personal content (settings.local.json) is excluded via .claude/.gitignore.

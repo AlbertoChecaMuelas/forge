@@ -2,7 +2,7 @@
 description: Updates the [Unreleased] section of CHANGELOG.md. Branch-scoped mode (--branch <base>) is delegated to the deterministic tools/release/update-changelog.sh script; classic/release modes scan git log <last-tag>..HEAD and rewrite the section.
 argument-hint: "[version | --branch <base>]"
 model: claude-haiku-4-5
-allowed-tools: Bash(git describe *) Bash(git log *) Bash(git tag *) Bash(git rev-parse *) Bash($HOME/.claude/tools/release/update-changelog.sh *) Read Write
+allowed-tools: Bash(git describe *) Bash(git log *) Bash(git tag *) Bash(git rev-parse *) Bash($(git rev-parse --show-toplevel)/tools/release/update-changelog.sh *) Read Write
 context: fork
 agent: Explore
 ---
@@ -25,7 +25,7 @@ $ARGUMENTS
 
 When `$ARGUMENTS` starts with `--branch `, run the deterministic script and report its output. Do NOT read, classify, or rewrite the changelog yourself.
 
-!`$HOME/.claude/tools/release/update-changelog.sh --branch "${ARGUMENTS#--branch }"`
+!`$(git rev-parse --show-toplevel)/tools/release/update-changelog.sh --branch "${ARGUMENTS#--branch }"`
 
 The script:
 - Validates `<base>` exists (prints `update-changelog: base '<base>' does not exist` and exits 2 if not).

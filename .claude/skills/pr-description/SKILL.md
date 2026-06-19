@@ -2,7 +2,7 @@
 description: Generates a structured description for a Pull Request from the commits and diffs of the current branch.
 argument-hint: "[base-branch]"
 model: claude-haiku-4-5
-allowed-tools: Bash(git log *) Bash(git diff *) Bash(git rev-parse *) Bash(bash $HOME/.claude/tools/release/mr-stamp.sh *) Write
+allowed-tools: Bash(git log *) Bash(git diff *) Bash(git rev-parse *) Bash(bash $(git rev-parse --show-toplevel)/tools/release/mr-stamp.sh *) Write
 context: fork
 ---
 
@@ -17,7 +17,7 @@ The base branch is `${1:-master}`.
 
 ## Pre-resolved stamp and change-type checkboxes (authoritative — copy verbatim)
 
-!`bash $HOME/.claude/tools/release/mr-stamp.sh --base ${1:-master}`
+!`bash $(git rev-parse --show-toplevel)/tools/release/mr-stamp.sh --base ${1:-master}`
 
 ## Included commits (subjects and bodies)
 

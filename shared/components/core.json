@@ -1,7 +1,5 @@
 {
   "symlinks": [
-    { "src": "tools/release/bump-version.sh", "dest": "tools/release/bump-version.sh" },
-    { "src": "tools/release/create-pr.sh",    "dest": "tools/release/create-pr.sh" },
     { "src": "shared/cost-report.sh",         "dest": "cost-report.sh" }
   ],
   "target_root_files": [

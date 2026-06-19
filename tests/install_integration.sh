@@ -378,7 +378,6 @@ test_state_v1_migrates_to_v2() {
     "${claude_dir}/agents/senior.md",
     "${claude_dir}/agents/tech.md",
     "${claude_dir}/agents/applier.md",
-    "${claude_dir}/skills/pr-description/SKILL.md",
     "${claude_dir}/statusline-command.sh",
     "${claude_dir}/CLAUDE-shared.md"
   ],
@@ -451,16 +450,6 @@ test_e2e_new_commands_distributed() {
     "execute-plan/SKILL.md symlink apunta a skills/execute-plan/SKILL.md"
 
   assert_is_symlink_to \
-    "$TMPHOME/.claude/skills/pr-description/SKILL.md" \
-    "$FORGE_ROOT/skills/pr-description/SKILL.md" \
-    "pr-description/SKILL.md symlink apunta a skills/pr-description/SKILL.md"
-
-  assert_is_symlink_to \
-    "$TMPHOME/.claude/skills/update-changelog/SKILL.md" \
-    "$FORGE_ROOT/skills/update-changelog/SKILL.md" \
-    "update-changelog/SKILL.md symlink apunta a skills/update-changelog/SKILL.md"
-
-  assert_is_symlink_to \
     "$TMPHOME/.claude/skills/plan-format/SKILL.md" \
     "$FORGE_ROOT/skills/plan-format/SKILL.md" \
     "plan-format/SKILL.md symlink apunta a skills/plan-format/SKILL.md"
@@ -505,7 +494,7 @@ test_e2e_new_commands_distributed() {
   local state="$TMPHOME/.forge-state.json"
   assert_file_valid_json "$state" "state file válido"
 
-  for skill in cost-report create-plan execute-plan pr-description update-changelog plan-format testing-angular testing-spring-boot testing-pytest; do
+  for skill in cost-report create-plan execute-plan plan-format testing-angular testing-spring-boot testing-pytest; do
     if jq -e --arg s "$skill" '.symlinks[] | select(endswith($s + "/SKILL.md"))' "$state" >/dev/null 2>&1; then
       pass "${skill}/SKILL.md en state.symlinks"
     else
@@ -545,10 +534,6 @@ test_e2e_new_commands_distributed() {
     "skills/create-plan/SKILL.md eliminado tras uninstall"
   assert_file_not_exists "$TMPHOME/.claude/skills/execute-plan/SKILL.md" \
     "skills/execute-plan/SKILL.md eliminado tras uninstall"
-  assert_file_not_exists "$TMPHOME/.claude/skills/pr-description/SKILL.md" \
-    "skills/pr-description/SKILL.md eliminado tras uninstall"
-  assert_file_not_exists "$TMPHOME/.claude/skills/update-changelog/SKILL.md" \
-    "skills/update-changelog/SKILL.md eliminado tras uninstall"
   assert_file_not_exists "$TMPHOME/.claude/skills/plan-format/SKILL.md" \
     "skills/plan-format/SKILL.md eliminado tras uninstall"
   assert_file_not_exists "$TMPHOME/.claude/skills/testing-angular/SKILL.md" \
@@ -578,7 +563,7 @@ test_e2e_new_commands_distributed() {
   done
 
   # Entire skill subdirectories must be absent or empty after uninstall
-  for skill in cost-report create-plan execute-plan pr-description update-changelog plan-format testing-angular testing-spring-boot testing-pytest; do
+  for skill in cost-report create-plan execute-plan plan-format testing-angular testing-spring-boot testing-pytest; do
     local skill_dir="$TMPHOME/.claude/skills/${skill}"
     if [ ! -d "$skill_dir" ]; then
       pass "skills/${skill}/ dir ausente tras uninstall"
@@ -1236,9 +1221,6 @@ test_install_only_core() {
   assert_is_symlink_to "$TMPHOME/.claude/CLAUDE-shared.md" \
     "$FORGE_ROOT/shared/CLAUDE-shared.md" \
     "only_core: CLAUDE-shared.md symlinked"
-  assert_is_symlink_to "$TMPHOME/.claude/tools/release/bump-version.sh" \
-    "$FORGE_ROOT/tools/release/bump-version.sh" \
-    "only_core: tools/release/bump-version.sh symlinked"
   assert_is_symlink_to "$TMPHOME/.claude/cost-report.sh" \
     "$FORGE_ROOT/shared/cost-report.sh" \
     "only_core: cost-report.sh symlinked"
