@@ -1,0 +1,11 @@
+{
+  "symlinks": [
+    { "src": "shared/statusline.sh",            "dest": "statusline.sh" },
+    { "src": "shared/total-usage.sh",           "dest": "total-usage.sh" },
+    { "src": "shared/subagent-statusline.sh",   "dest": "subagent-statusline.sh" }
+  ],
+  "target_root_files": [],
+  "managed_paths": ["statusLine", "subagentStatusLine"],
+  "settings_key": "statusLine",
+  "claude_md_ref": null
+}
