@@ -1,0 +1,20 @@
+{
+  "symlinks": [
+    { "src": "tools/release/bump-version.sh", "dest": "tools/release/bump-version.sh" },
+    { "src": "tools/release/create-pr.sh",    "dest": "tools/release/create-pr.sh" },
+    { "src": "shared/cost-report.sh",         "dest": "cost-report.sh" }
+  ],
+  "target_root_files": [
+    { "src": "shared/CLAUDE-shared.md", "dest": "CLAUDE-shared.md" }
+  ],
+  "managed_paths": [
+    "permissions.allow",
+    "permissions.deny",
+    "model",
+    "env"
+  ],
+  "settings_key": null,
+  "claude_md_ref": "@CLAUDE-shared.md",
+  "default": false,
+  "conflicts_with": ["agents", "commands", "cost-report"]
+}

@@ -1,0 +1,7 @@
+{
+  "symlinks": [],
+  "target_root_files": [],
+  "managed_paths": ["hooks.PreToolUse[rtk]"],
+  "settings_key": "hooks.PreToolUse.rtk-entry",
+  "claude_md_ref": null
+}

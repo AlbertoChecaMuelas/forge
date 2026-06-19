@@ -1,0 +1,42 @@
+{
+  "symlinks": [
+    {
+      "src": "agents/senior.md",
+      "dest": "agents/senior.md"
+    },
+    {
+      "src": "agents/tech.md",
+      "dest": "agents/tech.md"
+    },
+    {
+      "src": "agents/applier.md",
+      "dest": "agents/applier.md"
+    },
+    {
+      "src": "agents/tester.md",
+      "dest": "agents/tester.md"
+    },
+    {
+      "src": "shared/rules/commit-conventions.md",
+      "dest": "rules/commit-conventions.md"
+    },
+    {
+      "src": "shared/rules/language-policy.md",
+      "dest": "rules/language-policy.md"
+    }
+  ],
+  "target_root_files": [
+    {
+      "src": "shared/CLAUDE-shared.md",
+      "dest": "CLAUDE-shared.md"
+    }
+  ],
+  "managed_paths": [
+    "permissions.allow",
+    "permissions.deny",
+    "model",
+    "env"
+  ],
+  "settings_key": null,
+  "claude_md_ref": "@CLAUDE-shared.md"
+}

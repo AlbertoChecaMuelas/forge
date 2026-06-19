@@ -1,0 +1,10 @@
+{
+  "symlinks": [
+    { "src": "shared/cost-report.sh", "dest": "cost-report.sh" }
+  ],
+  "target_root_files": [],
+  "managed_paths": [],
+  "settings_key": null,
+  "claude_md_ref": null,
+  "conflicts_with": []
+}
