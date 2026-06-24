@@ -1,0 +1,9 @@
+{
+  "symlinks": [
+    { "src": "shared/branch-guard.sh", "dest": "branch-guard.sh" }
+  ],
+  "target_root_files": [],
+  "managed_paths": ["hooks.PreToolUse[branch-guard]"],
+  "settings_key": "hooks.PreToolUse.branch-guard-entry",
+  "claude_md_ref": null
+}

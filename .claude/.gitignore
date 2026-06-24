@@ -1,0 +1,5 @@
+settings.local.json
+skills/*
+!skills/create-pr
+!skills/pr-description
+!skills/update-changelog

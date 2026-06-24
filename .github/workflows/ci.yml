@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Run test suite
+        run: bash tests/run-all.sh
+
+      - name: Shellcheck all shell files
+        run: find . -name "*.sh" -not -path "./.git/*" | xargs shellcheck --severity=warning
+
+      - name: Check generate-agents (dry-run)
+        run: bash shared/scripts/generate-agents.sh --check
+
+      - name: Plugin version sync check
+        run: |
+          plugin_version=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])")
+          install_version=$(grep '^FORGE_VERSION=' install.sh | cut -d'"' -f2)
+          echo "plugin.json: $plugin_version  install.sh: $install_version"
+          test "$plugin_version" = "$install_version"
+
+      - name: 8 KB guard for shared/CLAUDE-shared.md
+        run: test $(wc -c < shared/CLAUDE-shared.md) -le 8192
+
+  release:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Auto-tag release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash tools/release/auto-tag.sh

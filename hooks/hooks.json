@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.forge/bin/rtk hook claude --ultra-compact 2>/dev/null || true",
+            "shell": "bash"
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/shared/branch-guard.sh\""
+          }
+        ]
+      }
+    ]
+  },
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash \"${CLAUDE_PLUGIN_ROOT}/shared/session-start.sh\""
+        }
+      ]
+    }
+  ]
+}

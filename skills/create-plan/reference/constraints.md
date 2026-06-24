@@ -1,0 +1,10 @@
+## Constraints
+
+- **Does not commit the plan**: `.plans/` is in `.gitignore`; the plan is never tracked.
+- **Does not push**: the repo policy blocks it (`git push` is in deny).
+- **Senior never asks more than 5 times**: if after 5 questions it still lacks enough information, it returns `BLOCKED_SENIOR` and main asks the user for clarification.
+- **If the repo is not git**: block without creating any file. The plan makes no sense without commits.
+- **Idempotency of .gitignore**: if `.gitignore` does not exist, create it with `.plans/`. If it exists, add `.plans/` only if not already present; use `grep -q` before `echo >>`.
+- **Plan content is written once by its author and never re-serialized**: in pass-2, senior writes the complete formatted plan directly to `.plans/.staging-<slug>.md` via a single Bash quoted-heredoc and returns ONLY a `STAGED:` confirmation line. The orchestrator promotes that file on disk (`mv`/append) and runs all gates on disk; it never loads, re-types, or relays the plan body. Byte-exactness is structural — the file is authored once and moved, not re-emitted — so there is no senior → applier content path and no `PLAN_CONTENT` variable. Any re-emission of the plan body after senior's staging write is a bug.
+- **Two-pass senior contract**: this skill may be invoked twice in sequence for the same logical request. The first invocation (pass-1 mode) returns a research summary; the second (pass-2 mode), with the summary as `$ARGUMENTS`, returns the formatted plan that is persisted. Main is responsible for chaining the two invocations; this skill does NOT auto-chain.
+- **Placeholder gate (on disk)**: the staging file is scanned on disk (`grep -nE "TBD|TODO|similar (a|to)|as appropriate|\?\?\?" <staging-file>`) before promotion; a staging file with placeholders is returned to senior once (only the matching line numbers, never the body) for an in-place Bash fix, and is never promoted as-is. After the gate passes, front-matter sanity is checked on disk (`head -1 <staging-file> | grep -q '^---$'`).

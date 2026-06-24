@@ -1,0 +1,63 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Bash(.plans/*)",
+      "Read(*)",
+      "Edit(*)",
+      "Write(*)",
+      "MultiEdit(*)",
+      "Glob(*)",
+      "Skill"
+    ],
+    "deny": [
+      "Bash(git push*)",
+      "Agent(Explore)",
+      "Agent(Plan)"
+    ]
+  },
+  "model": "sonnet",
+  "env": {
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-8",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5-20251001"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.forge/bin/rtk hook claude --ultra-compact 2>/dev/null || true",
+            "shell": "bash"
+          },
+          {
+            "type": "command",
+            "command": "bash {TARGET_DIR}/branch-guard.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash {TARGET_DIR}/session-start.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash {TARGET_DIR}/statusline.sh",
+    "padding": 0
+  },
+  "subagentStatusLine": {
+    "type": "command",
+    "command": "bash {TARGET_DIR}/subagent-statusline.sh",
+    "padding": 0
+  }
+}

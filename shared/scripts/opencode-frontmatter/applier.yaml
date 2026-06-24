@@ -1,0 +1,11 @@
+name: applier
+description: "Use EXCLUSIVELY for mechanical execution with zero judgment: apply an already-written literal diff, exact renames in listed files, git/gh operations with a provided message (commits, branch creation), [A] plan steps, or running a given command and reporting its output. Returns BLOCKED if the instruction requires any decision. Does not interpret, does not infer."
+model: litellm/claude-haiku-4-5
+permission:
+  bash: allow
+  edit: allow
+  glob: allow
+  grep: deny
+  read: allow
+  webfetch: deny
+  write: allow

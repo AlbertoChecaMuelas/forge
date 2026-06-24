@@ -1,0 +1,9 @@
+{
+  "symlinks": [
+    { "src": "skills/cost-report/SKILL.md", "dest": "skills/cost-report/SKILL.md" }
+  ],
+  "target_root_files": [],
+  "managed_paths": [],
+  "settings_key": null,
+  "claude_md_ref": null
+}
