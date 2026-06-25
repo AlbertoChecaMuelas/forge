@@ -9,6 +9,9 @@ set -euo pipefail
 FORGE_ROOT="$(cd "$(dirname "$0")" && pwd)"
 FORGE_VERSION="0.2.0"
 FORGE_STATE_FILE="$HOME/.forge-state.json"
+FORGE_OPENCODE_DIR_DEFAULT="$HOME/.config/opencode-forge"
+FORGE_OPENCODE_INSTALLER="$FORGE_ROOT/open-code/install-opencode.sh"
+FORGE_OPENCODE_UNINSTALLER="$FORGE_ROOT/open-code/uninstall-opencode.sh"
 
 # --- summary accumulator ---
 _FORGE_WARN_COUNT=0
@@ -230,7 +233,7 @@ Subcommands:
   rtk uninstall Remove RTK if installed by forge
 
 Options (install):
-  --target=claude               Target directory (default: claude)
+  --target=claude|opencode|both Target directory (default: claude)
   --only=<comp>[,<comp>...]     Install only the listed components
                                 (core, the plugin companion, is opt-in only)
   --show-cost                   Muestra línea de coste por sesión en la statusline (por defecto oculta)
@@ -266,19 +269,154 @@ forge_resolve_targets() {
   _forge_targets_count=0
 
   local claude_dir="$HOME/.claude"
+  local opencode_dir="$FORGE_OPENCODE_DIR_DEFAULT"
 
   case "$target_arg" in
-    claude|both)
+    claude)
       mkdir -p "$claude_dir"
       _forge_targets_count=1
       _forge_target_path_0="$claude_dir"
       _forge_target_name_0="claude"
       ;;
+    opencode)
+      mkdir -p "$opencode_dir"
+      _forge_targets_count=1
+      _forge_target_path_0="$opencode_dir"
+      _forge_target_name_0="opencode"
+      ;;
+    both)
+      mkdir -p "$claude_dir" "$opencode_dir"
+      _forge_targets_count=2
+      _forge_target_path_0="$claude_dir"
+      _forge_target_name_0="claude"
+      _forge_target_path_1="$opencode_dir"
+      _forge_target_name_1="opencode"
+      ;;
     *)
-      echo "[forge] ERROR: --target debe ser claude (got: $target_arg)" >&2
+      echo "[forge] ERROR: --target debe ser claude, opencode o both (got: $target_arg)" >&2
       return 1
       ;;
   esac
+}
+
+forge_state_has_opencode_target() {
+  if [ ! -f "$FORGE_STATE_FILE" ]; then
+    return 1
+  fi
+
+  jq -e '[(.targets_manifest // [])[]?.name] | index("opencode") != null' "$FORGE_STATE_FILE" >/dev/null 2>&1
+}
+
+forge_run_opencode_installer() {
+  if [ ! -f "$FORGE_OPENCODE_INSTALLER" ]; then
+    echo "[forge] ERROR: OpenCode target requested but installer is missing: $FORGE_OPENCODE_INSTALLER" >&2
+    echo "[forge]   → completa la overlay OpenCode o usa --target=claude" >&2
+    return 1
+  fi
+
+  bash "$FORGE_OPENCODE_INSTALLER"
+}
+
+forge_run_opencode_uninstaller() {
+  if [ ! -f "$FORGE_OPENCODE_UNINSTALLER" ]; then
+    echo "[forge] WARN: OpenCode uninstall script missing: $FORGE_OPENCODE_UNINSTALLER" >&2
+    echo "[forge]   → elimina manualmente ~/.config/opencode-forge y ~/.local/bin/forge-opencode si existen" >&2
+    return 0
+  fi
+
+  bash "$FORGE_OPENCODE_UNINSTALLER"
+}
+
+forge_drop_target_from_state() {
+  local target_name="$1"
+  local tmp_state
+
+  if [ ! -f "$FORGE_STATE_FILE" ] || ! jq empty "$FORGE_STATE_FILE" 2>/dev/null; then
+    return 0
+  fi
+
+  tmp_state="$(mktemp)"
+  jq --arg tgt "$target_name" '
+    .targets_manifest = [.targets_manifest[] | select(.name != $tgt)] |
+    .targets = ((.targets // []) | map(select(. != $tgt))) |
+    .symlinks = ([.targets_manifest[].symlinks[]?] | unique) |
+    if .settings then
+      .settings.overlay_backup = ((.settings.overlay_backup // {}) | with_entries(select(.key != $tgt))) |
+      .settings.settings_json_backup = ((.settings.settings_json_backup // {}) | with_entries(select(.key != $tgt)))
+    else
+      .
+    end
+  ' "$FORGE_STATE_FILE" > "$tmp_state"
+
+  if jq empty "$tmp_state" 2>/dev/null; then
+    if [ "$(jq -r '.targets_manifest | length' "$tmp_state")" = "0" ]; then
+      rm -f "$FORGE_STATE_FILE" "$tmp_state"
+    else
+      mv "$tmp_state" "$FORGE_STATE_FILE"
+    fi
+  else
+    rm -f "$tmp_state"
+  fi
+}
+
+forge_write_opencode_only_state() {
+  local installed_at="$1"
+  local tmp_state base_file base_installed_at
+
+  tmp_state="$(mktemp)"
+  base_file="$FORGE_STATE_FILE"
+  base_installed_at="$installed_at"
+
+  if [ ! -f "$base_file" ] || ! jq empty "$base_file" 2>/dev/null; then
+    base_file="$(mktemp)"
+    jq -n '{
+      version: "",
+      installed_at: "",
+      state_schema: 3,
+      targets: [],
+      symlinks: [],
+      targets_manifest: [],
+      settings: {managed_paths: {}, overlay_backup: {}, settings_json_backup: {}},
+      rtk: {pinned_version: "0.42.4", detected_version: null, installed_by_us: false, install_failed: false, version_mismatch: false}
+    }' > "$base_file"
+  else
+    base_installed_at="$(jq -r '.installed_at // empty' "$base_file" 2>/dev/null || true)"
+    [ -z "$base_installed_at" ] && base_installed_at="$installed_at"
+  fi
+
+  jq \
+    --arg version "$FORGE_VERSION" \
+    --arg installed_at "$base_installed_at" \
+    --arg dir "$FORGE_OPENCODE_DIR_DEFAULT" \
+    '
+    .version = $version |
+    .installed_at = $installed_at |
+    .state_schema = 3 |
+    .targets = (((.targets // []) + ["opencode"]) | unique) |
+    .targets_manifest = ((.targets_manifest // []) | map(select(.name != "opencode")) + [{
+      name: "opencode",
+      dir: $dir,
+      symlinks: [],
+      symlinks_objects: [],
+      components: [],
+      settings_merged: false,
+      settings_backup: null
+    }]) |
+    .symlinks = ([.targets_manifest[].symlinks[]?] | unique) |
+    .settings = (.settings // {managed_paths: {}, overlay_backup: {}, settings_json_backup: {}}) |
+    .rtk = (.rtk // {pinned_version: "0.42.4", detected_version: null, installed_by_us: false, install_failed: false, version_mismatch: false})
+    ' "$base_file" > "$tmp_state"
+
+  jq empty "$tmp_state" || {
+    rm -f "$tmp_state"
+    [ "$base_file" != "$FORGE_STATE_FILE" ] && rm -f "$base_file"
+    echo "[forge] ERROR: state file inválido, no se escribió" >&2
+    return 1
+  }
+
+  mv "$tmp_state" "$FORGE_STATE_FILE"
+  [ "$base_file" != "$FORGE_STATE_FILE" ] && rm -f "$base_file"
+  echo "[forge] state guardado: $FORGE_STATE_FILE"
 }
 
 # Helper: get target path by index
@@ -350,7 +488,7 @@ _forge_state_migrate() {
       tgt_name="$(jq -r --argjson i "$t" '.targets[$i]' "$_state_file")"
       case "$tgt_name" in
         claude)   tgt_dir="$HOME/.claude" ;;
-        opencode) tgt_dir="$HOME/.config/opencode" ;;
+        opencode) tgt_dir="$FORGE_OPENCODE_DIR_DEFAULT" ;;
         *)        tgt_dir="$HOME/.claude" ;;
       esac
 
@@ -866,9 +1004,8 @@ cmd_update() {
         # shellcheck disable=SC2086  # word-split intentional: _upd_comp_args is space-delimited
         _forge_clean_target "$upd_tgt_dir" $_upd_comp_args
 
-        # Skip opencode targets for symlinks/settings (no catalog entries apply)
         if [ "$upd_tgt_name" = "opencode" ]; then
-          echo "[forge] skipping component update for target: $upd_tgt_name (not applicable)"
+          forge_run_opencode_installer || return 1
           upd_t=$((upd_t + 1))
           continue
         fi
@@ -1453,6 +1590,10 @@ cmd_uninstall() {
     echo "[rtk] RTK pineado eliminado (usa --keep-rtk para conservarlo)"
   fi
 
+  if forge_state_has_opencode_target; then
+    forge_run_opencode_uninstaller
+  fi
+
   # --- Restore settings ---
   # Iterate over targets that have a settings backup registered
   local settings_targets
@@ -1462,7 +1603,7 @@ cmd_uninstall() {
     local tgt_dir
     case "$tgt_name" in
       claude)   tgt_dir="$HOME/.claude" ;;
-      opencode) tgt_dir="$HOME/.config/opencode" ;;
+      opencode) tgt_dir="$FORGE_OPENCODE_DIR_DEFAULT" ;;
       *)        tgt_dir="$HOME/.claude" ;;
     esac
     local sfile="$tgt_dir/settings.json"
@@ -1607,9 +1748,8 @@ cmd_repair() {
     # shellcheck disable=SC2086  # word-split intentional: _comp_args is space-delimited
     _forge_clean_target "$tgt_dir" $_comp_args
 
-    # Skip opencode targets for symlinks/settings (no catalog entries apply)
     if [ "$tgt_name" = "opencode" ]; then
-      echo "[forge] skipping component install for target: $tgt_name (not applicable)"
+      forge_run_opencode_installer || return 1
       t=$((t + 1))
       continue
     fi
@@ -2167,6 +2307,13 @@ cmd_install() {
   local installed_at
   installed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+  if [ "$target_arg" = "opencode" ]; then
+    forge_run_opencode_installer || return 1
+    forge_write_opencode_only_state "$installed_at" || return 1
+    forge_print_summary "install"
+    return 0
+  fi
+
   # Accumulate symlinks created (indexed array)
   local symlink_count=0
   # We'll build a JSON array string
@@ -2630,6 +2777,20 @@ cmd_install() {
   }
   mv "$tmp_state" "$FORGE_STATE_FILE"
   echo "[forge] state guardado: $FORGE_STATE_FILE"
+
+  case "$target_arg" in
+    opencode|both)
+      if ! forge_run_opencode_installer; then
+        forge_drop_target_from_state opencode
+        forge_warn \
+          "OpenCode overlay failed; the claude target was installed successfully" \
+          "check errors above and re-run: bash install.sh --target=opencode"
+        forge_print_summary "install"
+        return 1
+      fi
+      ;;
+  esac
+
   forge_print_summary "install"
 }
 

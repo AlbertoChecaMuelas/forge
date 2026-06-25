@@ -1,0 +1,15 @@
+applier:
+  claude: haiku
+  opencode: openai/gpt-5.4-mini-fast
+tech:
+  claude: sonnet
+  opencode: openai/gpt-5.4
+senior:
+  claude: opus
+  opencode: openai/gpt-5.5
+tester:
+  claude: sonnet
+  opencode: openai/gpt-5.4
+orchestrator:
+  claude: opus
+  opencode: openai/gpt-5.4

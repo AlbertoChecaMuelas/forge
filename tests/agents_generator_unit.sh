@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/agents_generator_unit.sh — Unit tests for generate-agents.sh
-# Covers --target=claude (only supported target).
+# Covers Claude target generation; OpenCode has its own dedicated unit test.
 # Compatible with bash 3.2+.
 set -euo pipefail
 
