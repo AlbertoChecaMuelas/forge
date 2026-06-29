@@ -9,7 +9,7 @@ resolve_path() {
     case "$link_target" in
       /*) target="$link_target" ;;
       *)
-        target_dir=$(CDPATH= cd -- "$(dirname "$target")" && pwd)
+        target_dir=$(CDPATH='' cd -- "$(dirname "$target")" && pwd)
         target="$target_dir/$link_target"
         ;;
     esac
@@ -19,7 +19,7 @@ resolve_path() {
 }
 
 SCRIPT_PATH=$(resolve_path "$0")
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$SCRIPT_PATH")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname "$SCRIPT_PATH")" && pwd)
 
 if [ -f "$SCRIPT_DIR/env.sh" ]; then
   # shellcheck disable=SC1091

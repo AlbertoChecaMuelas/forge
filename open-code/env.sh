@@ -6,6 +6,7 @@ load_forge_token() {
 
   eval "current_value=\${$key-}"
   if [ -n "${current_value}" ]; then
+    # shellcheck disable=SC2163  # dynamic export of the variable named by $key
     export "$key"
     return 0
   fi
@@ -25,6 +26,7 @@ load_forge_token() {
   esac
 
   eval "$key=\$file_value"
+  # shellcheck disable=SC2163  # dynamic export of the variable named by $key
   export "$key"
 }
 
