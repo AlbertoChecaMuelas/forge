@@ -147,7 +147,7 @@ if [ -f "$REPO_ROOT/open-code/env.sh" ]; then
   . "$REPO_ROOT/open-code/env.sh"
 fi
 
-if [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+if [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${MINIMAX_API_KEY:-}" ]; then
   echo "[forge-opencode] auth detected from environment or env.sh"
 elif check_auth_command_output || check_auth_file; then
   echo "[forge-opencode] auth detected from opencode credentials"
