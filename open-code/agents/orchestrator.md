@@ -1,7 +1,7 @@
 ---
 name: orchestrator
 description: "Primary Forge orchestrator for OpenCode: owns routing, guardrails, and user-facing coordination. Delegates implementation work to the pipeline subagents."
-model: openai/gpt-5.4
+model: minimax/MiniMax-M3[1m]
 mode: primary
 permission:
   bash: ask

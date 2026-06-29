@@ -1,7 +1,7 @@
 ---
 name: senior
 description: "Use proactively when the request requires analysis BEFORE any code change: evaluating or comparing approaches, planning a multi-step or >2-file change, requests mentioning 'feature'/'implementa'/'migra' without a plan in hand, deciding what needs to change ('audita', 'revisa', 'ponlo al dia'), or informational questions about code, frameworks or repo state. Output: a decision, analysis, or executable-plan input. Does not write code."
-model: openai/gpt-5.5
+model: minimax/MiniMax-M3[1m]
 mode: subagent
 permission:
   bash: allow

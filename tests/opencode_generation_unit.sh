@@ -94,29 +94,29 @@ test_generated_agents_are_platform_correct() {
 }
 
 test_generated_models_match_expected_mapping() {
-  local expected_applier='model: openai/gpt-5.4-mini-fast'
-  local expected_worker='model: openai/gpt-5.4'
-  local expected_senior='model: openai/gpt-5.5'
+  local expected_applier='model: minimax/MiniMax-M2.5-highspeed'
+  local expected_worker='model: minimax/MiniMax-M3[1m]'
+  local expected_senior='model: minimax/MiniMax-M3[1m]'
 
-  if grep -q "^${expected_applier}$" "$FORGE_ROOT/open-code/agents/applier.md"; then
-    pass "applier model matches GPT mini mapping"
+  if grep -qxF "${expected_applier}" "$FORGE_ROOT/open-code/agents/applier.md"; then
+    pass "applier model matches MiniMax M2.5-highspeed mapping"
   else
-    fail "applier model does not match GPT mini mapping"
+    fail "applier model does not match MiniMax M2.5-highspeed mapping"
   fi
 
   local role
   for role in tech tester orchestrator; do
-    if grep -q "^${expected_worker}$" "$FORGE_ROOT/open-code/agents/${role}.md"; then
-      pass "${role} model matches GPT 5.4 mapping"
+    if grep -qxF "${expected_worker}" "$FORGE_ROOT/open-code/agents/${role}.md"; then
+      pass "${role} model matches MiniMax M3 mapping"
     else
-      fail "${role} model does not match GPT 5.4 mapping"
+      fail "${role} model does not match MiniMax M3 mapping"
     fi
   done
 
-  if grep -q "^${expected_senior}$" "$FORGE_ROOT/open-code/agents/senior.md"; then
-    pass "senior model matches GPT 5.5 mapping"
+  if grep -qxF "${expected_senior}" "$FORGE_ROOT/open-code/agents/senior.md"; then
+    pass "senior model matches MiniMax M3 mapping"
   else
-    fail "senior model does not match GPT 5.5 mapping"
+    fail "senior model does not match MiniMax M3 mapping"
   fi
 }
 

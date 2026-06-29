@@ -112,6 +112,31 @@ bash open-code/install-opencode.sh
 
 ---
 
+## Cambiar modelo o proveedor por subagente en OpenCode
+
+Hay dos mandos independientes; ambos deben estar sincronizados.
+
+**Mando 1 — `shared/models.yaml`**
+
+Edita el valor `opencode:` del rol deseado con el formato `<proveedor>/<model-id>` y regenera los ficheros de configuración:
+
+```bash
+bash shared/scripts/generate-agents.sh --target=opencode
+```
+
+**Mando 2 — `open-code/opencode.jsonc`**
+
+Declara el proveedor una sola vez (endpoint base + `"apiKey": "{env:<VARIABLE>}"`). Las credenciales las carga `open-code/env.sh` mediante `load_forge_token <VARIABLE>` leyendo el fichero `~/.opencode-tokens`.
+
+**Asignación actual (ejemplo)**
+
+| Rol                               | Modelo asignado                    |
+|-----------------------------------|------------------------------------|
+| senior, tech, tester, orchestrator | `minimax/MiniMax-M3[1m]`          |
+| applier                           | `minimax/MiniMax-M2.5-highspeed`   |
+
+---
+
 ## Codigos de retorno
 
 | Codigo               | Lo emite  | Que hace orchestrator                                  |

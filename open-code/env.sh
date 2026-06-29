@@ -31,3 +31,4 @@ load_forge_token() {
 load_forge_token ANTHROPIC_API_KEY
 load_forge_token OPENAI_API_KEY
 load_forge_token OPENROUTER_API_KEY
+load_forge_token MINIMAX_API_KEY

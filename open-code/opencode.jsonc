@@ -4,8 +4,8 @@
   // Change per-role model ids in shared/models.yaml and regenerate agents.
   // This top-level model is the fallback for sessions that do not pick an agent model.
   "default_agent": "orchestrator",
-  "model": "openai/gpt-5.4",
-  "small_model": "openai/gpt-5.4-mini-fast",
+  "model": "minimax/MiniMax-M3[1m]",
+  "small_model": "minimax/MiniMax-M2.5-highspeed",
   "instructions": [
     "__FORGE_OPENCODE_AGENTS_MD__"
   ],
@@ -26,6 +26,17 @@
     "ollama": {
       "options": {
         "baseURL": "http://127.0.0.1:11434/v1"
+      }
+    },
+    "minimax": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://api.minimax.io/v1",
+        "apiKey": "{env:MINIMAX_API_KEY}"
+      },
+      "models": {
+        "MiniMax-M3[1m]": {},
+        "MiniMax-M2.5-highspeed": {}
       }
     }
   }
