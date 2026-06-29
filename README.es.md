@@ -395,12 +395,13 @@ Forge soporta [OpenCode](https://opencode.ai) desde este mismo repositorio. Open
 **Qué hace el instalador**:
 
 1. Requiere `opencode` en `PATH`.
-2. Regenera los 5 agentes OpenCode.
-3. Instala una overlay aislada en `~/.config/opencode-forge/` en vez de tocar la configuración global del usuario.
-4. Symlinka los agentes generados, `AGENTS.md` y `plugins/forge-guard.js` dentro de esa overlay aislada.
-5. Copia `open-code/opencode.jsonc` a la overlay aislada y reescribe la ruta de instrucciones de `AGENTS.md`.
-6. Instala un launcher independiente en `~/.local/bin/forge-opencode` que exporta `OPENCODE_CONFIG_DIR` y `OPENCODE_CONFIG` antes de invocar el binario real `opencode`.
-7. Verifica que existan credenciales de OpenCode o autenticación por tokens vía `open-code/env.sh`.
+2. Solicita de forma interactiva al usuario que configure las claves API del proveedor y las escribe en `~/.opencode-tokens`.
+3. Regenera los 5 agentes OpenCode.
+4. Instala una overlay aislada en `~/.config/opencode-forge/` en vez de tocar la configuración global del usuario.
+5. Symlinka los agentes generados, `AGENTS.md` y `plugins/forge-guard.js` dentro de esa overlay aislada.
+6. Copia `open-code/opencode.jsonc` a la overlay aislada y reescribe la ruta de instrucciones de `AGENTS.md`.
+7. Instala un launcher independiente en `~/.local/bin/forge-opencode` que exporta `OPENCODE_CONFIG_DIR` y `OPENCODE_CONFIG` antes de invocar el binario real `opencode`.
+8. Verifica que existan credenciales de OpenCode o autenticación por tokens vía `open-code/env.sh`.
 
 El instalador es idempotente y no modifica `~/.config/opencode/`, `.bashrc`, `.zshrc` ni `config.fish`.
 
@@ -409,6 +410,7 @@ El instalador es idempotente y no modifica `~/.config/opencode/`, `.bashrc`, `.z
 - OpenCode instalado ([https://opencode.ai](https://opencode.ai)).
 - `jq` (se instala automáticamente con `brew` si no está disponible; requiere Homebrew).
 - `python3` como fallback si no se puede instalar `jq`.
+- Una clave API de proveedor. MiniMax es el proveedor por defecto y requiere que `MINIMAX_API_KEY` esté definida. El instalador solicitará que la introduzcas y puede escribirla en `~/.opencode-tokens`.
 
 ### Estructura de `open-code/`
 
@@ -419,7 +421,7 @@ open-code/
   plugins/forge-guard.js     Plugin de branch guard para OpenCode
   AGENTS.md                  Instrucciones OpenCode compartidas mínimas
   opencode.jsonc             Plantilla de configuración del proveedor
-  env.sh                     Loader POSIX de tokens
+  env.sh                     Loader POSIX de tokens; carga credenciales de ~/.opencode-tokens
   forge-opencode.sh          Wrapper que exporta rutas aisladas de config
   install-opencode.sh        Instala la overlay aislada de OpenCode
   uninstall-opencode.sh      Elimina la overlay aislada de OpenCode
