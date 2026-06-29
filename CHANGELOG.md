@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-29
+
 ### Fixed
 - release: open auto-merge PR for CHANGELOG closure instead of direct push to bypass branch protection
 
