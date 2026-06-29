@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+
+## [1.0.0] - 2026-06-29
+
 ### Changed
 - **BREAKING**: test major bump for release-prep E2E
 
