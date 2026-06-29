@@ -1,7 +1,7 @@
 {
   "name": "forge",
   "description": "Token-optimized multi-agent pipeline for Claude Code: senior/tech/applier/tester agents, template-based review dispatch, executable plans (/create-plan, /execute-plan), MR tooling and branch-guard + RTK hooks.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "author": {
     "name": "Alberto Checa Muelas"
   }

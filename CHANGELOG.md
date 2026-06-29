@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+
+## [0.4.0] - 2026-06-29
+
 ### Added
 - test feature for release-prep E2E validation
 
