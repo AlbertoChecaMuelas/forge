@@ -46,6 +46,75 @@ if ! command -v opencode >/dev/null 2>&1; then
   exit 1
 fi
 
+# ----- API key setup (interactive, optional) -----
+
+TOKENS_FILE="$HOME/.opencode-tokens"
+
+write_token() {
+  local key="$1"
+  local value="$2"
+
+  if [ ! -f "$TOKENS_FILE" ]; then
+    install -m 600 /dev/null "$TOKENS_FILE"
+  fi
+
+  if grep -q "^${key}=" "$TOKENS_FILE" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$TOKENS_FILE"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$TOKENS_FILE"
+  fi
+}
+
+printf '¿Deseas configurar API keys ahora? (s/N) '
+read -r configure_keys || true
+configure_keys="${configure_keys:-N}"
+
+case "$configure_keys" in
+  s|S|y|Y|yes|Yes|YES)
+    while true; do
+      echo ""
+      echo "¿Qué API key deseas añadir?"
+      echo "1) MINIMAX_API_KEY"
+      echo "2) OPENAI_API_KEY"
+      echo "3) ANTHROPIC_API_KEY"
+      printf "Opción: "
+      read -r key_choice || true
+
+      case "$key_choice" in
+        1) selected_key="MINIMAX_API_KEY" ;;
+        2) selected_key="OPENAI_API_KEY" ;;
+        3) selected_key="ANTHROPIC_API_KEY" ;;
+        *)
+          echo "Opción no válida, saliendo del configurador de keys."
+          break
+          ;;
+      esac
+
+      printf "Introduce el valor de %s: " "$selected_key"
+      read -rs key_value || true
+      echo ""
+
+      if [ -n "$key_value" ]; then
+        write_token "$selected_key" "$key_value"
+        echo "Key guardada."
+      else
+        echo "Valor vacío, key no guardada."
+      fi
+
+      printf '¿Deseas añadir otra key? (s/N) '
+      read -r add_another || true
+      add_another="${add_another:-N}"
+
+      case "$add_another" in
+        s|S|y|Y|yes|Yes|YES) ;;
+        *) break ;;
+      esac
+    done
+    ;;
+esac
+
+# ----- end API key setup -----
+
 bash "$REPO_ROOT/shared/scripts/generate-agents.sh" --target=opencode
 
 mkdir -p "$AGENTS_DIR" "$PLUGINS_DIR" "$LAUNCHER_DIR"
