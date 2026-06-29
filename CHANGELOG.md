@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- release: open auto-merge PR for CHANGELOG closure instead of direct push to bypass branch protection
+
+
+## [0.3.0] - 2026-06-29
+
 ### Added
 - add MiniMax as multi-provider per subagent
 - add OpenCode multiplatform support
