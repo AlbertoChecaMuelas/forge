@@ -381,7 +381,7 @@ El hook `SessionStart` solo se dispara para la sesión principal, no para los su
 
 Forge soporta [OpenCode](https://opencode.ai) desde este mismo repositorio. OpenCode no es un fork separado: es una overlay generada en `open-code/` e instalable mediante `--target=opencode` o `--target=both`.
 
-`open-code/agents/` es un **artefacto generado**: nunca edites esos ficheros a mano. Edita las fuentes compartidas (`shared/agents/*.body.md`, `shared/scripts/opencode-frontmatter/*.yaml`, `open-code/agents-src/`) y ejecuta `bash shared/scripts/generate-agents.sh`. El CI falla en caso de drift (`tests/opencode_generation_unit.sh`).
+`open-code/agents/` es un **artefacto generado**: nunca edites esos ficheros a mano. Edita las fuentes compartidas (`shared/agents/*.body.md`, `shared/scripts/opencode-frontmatter/*.yaml`, `open-code/agents-src/`) y ejecuta `bash tools/opencode/generate-agents.sh`. El CI falla en caso de drift (`tests/opencode_generation_unit.sh`).
 
 ### Instalación
 
