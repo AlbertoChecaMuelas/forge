@@ -70,14 +70,23 @@ CUR_PATCH="${CUR_REST#*.}"
 # Compute next version per BUMP_TYPE.
 case "${BUMP_TYPE}" in
   auto)
-    RESULT="$(bash "${REPO_ROOT}/tools/release/bump-version.sh" --base master --dry-run)"
+    # Base the bump on the latest tag, not master, because the runner may
+    # be checked out at master (so master..HEAD is empty).
+    LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo "")"
+    if [[ -z "${LAST_TAG}" ]]; then
+      echo "prep-release: no tags found on origin; using master as base" >&2
+      BASE="master"
+    else
+      BASE="${LAST_TAG}"
+    fi
+    RESULT="$(bash "${REPO_ROOT}/tools/release/bump-version.sh" --base "${BASE}" --dry-run)"
     BUMP_DETECTED="$(echo "${RESULT}" | awk '{print $1}' | cut -d= -f2)"
     NEXT="$(echo "${RESULT}" | awk '{print $3}' | cut -d= -f2)"
     if [[ "${BUMP_DETECTED}" == "none" || "${NEXT}" == "${CURRENT}" ]]; then
-      echo "prep-release: bump-version detected no bump (BUMP=none); nothing to do"
+      echo "prep-release: bump-version detected no bump (BUMP=none) since ${BASE}; nothing to do"
       exit 0
     fi
-    echo "prep-release: bump-version detected BUMP=${BUMP_DETECTED}  CURRENT=${CURRENT}  NEXT=${NEXT}"
+    echo "prep-release: bump-version detected BUMP=${BUMP_DETECTED}  CURRENT=${CURRENT}  NEXT=${NEXT} (base=${BASE})"
     ;;
   patch)
     NEXT="${CUR_MAJOR}.${CUR_MINOR}.$((CUR_PATCH + 1))"
