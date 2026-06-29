@@ -392,13 +392,13 @@ Forge supports [OpenCode](https://opencode.ai) from the same repository. OpenCod
 **What the installer does**:
 
 1. Requires `opencode` on `PATH`.
-2. Regenerates the 5 OpenCode agents.
-3. Installs an isolated overlay under `~/.config/opencode-forge/` instead of touching the user's global OpenCode config.
-4. Symlinks the generated agents, `AGENTS.md`, and `plugins/forge-guard.js` into that isolated overlay.
-5. Copies `open-code/opencode.jsonc` into the isolated overlay and rewrites the `AGENTS.md` instruction path.
-6. Installs a separate launcher at `~/.local/bin/forge-opencode` that exports `OPENCODE_CONFIG_DIR` and `OPENCODE_CONFIG` before running the real `opencode` binary.
-7. Verifies that either OpenCode credentials already exist or token-based auth is available via `open-code/env.sh`.
-8. Interactively prompts the user to configure provider API keys and writes them to `~/.opencode-tokens`.
+2. Interactively prompts the user to configure provider API keys and writes them to `~/.opencode-tokens`.
+3. Regenerates the 5 OpenCode agents.
+4. Installs an isolated overlay under `~/.config/opencode-forge/` instead of touching the user's global OpenCode config.
+5. Symlinks the generated agents, `AGENTS.md`, and `plugins/forge-guard.js` into that isolated overlay.
+6. Copies `open-code/opencode.jsonc` into the isolated overlay and rewrites the `AGENTS.md` instruction path.
+7. Installs a separate launcher at `~/.local/bin/forge-opencode` that exports `OPENCODE_CONFIG_DIR` and `OPENCODE_CONFIG` before running the real `opencode` binary.
+8. Verifies that either OpenCode credentials already exist or token-based auth is available via `open-code/env.sh`.
 
 The installer is idempotent and does not modify `~/.config/opencode/`, `.bashrc`, `.zshrc`, or `config.fish`.
 

@@ -153,7 +153,7 @@ elif check_auth_command_output || check_auth_file; then
   echo "[forge-opencode] auth detected from opencode credentials"
 else
   echo "[forge-opencode] ERROR: no usable OpenCode auth found" >&2
-  echo "[forge-opencode]   -> run 'opencode auth login' or export OPENAI_API_KEY/ANTHROPIC_API_KEY" >&2
+  echo "[forge-opencode]   -> run 'opencode auth login' or export MINIMAX_API_KEY/OPENAI_API_KEY/ANTHROPIC_API_KEY" >&2
   exit 1
 fi
 
