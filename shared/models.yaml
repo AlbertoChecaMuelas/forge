@@ -1,0 +1,20 @@
+applier:
+  claude: haiku
+  # GPT equiv: openai/gpt-5.4-mini-fast
+  opencode: minimax/MiniMax-M2.5-highspeed
+tech:
+  claude: sonnet
+  # GPT equiv: openai/gpt-5.4
+  opencode: minimax/MiniMax-M3[1m]
+senior:
+  claude: opus
+  # GPT equiv: openai/gpt-5.5
+  opencode: minimax/MiniMax-M3[1m]
+tester:
+  claude: sonnet
+  # GPT equiv: openai/gpt-5.4
+  opencode: minimax/MiniMax-M3[1m]
+orchestrator:
+  claude: opus
+  # GPT equiv: openai/gpt-5.4
+  opencode: minimax/MiniMax-M3[1m]

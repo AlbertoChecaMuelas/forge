@@ -112,6 +112,58 @@ bash open-code/install-opencode.sh
 
 ---
 
+## Cambiar modelo o proveedor por subagente en OpenCode
+
+Hay dos mandos independientes; ambos deben estar sincronizados.
+
+**Mando 1 — `shared/models.yaml`**
+
+Edita el valor `opencode:` del rol deseado con el formato `<proveedor>/<model-id>` y regenera los ficheros de configuración:
+
+```bash
+bash shared/scripts/generate-agents.sh --target=opencode
+```
+
+**Mando 2 — `open-code/opencode.jsonc`**
+
+Declara el proveedor una sola vez (endpoint base + `"apiKey": "{env:<VARIABLE>}"`). Las credenciales las carga `open-code/env.sh` mediante `load_forge_token <VARIABLE>` leyendo el fichero `~/.opencode-tokens`.
+
+**Asignación actual (ejemplo)**
+
+| Rol                               | Modelo asignado                    |
+|-----------------------------------|------------------------------------|
+| senior, tech, tester, orchestrator | `minimax/MiniMax-M3[1m]`          |
+| applier                           | `minimax/MiniMax-M2.5-highspeed`   |
+
+**Caso A — Ya tienes una clave de OpenAI (GPT) o de Anthropic (Claude API)**
+
+Los proveedores `openai` y `anthropic` ya están declarados en `open-code/opencode.jsonc` y sus cargadores ya están en `open-code/env.sh`. Para estos dos casos NO tocas el Mando 2 ni `env.sh`: solo (1) eliges el modelo en `shared/models.yaml`, (2) dejas la clave en `~/.opencode-tokens` y (3) regeneras.
+
+1. Pon tu clave en `~/.opencode-tokens` (una por línea, formato `CLAVE=valor`):
+
+   ```
+   OPENAI_API_KEY=sk-...           # para GPT
+   ANTHROPIC_API_KEY=sk-ant-...    # para Claude vía API
+   ```
+
+2. Asigna el modelo a cada rol en `shared/models.yaml` (campo `opencode:`, formato `<proveedor>/<model-id>`). Ejemplos de `model-id`:
+   - OpenAI: `openai/gpt-4.1`, `openai/gpt-4o`, `openai/o3`.
+   - Anthropic: `anthropic/claude-sonnet-4`, `anthropic/claude-opus-4`.
+
+3. Regenera:
+
+   ```bash
+   bash shared/scripts/generate-agents.sh --target=opencode
+   ```
+
+> Nota sobre la "suscripción" de Claude: `ANTHROPIC_API_KEY` factura por token vía API y NO es lo mismo que una suscripción Claude Pro/Max. Si quieres usar tu suscripción, autentícate con `opencode auth login` (flujo OAuth) en vez de la clave; en ese caso no usas `~/.opencode-tokens` ni el Mando 2.
+
+**Caso B — Quieres añadir un proveedor nuevo compatible con OpenAI**
+
+Solo en este caso declaras un bloque nuevo en `open-code/opencode.jsonc` (como `minimax`): `"npm": "@ai-sdk/openai-compatible"`, `baseURL`, `apiKey` y la lista explícita de `models`. Añade además el `load_forge_token <VARIABLE>` correspondiente en `open-code/env.sh` y luego regenera con el comando del Caso A.
+
+---
+
 ## Codigos de retorno
 
 | Codigo               | Lo emite  | Que hace orchestrator                                  |

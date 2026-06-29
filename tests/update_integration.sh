@@ -115,11 +115,11 @@ test_update_show_cost_both_targets() {
 
   mkdir -p "$TMPHOME/.claude"
 
-  # Install targeting both (both == claude in forge)
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=both >/dev/null 2>&1
+  # Install targeting both; OpenCode uses its own isolated overlay target.
+  HOME="$TMPHOME" OPENAI_API_KEY=test-openai-key bash "$INSTALL_SH" install --target=both >/dev/null 2>&1
 
   # Update with --show-cost
-  HOME="$TMPHOME" bash "$INSTALL_SH" update --show-cost >/dev/null 2>&1
+  HOME="$TMPHOME" OPENAI_API_KEY=test-openai-key bash "$INSTALL_SH" update --show-cost >/dev/null 2>&1
 
   assert_file_exists "$TMPHOME/.claude/.forge-show-cost" \
     "sentinel creado en target claude por update --show-cost"
@@ -129,7 +129,7 @@ test_update_show_cost_both_targets() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: update --show-cost skips opencode target (no sentinel created)
+# Test 4: update --show-cost skips opencode overlay target (no sentinel created)
 # ---------------------------------------------------------------------------
 test_update_show_cost_skips_opencode() {
   echo ""
@@ -138,9 +138,9 @@ test_update_show_cost_skips_opencode() {
   TMPHOME="$(mktemp -d)"
   trap 'rm -rf "$TMPHOME"' EXIT
 
-  # Directories for a claude target and a fake opencode config dir
+  # Directories for a claude target and a fake opencode overlay dir
   local claude_dir="$TMPHOME/.claude"
-  local opencode_dir="$TMPHOME/.config/opencode"
+  local opencode_dir="$TMPHOME/.config/opencode-forge"
   mkdir -p "$claude_dir" "$opencode_dir"
 
   # Build a schema-2 state file that includes both a claude entry and an
@@ -161,7 +161,7 @@ test_update_show_cost_skips_opencode() {
 
   # Run update --show-cost; redirect all output to /dev/null
   local exit_code=0
-  HOME="$TMPHOME" bash "$INSTALL_SH" update --show-cost >/dev/null 2>&1 || exit_code=$?
+  HOME="$TMPHOME" OPENAI_API_KEY=test-openai-key bash "$INSTALL_SH" update --show-cost >/dev/null 2>&1 || exit_code=$?
 
   assert_true "update --show-cost exits 0 with opencode in manifest" \
     test "$exit_code" -eq 0

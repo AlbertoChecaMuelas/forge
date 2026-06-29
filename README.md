@@ -28,7 +28,7 @@ Toolkit for Claude Code that distributes agents, commands and shared configurati
 - [Configuration and safety](#configuration-and-safety)
   - [Branch guard](#branch-guard)
   - [Orchestrator doctrine injection](#orchestrator-doctrine-injection)
-- [OpenCode fork](#opencode-fork)
+- [OpenCode target](#opencode-target)
 - [Project structure](#project-structure)
 - [Release process](#release-process)
 - [Contributing](#contributing)
@@ -165,6 +165,9 @@ The `update`, `repair`, `status`, and `doctor` subcommands are component-scoped:
 
 | Flag | Description |
 |------|-------------|
+| `--target=claude` | Installs only the Claude Code target. |
+| `--target=opencode` | Installs only the isolated OpenCode overlay. |
+| `--target=both` | Installs the Claude Code target plus the OpenCode overlay. |
 | `--only=<component>[,<component>...]` | Install only the specified component(s). No flag = install all 8 (backward-compatible). |
 | `--show-cost` | Enables monetary cost of the current session and lifetime statusline stats. |
 
@@ -371,9 +374,9 @@ The `SessionStart` hook only fires for the main session, not for subagents. Extr
 
 **Survival across compaction**: the hook fires on `startup`, `clear`, `compact` and `resume` events. If Claude Code compacts the context mid-session (removing early conversation turns), the doctrine is automatically re-injected so the orchestrator protocol remains active for the rest of the session.
 
-## OpenCode fork
+## OpenCode target
 
-Forge includes a fork adapted for [OpenCode](https://opencode.ai) in the `open-code/` directory. The fork contains the same pipeline agents and slash commands, adapted to the OpenCode format (`permission:` frontmatter field instead of the deprecated `tools:`, no Claude-Code-exclusive frontmatter keys).
+Forge supports [OpenCode](https://opencode.ai) from the same repository. OpenCode is not a separate fork: it is an overlay generated into `open-code/` and installed through `--target=opencode` or `--target=both`.
 
 `open-code/agents/` is a **generated artefact**: never edit those files by hand. Edit the shared sources (`shared/agents/*.body.md`, `shared/scripts/opencode-frontmatter/*.yaml`, `open-code/agents-src/`) and run `bash tools/opencode/generate-agents.sh`. CI fails on drift (`tests/opencode_generation_unit.sh`).
 
@@ -381,22 +384,22 @@ Forge includes a fork adapted for [OpenCode](https://opencode.ai) in the `open-c
 
 | Command | What it does |
 |---------|--------------|
-| `bash open-code/install-opencode.sh` | Installs the full OpenCode fork (agents, plugin, config and credentials). |
-| `bash open-code/uninstall-opencode.sh` | Uninstalls the OpenCode fork. Preserves `opencode.jsonc` in case of manual edits. |
+| `bash install.sh install --target=opencode` | Installs only the isolated OpenCode overlay. |
+| `bash install.sh install --target=both` | Installs the Claude Code target and then the OpenCode overlay. |
+| `bash open-code/install-opencode.sh` | Re-installs only the OpenCode overlay. |
+| `bash open-code/uninstall-opencode.sh` | Removes only the OpenCode overlay. |
 
 **What the installer does**:
 
-1. Detects OpenCode (CLI in `PATH`, existing `~/.config/opencode/`, or `/Applications/OpenCode.app`). Aborts if none is found.
-2. Deploys via symlinks under `~/.config/opencode/`:
-   - `agents/` → the 5 pipeline agents (senior, tech, applier, tester, orchestrator) with `permission:` in the frontmatter.
-   - `plugin/` → `forge-guard.js` deployed to `~/.config/opencode/plugin/forge-guard.js` (branch guard + RTK proxy parity).
-   - `AGENTS.md` → global pipeline instructions (the OpenCode equivalent of `CLAUDE-shared.md`).
-3. Copies `open-code/opencode.jsonc` to `~/.config/opencode/opencode.jsonc` (provider configuration). If the destination file exists and differs, it is backed up as `<file>.bak` (a single backup, no timestamp) before being overwritten.
-4. Copies `open-code/env.sh` to `~/.config/opencode/env.sh` (same backup handling if it differs). The script reads the API token from the environment.
-5. Injects an idempotent snippet, delimited by markers, into existing shell profiles (`~/.zshrc`, `~/.bashrc`, `~/.zprofile`, `~/.bash_profile`) that sources the env script in every new terminal.
-6. Verifies the token in a 3-step cascade: environment variable already exported → `jq` read of config file → `python3` fallback if `jq` is unavailable.
+1. Requires `opencode` on `PATH`.
+2. Regenerates the 5 OpenCode agents.
+3. Installs an isolated overlay under `~/.config/opencode-forge/` instead of touching the user's global OpenCode config.
+4. Symlinks the generated agents, `AGENTS.md`, and `plugins/forge-guard.js` into that isolated overlay.
+5. Copies `open-code/opencode.jsonc` into the isolated overlay and rewrites the `AGENTS.md` instruction path.
+6. Installs a separate launcher at `~/.local/bin/forge-opencode` that exports `OPENCODE_CONFIG_DIR` and `OPENCODE_CONFIG` before running the real `opencode` binary.
+7. Verifies that either OpenCode credentials already exist or token-based auth is available via `open-code/env.sh`.
 
-The installer is idempotent: re-running it does not duplicate snippets or break customisations.
+The installer is idempotent and does not modify `~/.config/opencode/`, `.bashrc`, `.zshrc`, or `config.fish`.
 
 ### Requirements
 
@@ -408,11 +411,17 @@ The installer is idempotent: re-running it does not duplicate snippets or break 
 
 ```
 open-code/
-  agents/         Fork of the 5 pipeline agents using permission: instead of tools:
-  plugin/         forge-guard.js — branch guard + RTK proxy parity for OpenCode
-  AGENTS.md       Global pipeline instructions for OpenCode
-  opencode.jsonc  Provider configuration template
-  env.sh          POSIX loader for the API token
+  agents/                     Generated OpenCode agents
+  agents-src/orchestrator.body.md
+  plugins/forge-guard.js     Branch guard plugin for OpenCode
+  AGENTS.md                  Minimal shared OpenCode instructions
+  opencode.jsonc             Provider configuration template
+  env.sh                     POSIX token loader
+  forge-opencode.sh          Wrapper that exports isolated OpenCode config paths
+  install-opencode.sh        Installs the isolated OpenCode overlay
+  uninstall-opencode.sh      Removes the isolated OpenCode overlay
+  SPIKE-RESULTS.md           Delegation/plugin/config-loading/cost findings
+  COST-PARITY.md             OpenCode cost-reporting contract
 ```
 
 ## Project structure
@@ -424,7 +433,7 @@ forge/
   hooks/           PreToolUse hooks (branch-guard.sh, rtk-hook)
   tools/           Release and OpenCode generator scripts
   .claude-plugin/  Plugin manifest (plugin.json) for the Claude Code marketplace
-  open-code/       OpenCode fork: agents/, plugin/, AGENTS.md, config and unified installer
+  open-code/       OpenCode overlay: agents/, agents-src/, plugins/, AGENTS.md and isolated installer
   shared/          Files distributed to every target (CLAUDE-shared.md, statusline, settings)
   lib/             Internal installer scripts (catalog, symlink, json-merge, rtk)
   rtk/             Pinned RTK installer and uninstaller

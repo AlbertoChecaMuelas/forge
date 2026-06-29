@@ -27,3 +27,4 @@ skills-lock.json
 
 # .claude/ is tracked — forge-specific skills live there.
 # Personal content (settings.local.json) is excluded via .claude/.gitignore.
+.plans/

@@ -14,6 +14,9 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get install -y shellcheck
 
+      - name: Install OpenCode CLI
+        run: npm install -g opencode-ai
+
       - name: Run test suite
         run: bash tests/run-all.sh
 

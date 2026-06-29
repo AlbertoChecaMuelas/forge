@@ -146,3 +146,4 @@ The existing `BLOCKED:` and `VERIFIER_FAILED:` codes are **not emitted** in batc
 ### Silence policy
 
 Unchanged from standard mode. One of `OK_BATCH:` or `BLOCKED_BATCH:` is always returned. Silence (0 tools used, 0 response text) is never acceptable.
+

@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- add MiniMax as multi-provider per subagent
+- add OpenCode multiplatform support
+
+### Changed
+- add GPT equivalent comments to models.yaml
+- document provider swap cases for GPT and Claude API users
+
+
 ## [0.1.0] - 2026-06-24
 
 ### Added

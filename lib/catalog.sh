@@ -12,8 +12,8 @@ _FORGE_CATALOG_LOADED=1
 # forge_symlink_catalog
 # Emits one line per managed symlink in the format:
 #   <src_relative_to_FORGE_ROOT><TAB><dest_relative_to_target_dir>
-# OpenCode targets are NOT covered here: open-code/ deploys via
-# install-opencode.sh (the former "opencode" arm was dead code).
+# OpenCode targets are NOT covered here: the isolated overlay under
+# ~/.config/opencode-forge is deployed via open-code/install-opencode.sh.
 forge_symlink_catalog() {
   # Derive FORGE_ROOT from the location of this script if not already set
   local _root="${FORGE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
