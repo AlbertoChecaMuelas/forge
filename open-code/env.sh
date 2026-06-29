@@ -14,7 +14,7 @@ load_forge_token() {
     return 0
   fi
 
-  file_value=$(grep "^${key}=" "$token_file" 2>/dev/null | tail -n 1 | sed "s/^${key}=//")
+  file_value=$(grep "^${key}=" "$token_file" 2>/dev/null | tail -n 1 | sed "s/^${key}=//") || true
   if [ -z "$file_value" ]; then
     return 0
   fi

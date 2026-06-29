@@ -151,6 +151,116 @@ test_both_target_opencode_failure_leaves_claude_installed() {
   rm -rf "$tmp_home"
 }
 
+test_api_key_setup_skip() {
+  echo ""
+  echo "--- test_api_key_setup_skip"
+
+  local tmp_home
+  tmp_home="$(mktemp -d)"
+  TMP_TEST_HOME="$tmp_home"
+  trap 'rm -rf "${TMP_TEST_HOME:-}"' EXIT
+
+  printf 'N\n' | HOME="$tmp_home" OPENAI_API_KEY=test-openai-key bash "$INSTALLER" >/dev/null 2>&1
+
+  if [ ! -e "$tmp_home/.opencode-tokens" ]; then
+    pass "skip key setup: ~/.opencode-tokens not created"
+  else
+    fail "skip key setup: ~/.opencode-tokens was unexpectedly created"
+  fi
+
+  TMP_TEST_HOME=""
+  trap - EXIT
+  rm -rf "$tmp_home"
+}
+
+test_api_key_setup_add_one_key() {
+  echo ""
+  echo "--- test_api_key_setup_add_one_key"
+
+  local tmp_home
+  tmp_home="$(mktemp -d)"
+  TMP_TEST_HOME="$tmp_home"
+  trap 'rm -rf "${TMP_TEST_HOME:-}"' EXIT
+
+  local exit_code=0
+  printf 's\n1\ntest-key-value\nN\n' | HOME="$tmp_home" OPENAI_API_KEY=test-openai-key bash "$INSTALLER" >/dev/null 2>&1 || exit_code=$?
+
+  if [ "$exit_code" -eq 0 ]; then
+    pass "add one key: installer exits 0"
+  else
+    fail "add one key: installer exited $exit_code (expected 0)"
+  fi
+
+  local tokens_file="$tmp_home/.opencode-tokens"
+
+  if [ -f "$tokens_file" ]; then
+    pass "add one key: ~/.opencode-tokens created"
+  else
+    fail "add one key: ~/.opencode-tokens not created"
+    TMP_TEST_HOME=""
+    trap - EXIT
+    rm -rf "$tmp_home"
+    return
+  fi
+
+  if grep -q '^MINIMAX_API_KEY=test-key-value$' "$tokens_file"; then
+    pass "add one key: MINIMAX_API_KEY=test-key-value written correctly"
+  else
+    fail "add one key: MINIMAX_API_KEY=test-key-value not found in ~/.opencode-tokens"
+  fi
+
+  local perms
+  perms="$(stat -c '%a' "$tokens_file")"
+  if [ "$perms" = "600" ]; then
+    pass "add one key: ~/.opencode-tokens has permissions 600"
+  else
+    fail "add one key: ~/.opencode-tokens has wrong permissions ($perms, expected 600)"
+  fi
+
+  TMP_TEST_HOME=""
+  trap - EXIT
+  rm -rf "$tmp_home"
+}
+
+test_api_key_setup_replace_existing_key() {
+  echo ""
+  echo "--- test_api_key_setup_replace_existing_key"
+
+  local tmp_home
+  tmp_home="$(mktemp -d)"
+  TMP_TEST_HOME="$tmp_home"
+  trap 'rm -rf "${TMP_TEST_HOME:-}"' EXIT
+
+  local tokens_file="$tmp_home/.opencode-tokens"
+  install -m 600 /dev/null "$tokens_file"
+  printf 'MINIMAX_API_KEY=old-value\n' >> "$tokens_file"
+
+  local exit_code=0
+  printf 's\n1\nnew-value\nN\n' | HOME="$tmp_home" OPENAI_API_KEY=test-openai-key bash "$INSTALLER" >/dev/null 2>&1 || exit_code=$?
+
+  if [ "$exit_code" -eq 0 ]; then
+    pass "replace key: installer exits 0"
+  else
+    fail "replace key: installer exited $exit_code (expected 0)"
+  fi
+
+  if grep -q '^MINIMAX_API_KEY=new-value$' "$tokens_file"; then
+    pass "replace key: MINIMAX_API_KEY updated to new-value"
+  else
+    fail "replace key: MINIMAX_API_KEY not updated in ~/.opencode-tokens"
+  fi
+
+  if ! grep -q '^MINIMAX_API_KEY=old-value$' "$tokens_file"; then
+    pass "replace key: old value removed"
+  else
+    fail "replace key: old value still present in ~/.opencode-tokens"
+  fi
+
+  TMP_TEST_HOME=""
+  trap - EXIT
+  rm -rf "$tmp_home"
+}
+
 echo "================================"
 echo " opencode_install_integration.sh"
 echo "================================"
@@ -158,6 +268,9 @@ echo "================================"
 test_isolated_install_and_launcher
 test_failed_install_does_not_persist_state
 test_both_target_opencode_failure_leaves_claude_installed
+test_api_key_setup_skip
+test_api_key_setup_add_one_key
+test_api_key_setup_replace_existing_key
 
 echo ""
 echo "================================"
