@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: "Bump type (auto = derived from commits; patch/minor = explicit)"
+        description: "Bump type (auto = derived from commits; patch/minor/major = explicit)"
         required: true
         default: auto
         type: choice
@@ -12,6 +12,7 @@ on:
           - auto
           - patch
           - minor
+          - major
   schedule:
     # Weekly safety net: Mondays at 09:00 UTC.
     # No-op if [Unreleased] is empty.

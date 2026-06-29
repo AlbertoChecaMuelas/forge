@@ -12,12 +12,18 @@
 #   - schedule (cron weekly)             — same workflow
 #
 # Inputs (env, all optional):
-#   BUMP_TYPE   auto | patch | minor   (default: auto)
+#   BUMP_TYPE   auto | patch | minor | major   (default: auto)
 #               auto  = derived from conventional-commit prefixes of
-#                       commits in master..HEAD (uses bump-version.sh logic)
+#                       commits in master..HEAD (uses bump-version.sh logic;
+#                       major breaking changes are NOT auto-detected by design)
 #               patch = bump only the patch component (e.g. 0.3.1 -> 0.3.2)
 #               minor = bump the minor component, reset patch to 0
 #                       (e.g. 0.3.1 -> 0.4.0)
+#               major = bump the major component, reset minor and patch to 0
+#                       (e.g. 0.3.1 -> 1.0.0)
+#                       Explicit only — major should be a deliberate decision
+#                       (public API stable release, breaking change announcement),
+#                       never auto-derived from commit history.
 #
 # Required environment when running in CI (provided by GitHub Actions):
 #   - GITHUB_TOKEN      : used for `gh pr create` / `gh pr merge --auto`
@@ -94,8 +100,12 @@ case "${BUMP_TYPE}" in
   minor)
     NEXT="${CUR_MAJOR}.$((CUR_MINOR + 1)).0"
     ;;
+  major)
+    NEXT="$((CUR_MAJOR + 1)).0.0"
+    echo "prep-release: MAJOR bump ${CURRENT} -> ${NEXT} (explicit only; review before merge)"
+    ;;
   *)
-    echo "prep-release: invalid BUMP_TYPE: ${BUMP_TYPE} (expected: auto|patch|minor)" >&2
+    echo "prep-release: invalid BUMP_TYPE: ${BUMP_TYPE} (expected: auto|patch|minor|major)" >&2
     exit 2
     ;;
 esac
