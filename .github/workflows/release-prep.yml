@@ -1,0 +1,35 @@
+name: Release Prep
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Bump type (auto = derived from commits; patch/minor = explicit)"
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+  schedule:
+    # Weekly safety net: Mondays at 09:00 UTC.
+    # No-op if [Unreleased] is empty.
+    - cron: "0 9 * * 1"
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prep release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUMP_TYPE: ${{ inputs.bump }}
+        run: bash tools/release/prep-release.sh
