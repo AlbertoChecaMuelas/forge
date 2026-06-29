@@ -110,8 +110,6 @@ Instalar o actualizar OpenCode en el entorno local:
 bash open-code/install-opencode.sh
 ```
 
-> El instalador incluye un asistente interactivo que solicita las claves API y las escribe automáticamente en `~/.opencode-tokens`.
-
 ---
 
 ## Cambiar modelo o proveedor por subagente en OpenCode
@@ -137,13 +135,11 @@ Declara el proveedor una sola vez (endpoint base + `"apiKey": "{env:<VARIABLE>}"
 | senior, tech, tester, orchestrator | `minimax/MiniMax-M3[1m]`          |
 | applier                           | `minimax/MiniMax-M2.5-highspeed`   |
 
-> **Configuración por defecto — MiniMax:** la asignación inicial usa MiniMax como proveedor. Si no modificas `shared/models.yaml`, lo único que necesitas es definir `MINIMAX_API_KEY` en `~/.opencode-tokens`. El instalador puede escribir esta clave automáticamente; también puedes añadirla a mano (formato `MINIMAX_API_KEY=<tu-clave>`).
-
 **Caso A — Ya tienes una clave de OpenAI (GPT) o de Anthropic (Claude API)**
 
 Los proveedores `openai` y `anthropic` ya están declarados en `open-code/opencode.jsonc` y sus cargadores ya están en `open-code/env.sh`. Para estos dos casos NO tocas el Mando 2 ni `env.sh`: solo (1) eliges el modelo en `shared/models.yaml`, (2) dejas la clave en `~/.opencode-tokens` y (3) regeneras.
 
-1. Configura tu clave en `~/.opencode-tokens` (una por línea, formato `CLAVE=valor`). El instalador puede escribir este fichero automáticamente; la edición manual es un método alternativo:
+1. Pon tu clave en `~/.opencode-tokens` (una por línea, formato `CLAVE=valor`):
 
    ```
    OPENAI_API_KEY=sk-...           # para GPT
