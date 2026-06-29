@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- prep-release workflow for automated version bumping
+
 ## [0.3.1] - 2026-06-29
 
 ### Fixed
