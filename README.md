@@ -378,7 +378,7 @@ The `SessionStart` hook only fires for the main session, not for subagents. Extr
 
 Forge supports [OpenCode](https://opencode.ai) from the same repository. OpenCode is not a separate fork: it is an overlay generated into `open-code/` and installed through `--target=opencode` or `--target=both`.
 
-`open-code/agents/` is a **generated artefact**: never edit those files by hand. Edit the shared sources (`shared/agents/*.body.md`, `shared/scripts/opencode-frontmatter/*.yaml`, `open-code/agents-src/`) and run `bash tools/opencode/generate-agents.sh`. CI fails on drift (`tests/opencode_generation_unit.sh`).
+`open-code/agents/` is a **generated artefact**: never edit those files by hand. Edit the shared sources (`shared/agents/*.body.md`, `shared/scripts/opencode-frontmatter/*.yaml`, `open-code/agents-src/`) and run `bash shared/scripts/generate-agents.sh`. CI fails on drift (`tests/opencode_generation_unit.sh`).
 
 ### Installation
 
