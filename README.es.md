@@ -447,33 +447,77 @@ forge/
 
 ## Proceso de release
 
-Este repo usa una única fuente de verdad para las versiones: `FORGE_VERSION` en `install.sh`. El manifiesto del plugin `.claude-plugin/plugin.json` se mantiene en lockstep mediante `tools/release/bump-version.sh` y se verifica en CI — el commit de release debe llevar siempre juntos `install.sh`, `CHANGELOG.md` **y** `.claude-plugin/plugin.json` (la skill `/create-pr` stagea los tres).
+Este repo usa una única fuente de verdad para las versiones: `FORGE_VERSION` en `install.sh`. El manifiesto del plugin `.claude-plugin/plugin.json` se mantiene en lockstep mediante `tools/release/bump-version.sh` y se verifica en CI — el commit de release debe llevar siempre juntos `install.sh`, `CHANGELOG.md` **y** `.claude-plugin/plugin.json`.
 
-El flujo de release es:
+El flujo de release es **totalmente automático** y corre en dos jobs de CI:
 
-1. Abre una rama feature y sube `FORGE_VERSION` al nuevo `X.Y.Z` (vía `/create-pr` o `tools/release/bump-version.sh`, que también sincroniza `.claude-plugin/plugin.json`). Incluye el bump en un commit que también refresque la sección `## [Unreleased]` de `CHANGELOG.md` (usa la skill `/update-changelog` para redactar las notas de release).
-2. Mergea la rama en `master` mediante pull request en GitHub.
-3. En cada push a `master`, el job de GitHub Actions `auto-tag` ejecuta `tools/release/auto-tag.sh`. El script:
-   - Parsea `FORGE_VERSION` de `install.sh`.
-   - Comprueba si `vX.Y.Z` ya existe en local o en `origin`. Si existe, el job es un no-op.
-   - Si no, crea un tag anotado `vX.Y.Z` sobre el commit de merge con mensaje `Release vX.Y.Z` y lo pushea a `origin`.
-4. El tag pusheado es el marcador canónico de release. Los consumidores downstream se fijan a tags, nunca a SHAs de `master`.
+### Paso 1 — `release-prep` (prepara el PR de bump)
 
-### Prerrequisitos
+Se dispara por uno de dos eventos:
 
-El job de CI usa el `GITHUB_TOKEN` integrado (inyectado automáticamente por GitHub Actions en cada pipeline) para autenticar el push. No se requiere ningún token creado a mano. Eso sí, el acceso de push de Git para job tokens debe estar habilitado en los ajustes del repositorio.
+- **`workflow_dispatch`** (botón manual en la pestaña Actions) — elige un valor de `bump` en el dropdown y ejecuta.
+- **`schedule`** — red de seguridad semanal, lunes a las 09:00 UTC. No-op si no hay nada que releasear.
+
+Ejecuta `tools/release/prep-release.sh`, que:
+
+1. Calcula la siguiente versión (ver [Tipos de bump](#tipos-de-bump) abajo).
+2. **No-op idempotente** si se cumple alguna de estas:
+   - El tag `v<NEXT>` ya existe en local o en `origin`.
+   - La rama `release/v<NEXT>-prep` ya existe en `origin`.
+   - La sección `## [Unreleased]` en `CHANGELOG.md` está vacía.
+3. Si no, crea la rama `release/v<NEXT>-prep` desde `master`, edita `install.sh` (`FORGE_VERSION`), `.claude-plugin/plugin.json` (version) y `CHANGELOG.md` (cierra `[Unreleased]` como `[<NEXT>] - <DATE>`, abre un nuevo `[Unreleased]` vacío).
+4. Commitea, pushea la rama, abre un PR contra `master` titulado `chore(release): v<NEXT>` y activa **auto-merge (squash)**.
+
+### Paso 2 — `auto-tag` (crea el tag)
+
+Se dispara en cada push a `master` (tras el auto-merge del PR de prep, o en el merge de la feature inicial).
+
+Ejecuta `tools/release/auto-tag.sh`, que:
+
+1. Parsea `FORGE_VERSION` de `install.sh`.
+2. Comprueba si `vX.Y.Z` ya existe en local o en `origin`. Si existe, el job es un no-op (idempotente).
+3. Si no, crea un tag anotado `vX.Y.Z` sobre el commit de merge con mensaje `Release vX.Y.Z` y lo pushea a `origin`.
+4. Si `## [Unreleased]` no está vacío, crea la rama `release/vX.Y.Z-changelog`, commitea el cierre del CHANGELOG, abre un PR con auto-merge. **Esta rama normalmente no se usa** porque `prep-release.sh` ya cerró `[Unreleased]` en el Paso 1 — existe solo como red de seguridad.
+
+El tag pusheado es el marcador canónico de release. Los consumidores downstream se fijan a tags, nunca a SHAs de `master`.
+
+### Tipos de bump
+
+El input `bump` para `release-prep` (y la env var `BUMP_TYPE` para el script) acepta:
+
+| Valor | Siguiente versión calculada | Cuándo usarlo |
+|-------|----------------------------|---------------|
+| `auto` *(por defecto)* | `patch` si hay commits `fix:` / `refactor:` / `perf:` desde el último tag, `minor` si hay `feat:`, no-op en otro caso | Releases rutinarios — elige este salvo que tengas un motivo |
+| `patch` | `X.Y.(Z+1)` | Bump de patch explícito sin importar el historial de commits |
+| `minor` | `X.(Y+1).0` | Bump de minor explícito sin importar el historial de commits |
+| `major` | `(X+1).0.0` | **Solo explícito.** Release estable de API pública, anuncio de breaking change. Nunca se autodetecta. |
+
+**Por qué `auto` nunca elige `major`:** bumpear la versión major es un compromiso deliberado y visible para el usuario (pone minor y patch a cero y señala breaking change según semver). El modo `auto` está diseñado para ser seguro por defecto — si quieres un bump major, debes elegirlo explícitamente en el dropdown.
 
 ### Garantías de idempotencia
 
-- Ejecutar `auto-tag.sh` contra un `FORGE_VERSION` cuyo tag ya existe es un no-op seguro.
-- El script nunca mueve un tag existente.
-- El script nunca crea tags ligeros; cada tag es anotado con el mensaje `Release vX.Y.Z`.
+- `prep-release.sh` sale con exit 0 sin side effects cuando el tag, la rama o la sección `[Unreleased]` ya indican que hay un release en curso o hecho.
+- `auto-tag.sh` es un no-op cuando el tag ya existe.
+- Ninguno de los dos scripts mueve un tag existente.
+- `auto-tag.sh` nunca crea tags ligeros; cada tag es anotado con `Release vX.Y.Z`.
+
+### Prerrequisitos
+
+- Los jobs `release-prep` y `auto-tag` necesitan permisos `contents: write` y `pull-requests: write` sobre el `GITHUB_TOKEN`.
+- En **Settings → Actions → General → Workflow permissions** del repositorio, deben estar activos tanto **"Read and write permissions"** como **"Allow GitHub Actions to create and approve pull requests"** (este último es necesario para que `gh pr create` funcione).
+- Sin esto, los workflows fallarán con `GitHub Actions is not permitted to create or approve pull requests`.
+
+### Caveat conocido: primer PR del bot
+
+La primera vez que el bot abre un PR vía `prep-release.sh`, GitHub puede marcar el run de CI resultante como **"Action required"** y esperar a que un maintainer lo apruebe. Es un guardarraíl de seguridad a nivel de plataforma contra triggers indirectos de workflows, no un bug. Workaround para ese único run: pushear un commit trivial (p. ej. commit vacío) a la rama del PR para re-trigger el CI sin el gate de aprobación. PRs posteriores del bot corren sin intervención.
 
 ### Dry-run local
 
 | Comando | Qué hace |
 |---------|----------|
 | `bash tools/release/auto-tag.sh --dry-run` | Parsea `FORGE_VERSION`, decide si el tag se crearía, y sale sin contactar con `origin`. |
+| `BUMP_TYPE=auto bash tools/release/prep-release.sh` | Ejecuta el flujo completo de prep contra el checkout local (pusheará a `origin` si no salta la idempotencia). |
+| `BUMP_TYPE=major bash tools/release/prep-release.sh` | Igual, con bump major explícito. |
 
 ## Contribuir
 
