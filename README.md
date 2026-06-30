@@ -444,33 +444,77 @@ forge/
 
 ## Release process
 
-This repo uses a single source of truth for versions: `FORGE_VERSION` in `install.sh`. The plugin manifest `.claude-plugin/plugin.json` is kept in lockstep by `tools/release/bump-version.sh` and verified in CI — the release commit must always carry `install.sh`, `CHANGELOG.md` **and** `.claude-plugin/plugin.json` together (the `/create-mr` skill stages all three).
+This repo uses a single source of truth for versions: `FORGE_VERSION` in `install.sh`. The plugin manifest `.claude-plugin/plugin.json` is kept in lockstep by `tools/release/bump-version.sh` and verified in CI — the release commit must always carry `install.sh`, `CHANGELOG.md` **and** `.claude-plugin/plugin.json` together.
 
-The release flow is:
+The release flow is **fully automated** and runs in two CI jobs:
 
-1. Open a feature branch and bump `FORGE_VERSION` to the new `X.Y.Z` (via `/create-mr` or `tools/release/bump-version.sh`, which also syncs `.claude-plugin/plugin.json`). Include the bump in a commit that also refreshes the `## [Unreleased]` section of `CHANGELOG.md` (use the `/update-changelog` skill to draft the release notes).
-2. Merge the branch into `master` through a pull request.
-3. On every push to `master`, the CI job `auto-tag` runs `tools/release/auto-tag.sh`. The script:
-   - Parses `FORGE_VERSION` from `install.sh`.
-   - Checks whether `vX.Y.Z` already exists locally or on `origin`. If it does, the job is a no-op.
-   - Otherwise, creates an annotated tag `vX.Y.Z` on the merge commit with message `Release vX.Y.Z` and pushes it to `origin`.
-4. The pushed tag is the canonical release marker. Downstream consumers pin to tags, never to `master` SHAs.
+### Step 1 — `release-prep` (prepares the bump PR)
 
-### Prerequisites
+Triggered by one of two events:
 
-The CI job uses a deploy token for push authentication. Git push access must be enabled in repository settings.
+- **`workflow_dispatch`** (manual button in the Actions tab) — pick a `bump` value from the dropdown and run.
+- **`schedule`** — weekly safety net, Mondays at 09:00 UTC. No-op if there is nothing to release.
+
+Runs `tools/release/prep-release.sh`, which:
+
+1. Computes the next version (see [Bump types](#bump-types) below).
+2. **Idempotent no-op** if any of these is true:
+   - Tag `v<NEXT>` already exists locally or on `origin`.
+   - Branch `release/v<NEXT>-prep` already exists on `origin`.
+   - `## [Unreleased]` in `CHANGELOG.md` is empty.
+3. Otherwise, creates branch `release/v<NEXT>-prep` from `master`, edits `install.sh` (`FORGE_VERSION`), `.claude-plugin/plugin.json` (version), and `CHANGELOG.md` (closes `[Unreleased]` as `[<NEXT>] - <DATE>`, opens a new empty `[Unreleased]`).
+4. Commits, pushes the branch, opens a PR against `master` titled `chore(release): v<NEXT>`, and enables **auto-merge (squash)**.
+
+### Step 2 — `auto-tag` (creates the tag)
+
+Triggered by every push to `master` (after the prep PR auto-merges, or on the initial feature merge).
+
+Runs `tools/release/auto-tag.sh`, which:
+
+1. Parses `FORGE_VERSION` from `install.sh`.
+2. Checks whether `vX.Y.Z` already exists locally or on `origin`. If it does, the job is a no-op (idempotent).
+3. Otherwise, creates an annotated tag `vX.Y.Z` on the merge commit with message `Release vX.Y.Z` and pushes it to `origin`.
+4. If `## [Unreleased]` is non-empty, creates branch `release/vX.Y.Z-changelog`, commits the CHANGELOG closure, opens a PR with auto-merge. **This branch is normally unused** because `prep-release.sh` already closed `[Unreleased]` in Step 1 — it exists only as a safety net.
+
+The pushed tag is the canonical release marker. Downstream consumers pin to tags, never to `master` SHAs.
+
+### Bump types
+
+The `bump` input to `release-prep` (and the `BUMP_TYPE` env var for the script) accepts:
+
+| Value | Computed next version | When to use |
+|-------|----------------------|-------------|
+| `auto` *(default)* | `patch` if any `fix:` / `refactor:` / `perf:` commit since the last tag, `minor` if any `feat:` commit, no-op otherwise | Routine releases — pick this unless you have a reason not to |
+| `patch` | `X.Y.(Z+1)` | Explicit patch bump regardless of commit history |
+| `minor` | `X.(Y+1).0` | Explicit minor bump regardless of commit history |
+| `major` | `(X+1).0.0` | **Explicit only.** Public API stable release, breaking change announcement. Never auto-derived. |
+
+**Why `auto` never picks `major`:** bumping the major version is a deliberate, user-visible commitment (it resets the minor and patch to zero and signals a breaking change under semver). The `auto` mode is designed to be safe by default — if you want a major bump, you must choose it explicitly from the dropdown.
 
 ### Idempotency guarantees
 
-- Running `auto-tag.sh` against a `FORGE_VERSION` whose tag already exists is a safe no-op.
-- The script never moves an existing tag.
-- The script never creates lightweight tags; every tag is annotated with the message `Release vX.Y.Z`.
+- `prep-release.sh` exits 0 without side effects when the tag, branch, or `[Unreleased]` section already indicates a release is in progress or done.
+- `auto-tag.sh` is a no-op when the tag already exists.
+- Neither script ever moves an existing tag.
+- `auto-tag.sh` never creates lightweight tags; every tag is annotated with `Release vX.Y.Z`.
+
+### Prerequisites
+
+- The `release-prep` and `auto-tag` jobs both need `contents: write` and `pull-requests: write` permissions on the `GITHUB_TOKEN`.
+- In **repository Settings → Actions → General → Workflow permissions**, both **"Read and write permissions"** and **"Allow GitHub Actions to create and approve pull requests"** must be enabled (the latter is required for `gh pr create` to succeed).
+- Without these, the workflows will fail with `GitHub Actions is not permitted to create or approve pull requests`.
+
+### Known caveat: first PR from the bot
+
+The first time the bot opens a PR via `prep-release.sh`, GitHub may mark the resulting CI run as **"Action required"** and wait for a maintainer to approve it. This is a platform-level security guardrail against indirect workflow triggers, not a bug. Workaround for that single run: push a trivial commit (e.g. empty commit) to the PR branch to re-trigger CI without the approval gate. Subsequent bot PRs run without intervention.
 
 ### Local dry-run
 
 | Command | What it does |
 |---------|--------------|
 | `bash tools/release/auto-tag.sh --dry-run` | Parses `FORGE_VERSION`, decides whether the tag would be created, and exits without contacting `origin`. |
+| `BUMP_TYPE=auto bash tools/release/prep-release.sh` | Runs the full prep flow against the local checkout (will push to `origin` if no idempotency check fires). |
+| `BUMP_TYPE=major bash tools/release/prep-release.sh` | Same, with explicit major bump. |
 
 ## Contributing
 
