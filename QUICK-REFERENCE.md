@@ -67,9 +67,9 @@ Componentes válidos para `--only=` (cualquier combinación separada por comas):
 | @agente       | Modelo         | Cuando invocarlo                                      |
 |---------------|----------------|-------------------------------------------------------|
 | @senior       | Opus 4.7       | Diseno, opciones, planificacion, cambio multi-fichero |
-| @tech         | Sonnet 4.6     | Implementar algo ya decidido o con plan en mano       |
+| @tech         | Sonnet 5       | Implementar algo ya decidido o con plan en mano       |
 | @applier      | Haiku 4.5      | Paso mecanico 100% especificado (diff, commit, gh op) |
-| @tester       | Sonnet 4.6     | Analizar gaps de cobertura, plan de testing           |
+| @tester       | Sonnet 5       | Analizar gaps de cobertura, plan de testing           |
 
 > El statusline muestra `[⬡ orch]` cuando el hook `session-start` corrio en la sesion actual. Si reabres la misma sesion al dia siguiente el badge sigue activo; si abres una sesion nueva, reaparece en cuanto se dispara el primer evento (`startup`, `clear`, `compact` o `resume`). Si nunca aparece, comprueba con `bash install.sh status`.
 
