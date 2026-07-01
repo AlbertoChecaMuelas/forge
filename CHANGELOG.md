@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- delegar update-changelog directamente al script determinista
+
+
+### Fixed
 - release: `create-pr` no longer invokes the `/update-changelog` skill for its changelog step; it now delegates directly to the deterministic `tools/release/update-changelog.sh` script, avoiding a skill-runner `$ARGUMENTS` expansion failure that could leave the base branch empty and abort the changelog refresh
 
 ## [0.3.1] - 2026-06-29
