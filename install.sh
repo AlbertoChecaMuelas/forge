@@ -64,7 +64,7 @@ _forge_summarize_rtk() {
   if [ -z "$pinned" ] && [ -f "${FORGE_STATE_FILE:-}" ]; then
     pinned=$(jq -r '.rtk.pinned_version // empty' "$FORGE_STATE_FILE" 2>/dev/null || true)
   fi
-  [ -z "$pinned" ] && pinned="${RTK_PINNED_VERSION:-0.42.4}"
+  [ -z "$pinned" ] && pinned="${RTK_PINNED_VERSION:-0.43.0}"
 
   # Live probe (state file is stale after the rtk-hook component migration: cmd_install no
   # longer calls forge_rtk_decide, so detected_version is always null in the state file).
@@ -377,7 +377,7 @@ forge_write_opencode_only_state() {
       symlinks: [],
       targets_manifest: [],
       settings: {managed_paths: {}, overlay_backup: {}, settings_json_backup: {}},
-      rtk: {pinned_version: "0.42.4", detected_version: null, installed_by_us: false, install_failed: false, version_mismatch: false}
+      rtk: {pinned_version: "0.43.0", detected_version: null, installed_by_us: false, install_failed: false, version_mismatch: false}
     }' > "$base_file"
   else
     base_installed_at="$(jq -r '.installed_at // empty' "$base_file" 2>/dev/null || true)"
@@ -404,7 +404,7 @@ forge_write_opencode_only_state() {
     }]) |
     .symlinks = ([.targets_manifest[].symlinks[]?] | unique) |
     .settings = (.settings // {managed_paths: {}, overlay_backup: {}, settings_json_backup: {}}) |
-    .rtk = (.rtk // {pinned_version: "0.42.4", detected_version: null, installed_by_us: false, install_failed: false, version_mismatch: false})
+    .rtk = (.rtk // {pinned_version: "0.43.0", detected_version: null, installed_by_us: false, install_failed: false, version_mismatch: false})
     ' "$base_file" > "$tmp_state"
 
   jq empty "$tmp_state" || {
@@ -2024,7 +2024,7 @@ cmd_doctor() {
         local rtk_ver
         rtk_ver="$(printf '%s' "$rtk_v_out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         local pinned
-        pinned="$(cat "$FORGE_ROOT/rtk/VERSION" 2>/dev/null || echo "0.42.4")"
+        pinned="$(cat "$FORGE_ROOT/rtk/VERSION" 2>/dev/null || echo "0.43.0")"
         if [ "$rtk_ver" = "$pinned" ]; then
           _doc_pass "RTK $rtk_ver (== pin $pinned)"
         else
@@ -2722,7 +2722,7 @@ cmd_install() {
 
   # Build RTK state section
   local pinned_version
-  pinned_version="$(cat "$FORGE_ROOT/rtk/VERSION" 2>/dev/null || echo "0.42.4")"
+  pinned_version="$(cat "$FORGE_ROOT/rtk/VERSION" 2>/dev/null || echo "0.43.0")"
 
   local rtk_installed_by_us_json="false"
   [ "${_RTK_INSTALLED_BY_US:-}" = "true" ] && rtk_installed_by_us_json="true"

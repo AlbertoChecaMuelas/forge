@@ -9,6 +9,6 @@
 - User asks to create a PR ("crea la MR", "abre el merge request") → invoke `/create-pr`: it drives the full release flow (version bump, changelog, PR description, `create-pr.sh`).
 - Never push (deny in settings); the user pushes manually.
 
-RTK pinned v0.42.4 by forge (`rtk gain` shows savings).
+RTK pinned v0.43.0 by forge (`rtk gain` shows savings).
 
 Always respond to the user in Spanish. Internal reasoning and inter-agent protocol tokens are in English.

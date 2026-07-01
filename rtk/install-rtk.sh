@@ -27,7 +27,7 @@ if [ "${_RTK_INSTALLED_BY_US:-}" = "true" ]; then
 fi
 
 # Persist RTK state into state file if it exists (or create a minimal one)
-pinned="$(cat "$FORGE_ROOT/rtk/VERSION" 2>/dev/null || echo "0.42.4")"
+pinned="$(cat "$FORGE_ROOT/rtk/VERSION" 2>/dev/null || echo "0.43.0")"
 
 _write_rtk_state() {
   local installed_by_us="${_RTK_INSTALLED_BY_US:-false}"

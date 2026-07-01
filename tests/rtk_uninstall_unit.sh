@@ -261,7 +261,7 @@ test_tc1_marker_block_removed_preserves_context() {
   mkdir -p "$tmpdir/.forge/bin"
   printf '#!/bin/sh\necho fake-rtk\n' > "$tmpdir/.forge/bin/rtk"
   chmod +x "$tmpdir/.forge/bin/rtk"
-  printf '{"rtk":{"installed_by_us":true,"detected_version":"0.42.4","pinned_version":"0.42.4","install_failed":false,"version_mismatch":false}}' \
+  printf '{"rtk":{"installed_by_us":true,"detected_version":"0.43.0","pinned_version":"0.43.0","install_failed":false,"version_mismatch":false}}' \
     > "$tmpdir/.forge-state.json"
 
   local exit_code=0
@@ -300,7 +300,7 @@ test_tc2_profile_without_marker_untouched() {
   mkdir -p "$tmpdir/.forge/bin"
   printf '#!/bin/sh\necho fake-rtk\n' > "$tmpdir/.forge/bin/rtk"
   chmod +x "$tmpdir/.forge/bin/rtk"
-  printf '{"rtk":{"installed_by_us":true,"detected_version":"0.42.4","pinned_version":"0.42.4","install_failed":false,"version_mismatch":false}}' \
+  printf '{"rtk":{"installed_by_us":true,"detected_version":"0.43.0","pinned_version":"0.43.0","install_failed":false,"version_mismatch":false}}' \
     > "$tmpdir/.forge-state.json"
 
   local exit_code=0
@@ -340,7 +340,7 @@ test_tc3_uninstall_idempotent() {
   mkdir -p "$tmpdir/.forge/bin"
   printf '#!/bin/sh\necho fake-rtk\n' > "$tmpdir/.forge/bin/rtk"
   chmod +x "$tmpdir/.forge/bin/rtk"
-  printf '{"rtk":{"installed_by_us":true,"detected_version":"0.42.4","pinned_version":"0.42.4","install_failed":false,"version_mismatch":false}}' \
+  printf '{"rtk":{"installed_by_us":true,"detected_version":"0.43.0","pinned_version":"0.43.0","install_failed":false,"version_mismatch":false}}' \
     > "$tmpdir/.forge-state.json"
 
   # First run
@@ -358,7 +358,7 @@ test_tc3_uninstall_idempotent() {
   content_after_first="$(cat "$tmpdir/.zshrc")"
 
   # Update state to installed_by_us=true again so the second run also enters the marker loop
-  printf '{"rtk":{"installed_by_us":true,"detected_version":null,"pinned_version":"0.42.4","install_failed":false,"version_mismatch":false}}' \
+  printf '{"rtk":{"installed_by_us":true,"detected_version":null,"pinned_version":"0.43.0","install_failed":false,"version_mismatch":false}}' \
     > "$tmpdir/.forge-state.json"
 
   # Second run
@@ -401,7 +401,7 @@ test_tc4_new_forge_marker_removed() {
   mkdir -p "$tmpdir/.forge/bin"
   printf '#!/bin/sh\necho fake-rtk\n' > "$tmpdir/.forge/bin/rtk"
   chmod +x "$tmpdir/.forge/bin/rtk"
-  printf '{"rtk":{"installed_by_us":true,"detected_version":"0.42.4","pinned_version":"0.42.4","install_failed":false,"version_mismatch":false}}' \
+  printf '{"rtk":{"installed_by_us":true,"detected_version":"0.43.0","pinned_version":"0.43.0","install_failed":false,"version_mismatch":false}}' \
     > "$tmpdir/.forge-state.json"
 
   local exit_code=0
