@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-01
+
 ### Fixed
 - delegar update-changelog directamente al script determinista
 
