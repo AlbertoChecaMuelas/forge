@@ -5,6 +5,7 @@
 set -euo pipefail
 
 FORGE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PINNED_VERSION="$(cat "$FORGE_ROOT/rtk/VERSION")"
 
 FAIL=0
 TESTS_RUN=0
@@ -195,7 +196,7 @@ printf '%s\n' \"\$output\"
 test_case_c_rtk_version_mismatch() {
   local state_file
   state_file="$(_make_tmpfile)"
-  printf '%s\n' '{"rtk":{"install_failed":false,"version_mismatch":true,"detected_version":"0.42.0","pinned_version":"0.42.4"},"targets_manifest":[{"name":"claude","dir":"/tmp","components":["rtk-hook"]}]}' \
+  printf '%s\n' "{\"rtk\":{\"install_failed\":false,\"version_mismatch\":true,\"detected_version\":\"0.42.0\",\"pinned_version\":\"$PINNED_VERSION\"},\"targets_manifest\":[{\"name\":\"claude\",\"dir\":\"/tmp\",\"components\":[\"rtk-hook\"]}]}" \
     > "$state_file"
 
   local extra_code
@@ -211,8 +212,8 @@ printf '%s\n' \"\$output\"
 
   assert_contains "0.42.0" "$output" \
     "Case C: output should contain detected version 0.42.0" || return 1
-  assert_contains "0.42.4" "$output" \
-    "Case C: output should contain pinned version 0.42.4" || return 1
+  assert_contains "$PINNED_VERSION" "$output" \
+    "Case C: output should contain pinned version $PINNED_VERSION" || return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -221,14 +222,14 @@ printf '%s\n' \"\$output\"
 test_case_d_rtk_ok_silent() {
   local state_file
   state_file="$(_make_tmpfile)"
-  printf '%s\n' '{"rtk":{"install_failed":false,"version_mismatch":false,"detected_version":"0.42.4","pinned_version":"0.42.4"},"targets_manifest":[{"name":"claude","dir":"/tmp","components":["rtk-hook"]}]}' \
+  printf '%s\n' "{\"rtk\":{\"install_failed\":false,\"version_mismatch\":false,\"detected_version\":\"$PINNED_VERSION\",\"pinned_version\":\"$PINNED_VERSION\"},\"targets_manifest\":[{\"name\":\"claude\",\"dir\":\"/tmp\",\"components\":[\"rtk-hook\"]}]}" \
     > "$state_file"
 
   local extra_code
   extra_code="
 FORGE_STATE_FILE=\"$state_file\"
 # Inject a mock forge_rtk_detect that returns the pinned version (OK scenario)
-forge_rtk_detect() { echo '0.42.4'; }
+forge_rtk_detect() { echo '$PINNED_VERSION'; }
 output=\"\$(_forge_summarize_rtk 2>/dev/null)\"
 printf '%s' \"\$output\"
 "
@@ -244,14 +245,14 @@ printf '%s' \"\$output\"
 test_case_e_print_summary_todo_ok() {
   local state_file
   state_file="$(_make_tmpfile)"
-  printf '%s\n' '{"rtk":{"install_failed":false,"version_mismatch":false,"detected_version":"0.42.4","pinned_version":"0.42.4"},"targets_manifest":[{"name":"claude","dir":"/tmp","components":["rtk-hook"]}]}' \
+  printf '%s\n' "{\"rtk\":{\"install_failed\":false,\"version_mismatch\":false,\"detected_version\":\"$PINNED_VERSION\",\"pinned_version\":\"$PINNED_VERSION\"},\"targets_manifest\":[{\"name\":\"claude\",\"dir\":\"/tmp\",\"components\":[\"rtk-hook\"]}]}" \
     > "$state_file"
 
   local extra_code
   extra_code="
 FORGE_STATE_FILE=\"$state_file\"
 # Inject a mock forge_rtk_detect that returns the pinned version (OK scenario)
-forge_rtk_detect() { echo '0.42.4'; }
+forge_rtk_detect() { echo '$PINNED_VERSION'; }
 _FORGE_WARN_COUNT=0
 _FORGE_ERR_COUNT=0
 forge_print_summary \"test\" 2>/dev/null
