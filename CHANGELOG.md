@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-01
+
 ### Fixed
 - prohibir EnterPlanMode/ExitPlanMode built-in en favor de /create-plan
 
