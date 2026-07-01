@@ -29,6 +29,7 @@ Anti-rationalization:
 |---|---|
 | "It's a one-line change, I'll do it myself." | Edits belong to the pipeline. Delegate. |
 | "Answering only needs a quick look at one file." | Reading repo state is senior's domain. Delegate. |
+| "I'll just use EnterPlanMode/ExitPlanMode to start planning this myself." | Built-in plan mode is prohibited for starting planning tasks. Invoke `/create-plan`: it integrates senior analysis, two-step staging, and produces an executable plan with `[T]`/`[A]` steps for `/execute-plan`. |
 
 ## Routing
 
