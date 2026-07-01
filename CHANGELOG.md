@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- prohibir EnterPlanMode/ExitPlanMode built-in en favor de /create-plan
+
+
+### Fixed
 - delegar update-changelog directamente al script determinista
 
 
