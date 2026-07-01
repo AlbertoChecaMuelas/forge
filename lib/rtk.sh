@@ -427,7 +427,7 @@ forge_rtk_decide() {
   _RTK_VERSION_MISMATCH=""
 
   local pinned
-  pinned="$(cat "$FORGE_ROOT/rtk/VERSION" 2>/dev/null || echo "0.42.4")"
+  pinned="$(cat "$FORGE_ROOT/rtk/VERSION" 2>/dev/null || echo "0.43.0")"
 
   local detected
   detected="$(forge_rtk_detect)"

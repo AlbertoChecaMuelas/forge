@@ -731,7 +731,7 @@ SCRIPTEOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 15: decide eq — installed version equals pinned 0.42.4 → no-op
+# Test 15: decide eq — installed version equals pinned → no-op
 # ---------------------------------------------------------------------------
 test_decide_eq_noop() {
   local tmpdir
@@ -739,10 +739,9 @@ test_decide_eq_noop() {
   local bin_dir="$tmpdir/bin"
   mkdir -p "$bin_dir"
 
-  cat > "$bin_dir/rtk" <<'SHIM'
-#!/bin/sh
-echo "rtk 0.42.4"
-SHIM
+  local pinned
+  pinned="$(cat "$FORGE_ROOT/rtk/VERSION")"
+  printf '#!/bin/sh\necho "rtk %s"\n' "$pinned" > "$bin_dir/rtk"
   chmod +x "$bin_dir/rtk"
 
   local output

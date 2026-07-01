@@ -84,19 +84,19 @@ run_test() {
 
 # _make_controlled_home <FORGE_ROOT_DIR>
 # Creates a temp dir for HOME, creates <FORGE_ROOT_DIR>/rtk/VERSION containing
-# 0.42.4, and returns the temp HOME path via stdout.
+# 0.43.0, and returns the temp HOME path via stdout.
 _make_controlled_home() {
   local forge_root_dir="$1"
   local tmphome
   tmphome="$(_make_tmpdir)"
   mkdir -p "$forge_root_dir/rtk"
-  printf '0.42.4' > "$forge_root_dir/rtk/VERSION"
+  printf '%s' "$(cat "$FORGE_ROOT/rtk/VERSION")" > "$forge_root_dir/rtk/VERSION"
   echo "$tmphome"
 }
 
 # _make_fake_tarball <DIR>
 # Creates a minimal .tar.gz in DIR containing a single executable `rtk` script
-# that prints "rtk 0.42.4". Computes the real SHA256 and writes checksums.txt.
+# that prints "rtk 0.43.0". Computes the real SHA256 and writes checksums.txt.
 # Sets globals: FAKE_ASSET_PATH, FAKE_CHECKSUMS_PATH.
 FAKE_ASSET_PATH=""
 FAKE_CHECKSUMS_PATH=""
@@ -106,11 +106,10 @@ _make_fake_tarball() {
   build_dir="$(mktemp -d)"
   TMPDIR_LIST="$TMPDIR_LIST $build_dir"
 
-  # Create a minimal rtk binary stub
-  cat > "$build_dir/rtk" <<'STUB'
-#!/bin/sh
-echo "rtk 0.42.4"
-STUB
+  # Create a minimal rtk binary stub that echoes the real pinned version
+  local pinned_version
+  pinned_version="$(cat "$FORGE_ROOT/rtk/VERSION")"
+  printf '#!/bin/sh\necho "rtk %s"\n' "$pinned_version" > "$build_dir/rtk"
   chmod +x "$build_dir/rtk"
 
   # Pack it into a tarball
@@ -358,10 +357,9 @@ test_tarball_idempotent_already_pinned() {
 
   # Pre-create the rtk binary at the pinned version
   mkdir -p "$tmphome/.forge/bin"
-  cat > "$tmphome/.forge/bin/rtk" <<'RTK_STUB'
-#!/bin/sh
-echo "rtk 0.42.4"
-RTK_STUB
+  local pinned_version
+  pinned_version="$(cat "$FORGE_ROOT/rtk/VERSION")"
+  printf '#!/bin/sh\necho "rtk %s"\n' "$pinned_version" > "$tmphome/.forge/bin/rtk"
   chmod +x "$tmphome/.forge/bin/rtk"
 
   # Sentinel file to detect if curl is called
