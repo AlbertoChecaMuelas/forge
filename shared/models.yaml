@@ -8,8 +8,8 @@ tech:
   opencode: minimax/MiniMax-M3[1m]
 senior:
   claude: opus
-  # GPT equiv: openai/gpt-5.5
-  opencode: minimax/MiniMax-M3[1m]
+  # GPT equiv: openai/gpt-5.6-sol
+  opencode: openai/gpt-5.6-sol
 tester:
   claude: sonnet
   # GPT equiv: openai/gpt-5.4
