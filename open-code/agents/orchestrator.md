@@ -4,7 +4,10 @@ description: "Primary Forge orchestrator for OpenCode: owns routing, guardrails,
 model: minimax/MiniMax-M3[1m]
 mode: primary
 permission:
-  bash: ask
+  bash:
+    "*": allow
+    "git push*": ask
+    "rm -rf*": ask
   edit: deny
   glob: allow
   grep: allow
