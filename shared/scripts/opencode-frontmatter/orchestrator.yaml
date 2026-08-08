@@ -2,7 +2,10 @@ name: orchestrator
 description: "Primary Forge orchestrator for OpenCode: owns routing, guardrails, and user-facing coordination. Delegates implementation work to the pipeline subagents."
 mode: primary
 permission:
-  bash: ask
+  bash:
+    "*": allow
+    "git push*": ask
+    "rm -rf*": ask
   edit: deny
   glob: allow
   grep: allow
