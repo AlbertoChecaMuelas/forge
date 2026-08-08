@@ -130,10 +130,10 @@ Declara el proveedor una sola vez (endpoint base + `"apiKey": "{env:<VARIABLE>}"
 
 **Asignación actual (ejemplo)**
 
-| Rol                               | Modelo asignado                    |
-|-----------------------------------|------------------------------------|
-| senior, tech, tester, orchestrator | `minimax/MiniMax-M3[1m]`          |
-| applier                           | `minimax/MiniMax-M2.5-highspeed`   |
+| Rol                               | Modelo asignado                          |
+|-----------------------------------|-------------------------------------------|
+| senior, tech, tester, orchestrator | `minimax-coding-plan/MiniMax-M3`          |
+| applier                           | `minimax-coding-plan/MiniMax-M2.5-highspeed` |
 
 **Caso A — Ya tienes una clave de OpenAI (GPT) o de Anthropic (Claude API)**
 
@@ -160,7 +160,7 @@ Los proveedores `openai` y `anthropic` ya están declarados en `open-code/openco
 
 **Caso B — Quieres añadir un proveedor nuevo compatible con OpenAI**
 
-Solo en este caso declaras un bloque nuevo en `open-code/opencode.jsonc` (como `minimax`): `"npm": "@ai-sdk/openai-compatible"`, `baseURL`, `apiKey` y la lista explícita de `models`. Añade además el `load_forge_token <VARIABLE>` correspondiente en `open-code/env.sh` y luego regenera con el comando del Caso A.
+Solo en este caso declaras un bloque nuevo en `open-code/opencode.jsonc` (como `ollama`): `baseURL` y, si el proveedor lo requiere, `apiKey` y la lista explícita de `models`. Añade además el `load_forge_token <VARIABLE>` correspondiente en `open-code/env.sh` (si el proveedor necesita clave) y luego regenera con el comando del Caso A.
 
 ---
 

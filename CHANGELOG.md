@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- actualizar test y docs tras migración a minimax-coding-plan
+- regenerar agentes con provider minimax-coding-plan
+- reapuntar tech/tester/applier/orchestrator a minimax-coding-plan
+
+
+### Fixed
 - prohibir EnterPlanMode/ExitPlanMode built-in en favor de /create-plan
 
 

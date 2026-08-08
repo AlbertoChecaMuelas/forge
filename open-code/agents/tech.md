@@ -1,7 +1,7 @@
 ---
 name: tech
 description: "Use when implementation decisions are already made and code must be written or modified: a plan or actionable decision in hand, [T] plan steps, a scoped bug fix, or diagnosing a VERIFIER_FAILED / ESCALATE_TECH. Emits ESCALATE_SENIOR if a design decision is missing. Does not write tests; does not audit."
-model: minimax/MiniMax-M3[1m]
+model: minimax-coding-plan/MiniMax-M3
 mode: subagent
 permission:
   bash: allow

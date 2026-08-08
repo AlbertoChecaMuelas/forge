@@ -94,8 +94,8 @@ test_generated_agents_are_platform_correct() {
 }
 
 test_generated_models_match_expected_mapping() {
-  local expected_applier='model: minimax/MiniMax-M2.5-highspeed'
-  local expected_worker='model: minimax/MiniMax-M3[1m]'
+  local expected_applier='model: minimax-coding-plan/MiniMax-M2.5-highspeed'
+  local expected_worker='model: minimax-coding-plan/MiniMax-M3'
   local expected_senior='model: openai/gpt-5.6-sol'
 
   if grep -qxF "${expected_applier}" "$FORGE_ROOT/open-code/agents/applier.md"; then
@@ -117,6 +117,44 @@ test_generated_models_match_expected_mapping() {
     pass "senior model matches GPT-5.6 Sol mapping"
   else
     fail "senior model does not match GPT-5.6 Sol mapping"
+  fi
+}
+
+test_no_custom_minimax_provider_block() {
+  local jsonc="$FORGE_ROOT/open-code/opencode.jsonc"
+
+  if grep -qF '"minimax":' "$jsonc"; then
+    fail "opencode.jsonc still contains custom \"minimax\": provider key"
+  else
+    pass "opencode.jsonc does not contain custom \"minimax\": provider key"
+  fi
+
+  if grep -qF 'api.minimax.io' "$jsonc"; then
+    fail "opencode.jsonc still contains custom minimax baseURL api.minimax.io"
+  else
+    pass "opencode.jsonc does not contain custom minimax baseURL api.minimax.io"
+  fi
+
+  if grep -qF '@ai-sdk/openai-compatible' "$jsonc"; then
+    fail "opencode.jsonc still contains @ai-sdk/openai-compatible npm provider"
+  else
+    pass "opencode.jsonc does not contain @ai-sdk/openai-compatible npm provider"
+  fi
+}
+
+test_root_level_models_use_minimax_coding_plan() {
+  local jsonc="$FORGE_ROOT/open-code/opencode.jsonc"
+
+  if grep -qxF '  "model": "minimax-coding-plan/MiniMax-M3",' "$jsonc"; then
+    pass "opencode.jsonc root model uses minimax-coding-plan/MiniMax-M3"
+  else
+    fail "opencode.jsonc root model does not use minimax-coding-plan/MiniMax-M3"
+  fi
+
+  if grep -qxF '  "small_model": "minimax-coding-plan/MiniMax-M2.5-highspeed",' "$jsonc"; then
+    pass "opencode.jsonc root small_model uses minimax-coding-plan/MiniMax-M2.5-highspeed"
+  else
+    fail "opencode.jsonc root small_model does not use minimax-coding-plan/MiniMax-M2.5-highspeed"
   fi
 }
 
@@ -159,6 +197,8 @@ test_generated_files_have_no_litellm
 test_generated_modes
 test_generated_agents_are_platform_correct
 test_generated_models_match_expected_mapping
+test_no_custom_minimax_provider_block
+test_root_level_models_use_minimax_coding_plan
 test_check_mode_and_drift_detection
 
 echo ""
