@@ -94,8 +94,8 @@ test_generated_agents_are_platform_correct() {
 }
 
 test_generated_models_match_expected_mapping() {
-  local expected_applier='model: minimax/MiniMax-M2.5-highspeed'
-  local expected_worker='model: minimax/MiniMax-M3[1m]'
+  local expected_applier='model: minimax-coding-plan/MiniMax-M2.5-highspeed'
+  local expected_worker='model: minimax-coding-plan/MiniMax-M3'
   local expected_senior='model: openai/gpt-5.6-sol'
 
   if grep -qxF "${expected_applier}" "$FORGE_ROOT/open-code/agents/applier.md"; then
