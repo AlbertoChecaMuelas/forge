@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-08-08
+
 ### Fixed
 - actualizar test y docs tras migración a minimax-coding-plan
 - regenerar agentes con provider minimax-coding-plan
