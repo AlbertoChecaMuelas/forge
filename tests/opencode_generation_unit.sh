@@ -96,7 +96,7 @@ test_generated_agents_are_platform_correct() {
 test_generated_models_match_expected_mapping() {
   local expected_applier='model: minimax/MiniMax-M2.5-highspeed'
   local expected_worker='model: minimax/MiniMax-M3[1m]'
-  local expected_senior='model: minimax/MiniMax-M3[1m]'
+  local expected_senior='model: openai/gpt-5.6-sol'
 
   if grep -qxF "${expected_applier}" "$FORGE_ROOT/open-code/agents/applier.md"; then
     pass "applier model matches MiniMax M2.5-highspeed mapping"
@@ -114,9 +114,9 @@ test_generated_models_match_expected_mapping() {
   done
 
   if grep -qxF "${expected_senior}" "$FORGE_ROOT/open-code/agents/senior.md"; then
-    pass "senior model matches MiniMax M3 mapping"
+    pass "senior model matches GPT-5.6 Sol mapping"
   else
-    fail "senior model does not match MiniMax M3 mapping"
+    fail "senior model does not match GPT-5.6 Sol mapping"
   fi
 }
 
