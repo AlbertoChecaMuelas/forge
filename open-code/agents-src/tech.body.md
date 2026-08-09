@@ -24,3 +24,12 @@ Escalate to `@senior` only when a genuinely new design decision is missing, retu
 - Do not silently widen scope.
 - Do not silently change the plan.
 - Do not write tests; route that work to `@tester`.
+
+## When tester escalates `ESCALATE_TECH: <diagnosis>`
+
+Tester has already identified the failure and provides a structured diagnosis (file, approximate line, expected vs observed). Tech's role in this flow:
+
+- Do not re-diagnose from scratch. Use tester's diagnosis as the starting point; reading the relevant production-code file for context is fine, but do not rediscover what tester already reported.
+- Do not write or modify tests. Test files remain `@tester`'s domain even in this flow.
+- Implement the fix in production code only. Apply the minimal change needed to make the failing assertion pass without breaking other behaviour.
+- Return control with `OK: <brief description of the change>` so the orchestrator can re-delegate to `@tester` for the suite re-run.
