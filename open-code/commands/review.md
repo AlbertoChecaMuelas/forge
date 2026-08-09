@@ -14,11 +14,11 @@ You are running the `/review` command. You orchestrate an ad-hoc review of an AL
 1. Resolve the audit range via `bash`:
    - Both refs given -> `BASE_SHA=$(git rev-parse $1)`, `HEAD_SHA=$(git rev-parse $2)`.
    - Only the first ref given -> `BASE_SHA=$(git rev-parse $1)`, `HEAD_SHA=$(git rev-parse HEAD)`.
-   - No arguments -> `BASE_SHA=$(git merge-base master HEAD)` (fall back to `main` if `master` does not exist), `HEAD_SHA=$(git rev-parse HEAD)`. If BASE equals HEAD and the working tree is dirty, audit the working tree instead: scope = `git diff` plus `git diff --staged`.
+   - No arguments -> `BASE_SHA=$(git merge-base master HEAD)` (fall back to `main` if `master` does not exist), `HEAD_SHA=$(git rev-parse HEAD)`. If BASE equals HEAD and the working tree is dirty, the commit range is empty: set `WORKING_TREE_MODE=true` for step 2.
 2. Fill the review template below, substituting before dispatch:
    - `{BASE_SHA}` / `{HEAD_SHA}` -> the resolved SHAs.
    - `{PLAN_STEP}` -> `ad-hoc audit (no plan)` unless the user names a plan or phase.
-   - `{SCOPE}` -> the user's focus if given (e.g. "security"), else `full diff of the range`.
+   - `{SCOPE}` -> if `WORKING_TREE_MODE` is set, prepend this literal directive: "The commit range {BASE_SHA}..{HEAD_SHA} is empty (BASE equals HEAD). Ignore it and instead audit the uncommitted working tree via `git diff` and `git diff --staged`." followed by the user's focus if given, else `full diff of the working tree`. Otherwise (normal case) -> the user's focus if given (e.g. "security"), else `full diff of the range`.
 3. Dispatch a FRESH review subagent via the `task` tool whose entire prompt is the filled template, explicitly overriding the model for that call to `openai/gpt-5.6-sol`. Do not name `@applier`, `@tech`, or `@senior` as the target of this dispatch, and do not paraphrase or trim the template.
 4. Relay the subagent's review body to the user (any surrounding announcement in Spanish). The last line will be exactly one of `OK_PHASE:`, `FINDINGS_PHASE:` or `BLOCKED_REVIEW:`. Findings route only if the user wants to address them: impl -> `@tech`, design -> `@senior`, coverage -> `@tester`.
 5. If the dispatch itself fails (infrastructure error, no return code): report `Fallo de infraestructura del subagente review: <error>` and stop. Do not retry, do not re-route.
