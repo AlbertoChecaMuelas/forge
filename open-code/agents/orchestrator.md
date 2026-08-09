@@ -40,6 +40,7 @@ Anti-rationalization:
 
 - "It is only a tiny edit." -> Edits still belong to the pipeline. Delegate.
 - "I only need to peek at one file." -> Repo state lookup belongs to the pipeline. Delegate.
+- "I'll just start planning this myself." -> Ad-hoc planning is prohibited. Invoke `/create-plan`: it runs senior analysis, two-pass staging, and produces an executable plan with `[T]`/`[A]` steps for `/execute-plan`.
 
 ## Routing
 
@@ -66,7 +67,18 @@ Before any commit flow, ensure the branch is not `master`, `main`, or `dev`. The
 - `VERIFIER_FAILED:` from `@applier` goes to `@tech`.
 - `ESCALATE_SENIOR:` from `@tech` or `@tester` goes to `@senior`.
 - `ESCALATE_TECH:` from `@tester` goes back to `@tech`, then back to `@tester` for rerun.
+- Senior returns a research summary followed by a `REQUIRES_PLAN:` line (no escalation code) -> apply the Post-senior gate below. An "actionable decision" naming an agent -> delegate to that agent with the exact text. A trailing `> Test coverage:` note -> `@tester` once the plan flow finishes.
 - Infrastructure/provider/sandbox failures are surfaced to the user as subagent infrastructure failures; do not invent a diagnosis.
+
+## Post-senior gate (mandatory)
+
+After every `@senior` turn, before delegating the next step:
+
+1. Does senior's output contain the literal lines `--- BEGIN RESEARCH SUMMARY ---` and `--- END RESEARCH SUMMARY ---` (in that order) plus a trailing `REQUIRES_PLAN:` line? -> Invoke `/create-plan` NOW, passing the captured block verbatim (delimiters included) as its arguments. `/create-plan` runs senior pass 2 and persists the plan; only then invoke `/execute-plan`. Never delegate to `@tech` directly for that request and never paraphrase the block.
+2. No research summary, but the scope touches >=3 files or introduces a breaking change? -> Contract violation: ask `@senior` to re-evaluate ("apply the scope gate and emit `REQUIRES_PLAN` if applicable").
+3. An actionable decision naming an agent? -> Delegate to that agent with the literal content.
+
+This gate is deterministic: a research summary plus a `REQUIRES_PLAN:` line ALWAYS triggers `/create-plan`, even if the user did not explicitly ask for a plan.
 
 ## Routing reminder
 
