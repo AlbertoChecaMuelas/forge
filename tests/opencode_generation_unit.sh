@@ -86,11 +86,26 @@ test_generated_modes() {
 }
 
 test_generated_agents_are_platform_correct() {
-  if grep -R 'Task tool\|/review\|/create-plan\|AskUserQuestion\|NotebookEdit\|Edit/Write' "$FORGE_ROOT/open-code/agents" >/dev/null 2>&1; then
+  # /create-plan and /execute-plan are legitimate cross-platform commands:
+  # OpenCode has its own open-code/commands/{create-plan,execute-plan}.md,
+  # wired via install-opencode.sh/uninstall-opencode.sh COMMANDS_DIR, so
+  # they are intentionally excluded from this Claude-only sentinel list.
+  if grep -R 'Task tool\|/review\|AskUserQuestion\|NotebookEdit\|Edit/Write' "$FORGE_ROOT/open-code/agents" >/dev/null 2>&1; then
     fail "generated OpenCode agents still contain Claude-only workflow/tool references"
   else
     pass "generated OpenCode agents do not contain Claude-only workflow/tool references"
   fi
+}
+
+test_opencode_commands_exist() {
+  local cmd
+  for cmd in create-plan execute-plan; do
+    if [ -f "$FORGE_ROOT/open-code/commands/${cmd}.md" ]; then
+      pass "open-code/commands/${cmd}.md exists"
+    else
+      fail "open-code/commands/${cmd}.md missing"
+    fi
+  done
 }
 
 test_generated_models_match_expected_mapping() {
@@ -196,6 +211,7 @@ test_generated_files_have_single_model_line
 test_generated_files_have_no_litellm
 test_generated_modes
 test_generated_agents_are_platform_correct
+test_opencode_commands_exist
 test_generated_models_match_expected_mapping
 test_no_custom_minimax_provider_block
 test_root_level_models_use_minimax_coding_plan

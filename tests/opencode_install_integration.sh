@@ -35,6 +35,15 @@ test_isolated_install_and_launcher() {
     fail "overlay config file missing"
   fi
 
+  local cmd
+  for cmd in create-plan execute-plan; do
+    if [ -L "$tmp_home/.config/opencode-forge/commands/${cmd}.md" ]; then
+      pass "overlay command symlink created for ${cmd}.md"
+    else
+      fail "overlay command symlink missing for ${cmd}.md"
+    fi
+  done
+
   if [ ! -e "$tmp_home/.config/opencode/opencode.jsonc" ]; then
     pass "global opencode config untouched"
   else
@@ -72,6 +81,14 @@ EOF
   else
     fail "uninstall did not remove isolated overlay and launcher"
   fi
+
+  for cmd in create-plan execute-plan; do
+    if [ ! -e "$tmp_home/.config/opencode-forge/commands/${cmd}.md" ]; then
+      pass "uninstall removes command symlink for ${cmd}.md"
+    else
+      fail "uninstall did not remove command symlink for ${cmd}.md"
+    fi
+  done
 
   TMP_TEST_HOME=""
   trap - EXIT
