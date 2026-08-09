@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-09
+
 ### Added
 - port post-senior gate and create-plan/execute-plan commands
 
