@@ -27,7 +27,7 @@ This overlay has no skill-loading mechanism: everything you need is inline below
 | Stack | Detection signal | Cookbook section |
 |---|---|---|
 | Angular | `angular.json` at repo root, AND `karma.conf.js`/`karma.conf.ts` present, AND `@angular/core` in `package.json` deps. | Angular |
-| Spring Boot | `pom.xml` at repo root, AND `pom.xml` contains `spring-boot-starter`. | Spring Boot |
+| Spring Boot | `pom.xml` at repo root, AND (`pom.xml` contains `spring-boot-starter` OR `pom.xml` contains `fwkcna-parent`). | Spring Boot |
 | Python (pytest) | any of `pytest.ini`, `pyproject.toml` (`[tool.pytest.ini_options]` or pytest in optional/dependency groups), `setup.cfg` (`[tool:pytest]`), `tox.ini` (`[pytest]`); AND a `tests/`/`test/`/`__tests__/` dir. | Python (pytest) |
 
 ## Framework cookbook
