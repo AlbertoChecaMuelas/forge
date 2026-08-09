@@ -7,6 +7,7 @@ CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode-forge}"
 CONFIG_FILE="${OPENCODE_CONFIG:-$CONFIG_DIR/opencode.jsonc}"
 AGENTS_DIR="$CONFIG_DIR/agents"
 PLUGINS_DIR="$CONFIG_DIR/plugins"
+COMMANDS_DIR="$CONFIG_DIR/commands"
 AGENTS_MD_PATH="$CONFIG_DIR/AGENTS.md"
 AUTH_FILE="$HOME/.local/share/opencode/auth.json"
 LAUNCHER_DIR="$HOME/.local/bin"
@@ -117,10 +118,14 @@ esac
 
 bash "$REPO_ROOT/shared/scripts/generate-agents.sh" --target=opencode
 
-mkdir -p "$AGENTS_DIR" "$PLUGINS_DIR" "$LAUNCHER_DIR"
+mkdir -p "$AGENTS_DIR" "$PLUGINS_DIR" "$COMMANDS_DIR" "$LAUNCHER_DIR"
 
 for role in applier senior tech tester orchestrator; do
   ln -sfn "$REPO_ROOT/open-code/agents/${role}.md" "$AGENTS_DIR/${role}.md"
+done
+
+for cmd in create-plan execute-plan; do
+  ln -sfn "$REPO_ROOT/open-code/commands/${cmd}.md" "$COMMANDS_DIR/${cmd}.md"
 done
 
 ln -sfn "$REPO_ROOT/open-code/plugins/forge-guard.js" "$PLUGINS_DIR/forge-guard.js"

@@ -6,10 +6,15 @@ REPO_LAUNCHER="$SCRIPT_DIR/forge-opencode.sh"
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode-forge}"
 AGENTS_DIR="$CONFIG_DIR/agents"
 PLUGINS_DIR="$CONFIG_DIR/plugins"
+COMMANDS_DIR="$CONFIG_DIR/commands"
 LAUNCHER_PATH="$HOME/.local/bin/forge-opencode"
 
 for role in applier senior tech tester orchestrator; do
   rm -f "$AGENTS_DIR/${role}.md"
+done
+
+for cmd in create-plan execute-plan; do
+  rm -f "$COMMANDS_DIR/${cmd}.md"
 done
 
 rm -f "$PLUGINS_DIR/forge-guard.js"
@@ -29,6 +34,7 @@ fi
 
 rmdir "$AGENTS_DIR" 2>/dev/null || true
 rmdir "$PLUGINS_DIR" 2>/dev/null || true
+rmdir "$COMMANDS_DIR" 2>/dev/null || true
 rmdir "$CONFIG_DIR" 2>/dev/null || true
 
 echo "[forge-opencode] uninstall completed for ${CONFIG_DIR/#$HOME/\~}"

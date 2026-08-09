@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- port post-senior gate and create-plan/execute-plan commands
+
+### Fixed
+- use repo's canonical Sonnet-equivalent model for re-review
+
+
 ### Fixed
 - actualizar test y docs tras migración a minimax-coding-plan
 - regenerar agentes con provider minimax-coding-plan
