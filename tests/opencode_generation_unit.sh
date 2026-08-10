@@ -86,11 +86,12 @@ test_generated_modes() {
 }
 
 test_generated_agents_are_platform_correct() {
-  # /create-plan and /execute-plan are legitimate cross-platform commands:
-  # OpenCode has its own open-code/commands/{create-plan,execute-plan}.md,
-  # wired via install-opencode.sh/uninstall-opencode.sh COMMANDS_DIR, so
-  # they are intentionally excluded from this Claude-only sentinel list.
-  if grep -R 'Task tool\|/review\|AskUserQuestion\|NotebookEdit\|Edit/Write' "$FORGE_ROOT/open-code/agents" >/dev/null 2>&1; then
+  # /create-plan, /execute-plan and /review are legitimate cross-platform
+  # commands: OpenCode has its own
+  # open-code/commands/{create-plan,execute-plan,review}.md, wired via
+  # install-opencode.sh/uninstall-opencode.sh COMMANDS_DIR, so they are
+  # intentionally excluded from this Claude-only sentinel list.
+  if grep -R 'Task tool\|AskUserQuestion\|NotebookEdit\|Edit/Write' "$FORGE_ROOT/open-code/agents" >/dev/null 2>&1; then
     fail "generated OpenCode agents still contain Claude-only workflow/tool references"
   else
     pass "generated OpenCode agents do not contain Claude-only workflow/tool references"
