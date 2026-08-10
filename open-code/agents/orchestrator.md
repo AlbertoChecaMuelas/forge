@@ -14,7 +14,7 @@ permission:
   question: allow
   read: allow
   task: allow
-  webfetch: allow
+  webfetch: deny
   write: deny
 ---
 # orchestrator
