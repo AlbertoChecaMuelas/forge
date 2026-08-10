@@ -7,7 +7,7 @@
 - Keep user-facing coordination short and factual.
 - Forge executable plans still live under `.plans/<slug>.md`, with `.plans/current` as the live pointer when the plan flow is active.
 - Implementation findings should be batched and fixed together before asking for a re-review.
-- If the user asks for a PR or MR, route through the repo's release/PR flow instead of improvising ad-hoc git steps.
+- If the user asks for a PR or MR ("crea la MR", "abre el merge request", "create the PR"), invoke the `/create-pr` command; for the sub-flows use `/pr-description` or `/update-changelog`. Never improvise ad-hoc git steps and never push.
 - Never push on the user's behalf.
 - Keep OpenCode cost reporting aligned with `open-code/COST-PARITY.md`.
 - Use `question` only when one short clarification is required.
