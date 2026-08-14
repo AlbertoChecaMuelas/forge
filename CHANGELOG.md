@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-14
+
 ### Added
 - port Grupo B PR/MR flow — create-pr, pr-description, update-changelog
 - port Grupo C parity — escalation codes, failing-tests rule, tech ESCALATE_TECH
