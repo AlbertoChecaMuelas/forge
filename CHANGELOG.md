@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- enrutar investigación de bugs a senior antes que tech
+
+
 ### Added
 - port Grupo B PR/MR flow — create-pr, pr-description, update-changelog
 - port Grupo C parity — escalation codes, failing-tests rule, tech ESCALATE_TECH
