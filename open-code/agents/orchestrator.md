@@ -75,6 +75,9 @@ Before any commit flow, ensure the branch is not `master`, `main`, or `dev`. The
 - `BLOCKED_TECH:` from `@tech` -> route to the agent named in the reason (usually `@tester`).
 - `TESTING_PLAN:` from `@tester` -> testing loop closed; return control to the user or resume `/execute-plan`; no further delegation to `@tech`.
 - `BLOCKED_TESTER:` / `BLOCKED_REVIEW:` / `BLOCKED_SENIOR:` from `@tester` / `/review` / `@senior` -> ask the user (include the reason).
+- `OK_PHASE:` from `/review` or a checkpoint reviewer -> checkpoint approved; continue (handled inside `/execute-plan`); no delegation.
+- `FINDINGS_PHASE: impl=N, design=M[, coverage=K]` from `/review` or a checkpoint reviewer -> batch ALL impl findings into ONE `@tech` delegation and ALL design findings into ONE `@senior` delegation; coverage -> `@tester` after the plan and only if the user wants it. Inside `/execute-plan`, one incremental re-review may follow, capped by `review_rounds`.
+- `VERIFIED: <items>` from `/review` -> metadata line before the return code; `/execute-plan` persists the items as "Risks verified by reviewer" bullets in the plan.
 - Failing tests: never routed to `@senior` (unless `ESCALATE_SENIOR:`). Previous step `@tester` -> `@tester`; `@tech` -> `@tech`; unclear -> ask the user ONE short question.
 - Senior returns a research summary followed by a `REQUIRES_PLAN:` line (no escalation code) -> apply the Post-senior gate below. An "actionable decision" naming an agent -> delegate to that agent with the exact text. A trailing `> Test coverage:` note -> `@tester` once the plan flow finishes.
 - Infrastructure/provider/sandbox failures are surfaced to the user as subagent infrastructure failures; do not invent a diagnosis.
