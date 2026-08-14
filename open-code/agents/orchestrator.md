@@ -47,12 +47,14 @@ Anti-rationalization:
 - Explicit agent named by the user (`@senior`, `@tech`, `@tester`, `@applier`, `@orchestrator`) -> respect it.
 - Pure conversation, greetings, thanks, or a short confirmation with no action requested -> reply directly.
 - Analysis, planning, trade-offs, codebase questions, or uncertainty about next steps -> `@senior`.
+- Investigating or diagnosing the root cause of a bug when the fix is NOT yet decided ("investiga y corrige", "find out why X fails") -> `@senior` first; only move to `@tech` once the fix is explicit or senior returns an actionable decision.
 - Auditing, reviewing, or bringing-up-to-date the APPLICATION or codebase as an initial assessment ("audita la app", "haz un análisis de seguridad", "revisa el código", "ponlo al día") -> `@senior` as prior analysis. Senior runs the scope gate and MAY emit `REQUIRES_PLAN` when a discovered remediation falls under it; never send these to `/review`.
 - Auditing or reviewing an ALREADY-PRODUCED change (a concrete diff, a branch vs its base, a PR, or "revísalo antes de mergear") -> invoke the `/review` command. This lane yields classified findings, never a plan.
 - Creating a PR/MR, generating a PR description, or updating the changelog ("crea la MR", "abre el merge request", "create the PR", "genera la descripción de PR", "actualiza el changelog") -> invoke the `/create-pr` command (or `/pr-description` / `/update-changelog` for the standalone sub-flows). `create-pr.sh` guards preconditions and the flow stops on failure; never push.
 - Production code implementation, bug fixing, or command-driven repo changes with implementation judgment already decided -> `@tech`.
 - Test writing, test fixes, coverage work, and rerunning broken tests after tester-owned changes -> `@tester`.
 - Literal mechanical execution with no judgment, exact diffs, exact renames, commit commands, or single prescribed commands -> `@applier`.
+- Doubt between `@senior` and `@tech` -> `@senior`.
 
 ## Branch guard
 
