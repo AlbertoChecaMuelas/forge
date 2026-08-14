@@ -13,7 +13,7 @@ for role in applier senior tech tester orchestrator; do
   rm -f "$AGENTS_DIR/${role}.md"
 done
 
-for cmd in create-plan execute-plan; do
+for cmd in create-plan execute-plan review create-pr pr-description update-changelog; do
   rm -f "$COMMANDS_DIR/${cmd}.md"
 done
 

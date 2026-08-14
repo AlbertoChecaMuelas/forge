@@ -36,7 +36,7 @@ test_isolated_install_and_launcher() {
   fi
 
   local cmd
-  for cmd in create-plan execute-plan; do
+  for cmd in create-plan execute-plan review create-pr pr-description update-changelog; do
     if [ -L "$tmp_home/.config/opencode-forge/commands/${cmd}.md" ]; then
       pass "overlay command symlink created for ${cmd}.md"
     else
@@ -82,13 +82,25 @@ EOF
     fail "uninstall did not remove isolated overlay and launcher"
   fi
 
-  for cmd in create-plan execute-plan; do
+  for cmd in create-plan execute-plan review create-pr pr-description update-changelog; do
     if [ ! -e "$tmp_home/.config/opencode-forge/commands/${cmd}.md" ]; then
       pass "uninstall removes command symlink for ${cmd}.md"
     else
       fail "uninstall did not remove command symlink for ${cmd}.md"
     fi
   done
+
+  if [ ! -d "$tmp_home/.config/opencode-forge/commands" ]; then
+    pass "uninstall leaves \$COMMANDS_DIR clean (directory removed)"
+  else
+    local leftover
+    leftover="$(find "$tmp_home/.config/opencode-forge/commands" -mindepth 1 2>/dev/null)"
+    if [ -z "$leftover" ]; then
+      pass "uninstall leaves \$COMMANDS_DIR clean (empty directory)"
+    else
+      fail "uninstall left leftover entries in \$COMMANDS_DIR: $leftover"
+    fi
+  fi
 
   TMP_TEST_HOME=""
   trap - EXIT

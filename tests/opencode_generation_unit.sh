@@ -86,11 +86,12 @@ test_generated_modes() {
 }
 
 test_generated_agents_are_platform_correct() {
-  # /create-plan and /execute-plan are legitimate cross-platform commands:
-  # OpenCode has its own open-code/commands/{create-plan,execute-plan}.md,
-  # wired via install-opencode.sh/uninstall-opencode.sh COMMANDS_DIR, so
-  # they are intentionally excluded from this Claude-only sentinel list.
-  if grep -R 'Task tool\|/review\|AskUserQuestion\|NotebookEdit\|Edit/Write' "$FORGE_ROOT/open-code/agents" >/dev/null 2>&1; then
+  # /create-plan, /execute-plan and /review are legitimate cross-platform
+  # commands: OpenCode has its own
+  # open-code/commands/{create-plan,execute-plan,review}.md, wired via
+  # install-opencode.sh/uninstall-opencode.sh COMMANDS_DIR, so they are
+  # intentionally excluded from this Claude-only sentinel list.
+  if grep -R 'Task tool\|AskUserQuestion\|NotebookEdit\|Edit/Write' "$FORGE_ROOT/open-code/agents" >/dev/null 2>&1; then
     fail "generated OpenCode agents still contain Claude-only workflow/tool references"
   else
     pass "generated OpenCode agents do not contain Claude-only workflow/tool references"
@@ -99,11 +100,40 @@ test_generated_agents_are_platform_correct() {
 
 test_opencode_commands_exist() {
   local cmd
-  for cmd in create-plan execute-plan; do
+  for cmd in create-plan execute-plan review create-pr pr-description update-changelog; do
     if [ -f "$FORGE_ROOT/open-code/commands/${cmd}.md" ]; then
       pass "open-code/commands/${cmd}.md exists"
     else
       fail "open-code/commands/${cmd}.md missing"
+    fi
+  done
+}
+
+test_opencode_permission_block_flips() {
+  local applier_file="$FORGE_ROOT/open-code/agents/applier.md"
+  local orchestrator_file="$FORGE_ROOT/open-code/agents/orchestrator.md"
+
+  if grep -qE '^\s*grep:\s*allow$' "$applier_file"; then
+    pass "open-code/agents/applier.md permission block has grep: allow"
+  else
+    fail "open-code/agents/applier.md permission block missing grep: allow"
+  fi
+
+  if grep -qE '^\s*webfetch:\s*deny$' "$orchestrator_file"; then
+    pass "open-code/agents/orchestrator.md permission block has webfetch: deny"
+  else
+    fail "open-code/agents/orchestrator.md permission block missing webfetch: deny"
+  fi
+}
+
+test_opencode_escalation_codes_present() {
+  local orchestrator_file="$FORGE_ROOT/open-code/agents/orchestrator.md"
+  local token
+  for token in 'OK_BATCH:' 'BLOCKED_BATCH:' 'BLOCKED_TECH:' 'TESTING_PLAN:' 'BLOCKED_TESTER:' 'BLOCKED_REVIEW:'; do
+    if grep -qF "$token" "$orchestrator_file"; then
+      pass "open-code/agents/orchestrator.md references escalation code ${token}"
+    else
+      fail "open-code/agents/orchestrator.md missing escalation code ${token}"
     fi
   done
 }
@@ -212,6 +242,8 @@ test_generated_files_have_no_litellm
 test_generated_modes
 test_generated_agents_are_platform_correct
 test_opencode_commands_exist
+test_opencode_permission_block_flips
+test_opencode_escalation_codes_present
 test_generated_models_match_expected_mapping
 test_no_custom_minimax_provider_block
 test_root_level_models_use_minimax_coding_plan

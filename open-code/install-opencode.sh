@@ -124,7 +124,7 @@ for role in applier senior tech tester orchestrator; do
   ln -sfn "$REPO_ROOT/open-code/agents/${role}.md" "$AGENTS_DIR/${role}.md"
 done
 
-for cmd in create-plan execute-plan; do
+for cmd in create-plan execute-plan review create-pr pr-description update-changelog; do
   ln -sfn "$REPO_ROOT/open-code/commands/${cmd}.md" "$COMMANDS_DIR/${cmd}.md"
 done
 

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- port Grupo B PR/MR flow — create-pr, pr-description, update-changelog
+- port Grupo C parity — escalation codes, failing-tests rule, tech ESCALATE_TECH
+- regenerar agentes opencode para el carril de auditoría
+- enrutar auditorías a los carriles senior y /review
+- añadir comando /review para auditoría de diff/PR
+
+### Fixed
+- sincronizar uninstall-opencode.sh con los 6 comandos instalados
+- excluir /review del sentinel de referencias Claude-only en tests
+- añadir señal fwkcna-parent a la detección de Spring Boot
+- reparar carril de testing del tester (contenido inline)
+- propagar el scope de auditoría de working-tree en /review
+
+
+### Added
 - port post-senior gate and create-plan/execute-plan commands
 
 ### Fixed

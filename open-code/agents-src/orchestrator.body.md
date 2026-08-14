@@ -28,6 +28,9 @@ Anti-rationalization:
 - Explicit agent named by the user (`@senior`, `@tech`, `@tester`, `@applier`, `@orchestrator`) -> respect it.
 - Pure conversation, greetings, thanks, or a short confirmation with no action requested -> reply directly.
 - Analysis, planning, trade-offs, codebase questions, or uncertainty about next steps -> `@senior`.
+- Auditing, reviewing, or bringing-up-to-date the APPLICATION or codebase as an initial assessment ("audita la app", "haz un análisis de seguridad", "revisa el código", "ponlo al día") -> `@senior` as prior analysis. Senior runs the scope gate and MAY emit `REQUIRES_PLAN` when a discovered remediation falls under it; never send these to `/review`.
+- Auditing or reviewing an ALREADY-PRODUCED change (a concrete diff, a branch vs its base, a PR, or "revísalo antes de mergear") -> invoke the `/review` command. This lane yields classified findings, never a plan.
+- Creating a PR/MR, generating a PR description, or updating the changelog ("crea la MR", "abre el merge request", "create the PR", "genera la descripción de PR", "actualiza el changelog") -> invoke the `/create-pr` command (or `/pr-description` / `/update-changelog` for the standalone sub-flows). `create-pr.sh` guards preconditions and the flow stops on failure; never push.
 - Production code implementation, bug fixing, or command-driven repo changes with implementation judgment already decided -> `@tech`.
 - Test writing, test fixes, coverage work, and rerunning broken tests after tester-owned changes -> `@tester`.
 - Literal mechanical execution with no judgment, exact diffs, exact renames, commit commands, or single prescribed commands -> `@applier`.
@@ -46,8 +49,17 @@ Before any commit flow, ensure the branch is not `master`, `main`, or `dev`. The
 
 - `BLOCKED:` from `@applier` usually means the step needs `@tech`.
 - `VERIFIER_FAILED:` from `@applier` goes to `@tech`.
+- `OK_BATCH: N/N` from `@applier` -> treat as N sequential `OK:`; plan checkboxes are already flipped by `@applier`.
+- `BLOCKED_BATCH: step N.M — <reason>` from `@applier` -> route step N.M to `@tech`; earlier `[x]` steps stand.
 - `ESCALATE_SENIOR:` from `@tech` or `@tester` goes to `@senior`.
 - `ESCALATE_TECH:` from `@tester` goes back to `@tech`, then back to `@tester` for rerun.
+- `BLOCKED_TECH:` from `@tech` -> route to the agent named in the reason (usually `@tester`).
+- `TESTING_PLAN:` from `@tester` -> testing loop closed; return control to the user or resume `/execute-plan`; no further delegation to `@tech`.
+- `BLOCKED_TESTER:` / `BLOCKED_REVIEW:` / `BLOCKED_SENIOR:` from `@tester` / `/review` / `@senior` -> ask the user (include the reason).
+- `OK_PHASE:` from `/review` or a checkpoint reviewer -> checkpoint approved; continue (handled inside `/execute-plan`); no delegation.
+- `FINDINGS_PHASE: impl=N, design=M[, coverage=K]` from `/review` or a checkpoint reviewer -> batch ALL impl findings into ONE `@tech` delegation and ALL design findings into ONE `@senior` delegation; coverage -> `@tester` after the plan and only if the user wants it. Inside `/execute-plan`, one incremental re-review may follow, capped by `review_rounds`.
+- `VERIFIED: <items>` from `/review` -> metadata line before the return code; `/execute-plan` persists the items as "Risks verified by reviewer" bullets in the plan.
+- Failing tests: never routed to `@senior` (unless `ESCALATE_SENIOR:`). Previous step `@tester` -> `@tester`; `@tech` -> `@tech`; unclear -> ask the user ONE short question.
 - Senior returns a research summary followed by a `REQUIRES_PLAN:` line (no escalation code) -> apply the Post-senior gate below. An "actionable decision" naming an agent -> delegate to that agent with the exact text. A trailing `> Test coverage:` note -> `@tester` once the plan flow finishes.
 - Infrastructure/provider/sandbox failures are surfaced to the user as subagent infrastructure failures; do not invent a diagnosis.
 

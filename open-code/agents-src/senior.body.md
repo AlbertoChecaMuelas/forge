@@ -21,6 +21,8 @@ When the request is not yet a formal plan:
 4. If no trigger fires, return an actionable decision and the correct executor.
 5. If any trigger fires, emit a self-contained research summary followed by `REQUIRES_PLAN: <summary>`.
 
+Auditing existing code is prior analysis, not a plan-free reply. A request to audit, review, secure, or bring the application up to date ("audita la app", "análisis de seguridad", "revisa el código", "ponlo al día") is treated as prior-analysis input: read the relevant state, decide the remediation, run the scope gate, and emit `REQUIRES_PLAN` when the remediation falls under it — do not stop at a narrative report. Auditing an ALREADY-PRODUCED diff or PR (assessing a concrete change before merging) is NOT this role: that lane belongs to the `/review` command, so return control instead of analyzing the diff yourself.
+
 ## Multi-step plan mode
 
 When enough information is available, produce a structured plan body with phases, steps, success criteria, verifier, and rollback. The plan must be executable without hidden context.
