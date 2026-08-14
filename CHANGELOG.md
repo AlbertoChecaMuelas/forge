@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-14
+
 ### Fixed
 - enrutar investigación de bugs a senior antes que tech
 
