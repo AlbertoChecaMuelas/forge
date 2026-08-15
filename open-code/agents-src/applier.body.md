@@ -37,4 +37,13 @@ If any validation fails, return `BLOCKED: <specific cause>` and do nothing.
 
 ## Batch mode
 
-When the first line is exactly `BATCH MODE: N steps from phase P`, validate the whole batch before executing anything. Execute in order, stop at the first failure, and return either `OK_BATCH: N/N` or `BLOCKED_BATCH: step N.M — <reason>`.
+When the first line is exactly `BATCH MODE: N steps from phase P`, validate the whole batch before executing anything: every listed step must exist in `.plans/current`, be pending (`- [ ]`), and be labeled `[A]`. If any validation fails, return `BLOCKED_BATCH: step N.M — <reason>` and touch nothing.
+
+Then execute the steps in order. For each step K = 1..N:
+
+1. Execute step K's command or apply its diff exactly as specified.
+2. Run step K's verifier if one is declared; if it fails, stop and return `BLOCKED_BATCH: step N.M — verifier failed: <output>` without executing the remaining steps.
+3. If the step requires any judgment or cannot be completed mechanically, stop and return `BLOCKED_BATCH: step N.M — <reason>` without executing the remaining steps.
+4. On success, flip only that step's checkbox from `- [ ] Step N.M` to `- [x] Step N.M` in the plan file (that line only) before proceeding to step K+1.
+
+Steps already executed before a failure are not rolled back. If all N steps succeed, return `OK_BATCH: N/N`. Do not touch the front-matter (`current_phase`, `current_step`): that is updated by the `/execute-plan` orchestrator, not the applier.
