@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-15
+
 ### Fixed
 - marcar checkboxes por-paso en modo batch del applier
 
