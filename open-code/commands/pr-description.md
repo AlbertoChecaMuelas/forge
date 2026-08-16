@@ -46,9 +46,9 @@ The base branch is `{BASE}`.
 
 Run via `bash`: `git rev-parse --abbrev-ref HEAD`
 
-## Pre-resolved stamp and change-type checkboxes (authoritative — copy verbatim)
+## Pre-resolved stamp and change-type checkboxes (authoritative — copy verbatim; forge repositories only)
 
-Run via `bash`: `bash $(git rev-parse --show-toplevel)/tools/release/mr-stamp.sh --base {BASE}`
+Run via `bash`: `ROOT="$(git rev-parse --show-toplevel)"; if [ -f "$ROOT/tools/release/bump-version.sh" ] && grep -q '^FORGE_VERSION=' "$ROOT/install.sh" 2>/dev/null; then forge_mode=true; else forge_mode=false; fi; if [ "$forge_mode" = true ]; then bash "$ROOT/tools/release/mr-stamp.sh" --base {BASE}; else echo "N/A (non-forge repository — no stamp, no change-type block)"; fi`
 
 ## Included commits (subjects and bodies)
 
@@ -77,12 +77,21 @@ The language of the entire description must be **Spanish**. Do not use English w
 
 ### Strict rules before writing
 
-**On the freshness stamp — MANDATORY:**
+**On forge mode vs generic mode:**
+- If the "Pre-resolved stamp and change-type checkboxes" section above starts with
+  `N/A (non-forge repository`, this is a non-forge repository (generic mode): skip the freshness
+  stamp and the `## Tipo de cambio` block entirely (see both rules below). Do not fabricate a
+  stamp or a change-type block in that case. Otherwise (forge mode), both are mandatory as
+  described next.
+
+**On the freshness stamp — MANDATORY (forge mode only):**
 - The very last line of the output MUST be the stamp line exactly as emitted in the
   "Pre-resolved stamp and change-type checkboxes" section above. Copy it verbatim — do not
   re-derive the SHA or timestamp by hand.
 - This stamp lets downstream tooling (`tools/release/create-pr.sh`) detect when the description
   is stale relative to the current branch tip. Omitting it breaks the PR-creation pipeline.
+- In generic mode (see "On forge mode vs generic mode" above), omit the stamp entirely — the
+  output simply ends after the last applicable section.
 
 **On figures and counts — CRITICAL:**
 - **NEVER invent or estimate numbers** not directly present in the `git diff --stat` output.
@@ -122,10 +131,12 @@ The language of the entire description must be **Spanish**. Do not use English w
     commits.
   - Repeating the change summary — this section is context, not inventory.
 
-**On change types:**
-Paste the `## Tipo de cambio` block exactly as it appears in the "Pre-resolved stamp and
-change-type checkboxes" section above. Do not derive checkboxes from commit prefixes yourself —
-use the authoritative pre-resolved block verbatim.
+**On change types (forge mode only):**
+In forge mode, paste the `## Tipo de cambio` block exactly as it appears in the "Pre-resolved
+stamp and change-type checkboxes" section above. Do not derive checkboxes from commit prefixes
+yourself — use the authoritative pre-resolved block verbatim.
+In generic mode (see "On forge mode vs generic mode" above), omit the `## Tipo de cambio` block
+entirely — do not derive it yourself from commit prefixes.
 
 **On the change summary:**
 - Group by functional area. For each bullet: describe **what** changes and **why** (use commit
@@ -224,7 +235,7 @@ tipo(scope): descripción concisa en imperativo (máx 72 chars)
 
 **Decisión técnica:** [1-3 frases sobre el enfoque adoptado. Solo menciona alternativas si aparecen en los commits.]
 
-<!-- PASTE HERE the ## Tipo de cambio block verbatim from the "Pre-resolved stamp and change-type checkboxes" section above. Do not modify it. -->
+<!-- Forge mode only: PASTE HERE the ## Tipo de cambio block verbatim from the "Pre-resolved stamp and change-type checkboxes" section above. Do not modify it. In generic mode (non-forge repository), omit this block entirely — no placeholder, no comment, no heading. -->
 
 ---
 
@@ -267,14 +278,19 @@ tipo(scope): descripción concisa en imperativo (máx 72 chars)
 - **[zona/fichero/símbolo concreto]** — [tipo de riesgo] — [qué verificar].
 - **[zona/fichero/símbolo concreto]** — [tipo de riesgo] — [qué verificar].
 
-<!-- PASTE HERE the stamp line verbatim from the "Pre-resolved stamp and change-type checkboxes" section above. It must be the very last line of the output. -->
+<!-- Forge mode only: PASTE HERE the stamp line verbatim from the "Pre-resolved stamp and change-type checkboxes" section above. It must be the very last line of the output. In generic mode (non-forge repository), omit this line entirely — the output ends at the previous section. -->
 
 ---
 
-FINAL REMINDER: the template ends with the `<!-- forge:pr-description ... -->` stamp on the last
-line. Copy the stamp line exactly as it appears in the "Pre-resolved stamp and change-type
-checkboxes" section above — do not substitute SHA or timestamp by hand. The stamp is MANDATORY
-and MUST be the very last line of your output — your last character must be the closing `>` of
-the HTML comment. Do not append any text after the stamp. The stamp is required even when
+FINAL REMINDER (forge mode only): the template ends with the `<!-- forge:pr-description ... -->`
+stamp on the last line. Copy the stamp line exactly as it appears in the "Pre-resolved stamp and
+change-type checkboxes" section above — do not substitute SHA or timestamp by hand. The stamp is
+MANDATORY and MUST be the very last line of your output — your last character must be the closing
+`>` of the HTML comment. Do not append any text after the stamp. The stamp is required even when
 sections (Riesgos, Motivación, etc.) are omitted.
+
+In generic mode (i.e. the "Pre-resolved stamp and change-type checkboxes" section above starts
+with `N/A (non-forge repository`), there is no stamp requirement and no `## Tipo de cambio`
+block: the output simply ends after the last applicable section (e.g. Riesgos, or Impacto if
+Riesgos was omitted).
 ```
