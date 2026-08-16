@@ -155,8 +155,9 @@ already detects the same non-forge condition and omits the `mr-stamp.sh` freshne
 body VERBATIM to its caller.
 
 Write that returned output VERBATIM to `PR-DESCRIPTION.md` at the repo root via `bash` (e.g. using
-a heredoc, so no paraphrasing or reformatting occurs). `PR-DESCRIPTION.md` is a working artifact
-and must NEVER be committed:
+a heredoc with a quoted delimiter such as `<<'EOF'`, so the shell does not expand `$VAR`,
+`$(...)` or backticks inside the LLM-generated Markdown, and so no paraphrasing or reformatting
+occurs). `PR-DESCRIPTION.md` is a working artifact and must NEVER be committed:
 - Before (or right after) the write, ensure the repo's `.gitignore` contains the line
   `PR-DESCRIPTION.md`. Check first via `bash`:
   `grep -q '^PR-DESCRIPTION\.md$' $(git rev-parse --show-toplevel)/.gitignore` — only append the
