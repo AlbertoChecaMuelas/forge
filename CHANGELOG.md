@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- propagar $1 (rama base) al subshell bash -c y acotar allowed-tools
+- eliminar ambigüedad de permission-match en comando ! compuesto
+- aclarar heredoc entrecomillado en Step G1 para evitar expansión de shell
+- gate forge-mode + fallback genérico gh-pr-create en repos no-forge
+
+
+### Fixed
 - marcar checkboxes por-paso en modo batch del applier
 
 
