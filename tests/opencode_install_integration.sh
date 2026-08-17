@@ -23,10 +23,12 @@ test_isolated_install_and_launcher() {
 
   HOME="$tmp_home" OPENAI_API_KEY=test-openai-key bash "$INSTALLER" >/dev/null 2>&1
 
-  if [ -L "$tmp_home/.config/opencode-forge/agents/orchestrator.md" ]; then
-    pass "overlay isolated agent symlink created"
+  if [ -f "$tmp_home/.config/opencode-forge/agents/orchestrator.md" ] \
+    && [ ! -L "$tmp_home/.config/opencode-forge/agents/orchestrator.md" ] \
+    && diff -q "$FORGE_ROOT/open-code/agents/orchestrator.md" "$tmp_home/.config/opencode-forge/agents/orchestrator.md" >/dev/null 2>&1; then
+    pass "overlay isolated agent copy created"
   else
-    fail "overlay isolated agent symlink missing"
+    fail "overlay isolated agent copy missing/mismatched"
   fi
 
   if [ -f "$tmp_home/.config/opencode-forge/opencode.jsonc" ]; then
@@ -37,10 +39,12 @@ test_isolated_install_and_launcher() {
 
   local cmd
   for cmd in create-plan execute-plan review create-pr pr-description update-changelog; do
-    if [ -L "$tmp_home/.config/opencode-forge/commands/${cmd}.md" ]; then
-      pass "overlay command symlink created for ${cmd}.md"
+    local dest="$tmp_home/.config/opencode-forge/commands/${cmd}.md"
+    local src="$FORGE_ROOT/open-code/commands/${cmd}.md"
+    if [ -f "$dest" ] && [ ! -L "$dest" ] && diff -q "$src" "$dest" >/dev/null 2>&1; then
+      pass "overlay command copy created for ${cmd}.md"
     else
-      fail "overlay command symlink missing for ${cmd}.md"
+      fail "overlay command copy missing/mismatched for ${cmd}.md"
     fi
   done
 
