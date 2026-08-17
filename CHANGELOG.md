@@ -4,17 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-08-17
+
 ### Fixed
-- instalar agents/commands/plugins como copia en vez de symlink
 - propagar $1 (rama base) al subshell bash -c y acotar allowed-tools
 - eliminar ambigüedad de permission-match en comando ! compuesto
 - aclarar heredoc entrecomillado en Step G1 para evitar expansión de shell
 - gate forge-mode + fallback genérico gh-pr-create en repos no-forge
 
+## [0.5.3] - 2026-08-17
+
+### Fixed
+- instalar agents/commands/plugins como copia en vez de symlink
+
+## [0.5.2] - 2026-08-15
 
 ### Fixed
 - marcar checkboxes por-paso en modo batch del applier
-
 
 ## [0.5.1] - 2026-08-14
 
