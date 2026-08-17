@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-08-17
+
 ### Fixed
 - instalar agents/commands/plugins como copia en vez de symlink
 
