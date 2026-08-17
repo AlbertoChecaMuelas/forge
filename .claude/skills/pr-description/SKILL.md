@@ -2,7 +2,7 @@
 description: Generates a structured description for a Pull Request from the commits and diffs of the current branch.
 argument-hint: "[base-branch]"
 model: claude-haiku-4-5
-allowed-tools: Bash(git log *) Bash(git diff *) Bash(git rev-parse *) Bash(bash -c 'ROOT="$(git rev-parse --show-toplevel)"; *) Write
+allowed-tools: Bash(git log *) Bash(git diff *) Bash(git rev-parse *) Bash(bash -c 'ROOT="$(git rev-parse --show-toplevel)"; if [ -f "$ROOT/tools/release/bump-version.sh" ] && grep -q "^FORGE_VERSION=" "$ROOT/install.sh" 2>/dev/null; then bash "$ROOT/tools/release/mr-stamp.sh" *) Write
 context: fork
 ---
 
@@ -17,7 +17,7 @@ The base branch is `${1:-master}`.
 
 ## Pre-resolved stamp and change-type checkboxes (authoritative — copy verbatim)
 
-!`bash -c 'ROOT="$(git rev-parse --show-toplevel)"; if [ -f "$ROOT/tools/release/bump-version.sh" ] && grep -q "^FORGE_VERSION=" "$ROOT/install.sh" 2>/dev/null; then bash "$ROOT/tools/release/mr-stamp.sh" --base ${1:-master}; fi'`
+!`bash -c 'ROOT="$(git rev-parse --show-toplevel)"; if [ -f "$ROOT/tools/release/bump-version.sh" ] && grep -q "^FORGE_VERSION=" "$ROOT/install.sh" 2>/dev/null; then bash "$ROOT/tools/release/mr-stamp.sh" --base ${1:-master}; fi' -- "$1"`
 
 ## Included commits (subjects and bodies)
 
