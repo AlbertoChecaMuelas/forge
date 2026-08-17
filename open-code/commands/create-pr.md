@@ -28,6 +28,20 @@ steps below.
 
 Execute this sequence in order, fully automatic — no manual version input from the user.
 
+### Step 0 — Detect forge mode
+
+Run via `bash`:
+```
+ROOT="$(git rev-parse --show-toplevel)"; if [ -f "$ROOT/tools/release/bump-version.sh" ] && grep -q '^FORGE_VERSION=' "$ROOT/install.sh" 2>/dev/null; then forge_mode=true; else forge_mode=false; fi
+```
+This is the same forge-detection gate used internally by `/pr-description`. If `forge_mode=true`,
+follow "Forge mode" below — the full script-driven flow (Steps 1-5), unchanged. If
+`forge_mode=false`, follow "Generic mode" below instead — the repo has no `tools/release/` scripts
+to drive a version bump, a changelog refresh or PR creation, so the flow falls back to
+`/pr-description` plus a direct, inline `gh pr create`/`gh pr edit`. Never mix the two branches.
+
+### Forge mode (`forge_mode=true`)
+
 ### Step 1 — Compute the version bump
 
 Run via `bash`:
@@ -126,12 +140,82 @@ $(git rev-parse --show-toplevel)/tools/release/create-pr.sh --base <base>
 - **Exit 4** (`gh pr create`/`gh pr edit` failed) or **exit 5** (could not parse title or body from
   `PR-DESCRIPTION.md`): report the failure to the user in Spanish and stop.
 
+### Generic mode (`forge_mode=false`)
+
+No `tools/release/` script is invoked in this mode — there is no version bump, no changelog
+refresh and no release commit. The flow only regenerates the PR description and creates/updates
+the PR directly.
+
+#### Step G1 — Regenerate and write `PR-DESCRIPTION.md`
+
+Invoke the `/pr-description` command (command chaining), passing `<base>` as its argument, to
+generate the PR description from the current branch history. In generic mode `/pr-description`
+already detects the same non-forge condition and omits the `mr-stamp.sh` freshness stamp and the
+`## Tipo de cambio` block. `/pr-description` never writes files itself — it returns the Markdown
+body VERBATIM to its caller.
+
+Write that returned output VERBATIM to `PR-DESCRIPTION.md` at the repo root via `bash` (e.g. using
+a heredoc with a quoted delimiter such as `<<'EOF'`, so the shell does not expand `$VAR`,
+`$(...)` or backticks inside the LLM-generated Markdown, and so no paraphrasing or reformatting
+occurs). `PR-DESCRIPTION.md` is a working artifact and must NEVER be committed:
+- Before (or right after) the write, ensure the repo's `.gitignore` contains the line
+  `PR-DESCRIPTION.md`. Check first via `bash`:
+  `grep -q '^PR-DESCRIPTION\.md$' $(git rev-parse --show-toplevel)/.gitignore` — only append the
+  line (create the file if missing) when that check fails, so the operation stays idempotent.
+- If `git ls-files --error-unmatch PR-DESCRIPTION.md` shows it is tracked, run via `bash`
+  `git rm --cached PR-DESCRIPTION.md` so the ignore rule takes effect, and include that deletion
+  in the next commit you make.
+
+#### Step G2 — Verify the branch is pushed to `origin`
+
+Run via `bash`:
+```
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+REMOTE_SHA="$(git rev-parse "origin/${CURRENT_BRANCH}" 2>/dev/null || true)"
+LOCAL_SHA="$(git rev-parse HEAD)"
+```
+If `REMOTE_SHA` is empty or differs from `LOCAL_SHA`, the branch has no matching tip on `origin`.
+Report this to the user in Spanish (e.g. "la rama '<branch>' no está pusheada a origin; ejecuta
+`git push origin <branch>` y vuelve a intentarlo") and STOP. Do not push on the user's behalf under
+any circumstance.
+
+#### Step G3 — Create the PR inline
+
+Extract the title and body from `PR-DESCRIPTION.md` exactly as `create-pr.sh` does in forge mode —
+replicate its logic inline via `bash`, do not invoke the script (it does not exist in this repo):
+- **Title**: the first non-empty line that is not a bare `---` separator.
+- **Body**: from the first `# ` heading to the end of the file, excluding the
+  `<!-- forge:pr-description ... -->` stamp line if one is present (it should not be, in generic
+  mode).
+
+If either extraction is empty, report the failure to the user in Spanish and stop.
+
+Run via `bash`:
+```
+gh pr create --base "<base>" --head "$CURRENT_BRANCH" --title "$TITLE" --body "$BODY"
+```
+(resolve `<base>` to the actual base branch value determined for this flow, not the literal
+placeholder).
+- If it succeeds, report the result (PR URL) to the user in Spanish and stop. This is the
+  successful end of the flow.
+- If it fails because a PR already exists for this branch (the output matches
+  `already exists`/`already a pull request`), fall back to updating it instead:
+  ```
+  gh pr edit "$CURRENT_BRANCH" --title "$TITLE" --body "$BODY"
+  ```
+  Report the update to the user in Spanish and stop.
+- If it fails for any other reason, report the failure to the user in Spanish and stop.
+
 ## Hard rules
 
-- **Never push.** The user pushes manually after the PR is opened. The release commit travels
-  with the PR; once it merges into `master`, CI `auto-tag` creates and pushes the tag, then closes
-  `[Unreleased]` as `[v<NEXT>] - YYYY-MM-DD` and pushes that follow-up commit to `master`.
-- Never call the update-changelog command from this flow — always call the `update-changelog.sh`
-  script under `tools/release/` directly via `bash` (see Step 2).
-- Never improvise PR creation with raw `gh pr create`/`gh pr edit`/REST calls — always go through
-  `tools/release/create-pr.sh`.
+- **Never push, in either mode.** The user pushes manually after the PR is opened. In forge mode,
+  the release commit travels with the PR; once it merges into `master`, CI `auto-tag` creates and
+  pushes the tag, then closes `[Unreleased]` as `[v<NEXT>] - YYYY-MM-DD` and pushes that follow-up
+  commit to `master`.
+- **Forge mode**: never call the update-changelog command from this flow — always call the
+  `update-changelog.sh` script under `tools/release/` directly via `bash` (see Step 2).
+- **Forge mode**: never improvise PR creation with raw `gh pr create`/`gh pr edit`/REST calls —
+  always go through `tools/release/create-pr.sh`.
+- **Generic mode**: the repo has no `tools/release/create-pr.sh` to call. Building `gh pr
+  create`/`gh pr edit` inline (Step G3) is the designed, official path for this mode — it is not
+  an improvisation, and the exception above does not apply when `forge_mode=false`.

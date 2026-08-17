@@ -2,7 +2,7 @@
 description: Generates a structured description for a Pull Request from the commits and diffs of the current branch.
 argument-hint: "[base-branch]"
 model: claude-haiku-4-5
-allowed-tools: Bash(git log *) Bash(git diff *) Bash(git rev-parse *) Bash(bash $(git rev-parse --show-toplevel)/tools/release/mr-stamp.sh *) Write
+allowed-tools: Bash(git log *) Bash(git diff *) Bash(git rev-parse *) Bash(bash -c 'ROOT="$(git rev-parse --show-toplevel)"; if [ -f "$ROOT/tools/release/bump-version.sh" ] && grep -q "^FORGE_VERSION=" "$ROOT/install.sh" 2>/dev/null; then bash "$ROOT/tools/release/mr-stamp.sh" *) Write
 context: fork
 ---
 
@@ -17,7 +17,7 @@ The base branch is `${1:-master}`.
 
 ## Pre-resolved stamp and change-type checkboxes (authoritative — copy verbatim)
 
-!`bash $(git rev-parse --show-toplevel)/tools/release/mr-stamp.sh --base ${1:-master}`
+!`bash -c 'ROOT="$(git rev-parse --show-toplevel)"; if [ -f "$ROOT/tools/release/bump-version.sh" ] && grep -q "^FORGE_VERSION=" "$ROOT/install.sh" 2>/dev/null; then bash "$ROOT/tools/release/mr-stamp.sh" --base ${1:-master}; fi' -- "$1"`
 
 ## Included commits (subjects and bodies)
 
@@ -45,9 +45,10 @@ The language of the entire description must be **Spanish**. Do not use English w
 
 ### Strict rules before writing
 
-**On the freshness stamp — MANDATORY:**
-- The very last line of the output MUST be the stamp line exactly as emitted in the "Pre-resolved stamp and change-type checkboxes" context block above. Copy it verbatim — do not re-derive the SHA or timestamp by hand.
-- This stamp lets downstream tooling (`tools/release/create-pr.sh`) detect when the description is stale relative to the current branch tip. Omitting it breaks the PR-creation pipeline.
+**On the freshness stamp — MANDATORY when present (forge mode only):**
+- If the "Pre-resolved stamp and change-type checkboxes" context block above is non-empty (forge mode: the repository has `tools/release/bump-version.sh` and `FORGE_VERSION` in `install.sh`), the very last line of the output MUST be the stamp line exactly as emitted there. Copy it verbatim — do not re-derive the SHA or timestamp by hand.
+- This stamp lets downstream tooling (`tools/release/create-pr.sh`) detect when the description is stale relative to the current branch tip. Omitting it in forge mode breaks the PR-creation pipeline.
+- If that context block is empty (non-forge repository), do not emit any stamp line and do not treat this rule as applicable — the output simply ends with the last filled-in section of the template.
 
 **On figures and counts — CRITICAL:**
 - **NEVER invent or estimate numbers** not directly present in the `git diff --stat` output.
@@ -72,7 +73,8 @@ The language of the entire description must be **Spanish**. Do not use English w
   - Repeating the change summary — this section is context, not inventory.
 
 **On change types:**
-Paste the `## Tipo de cambio` block exactly as it appears in the "Pre-resolved stamp and change-type checkboxes" context block above. Do not derive checkboxes from commit prefixes yourself — use the authoritative pre-resolved block verbatim.
+- If the "Pre-resolved stamp and change-type checkboxes" context block above contains a `## Tipo de cambio` block (forge mode), paste it exactly as it appears there. Do not derive checkboxes from commit prefixes yourself — use the authoritative pre-resolved block verbatim.
+- If that context block is empty (non-forge repository), omit the `## Tipo de cambio` block entirely from the output.
 
 **On the change summary:**
 - Group by functional area. For each bullet: describe **what** changes and **why** (use commit bodies as source).
@@ -141,7 +143,7 @@ tipo(scope): descripción concisa en imperativo (máx 72 chars)
 
 **Decisión técnica:** [1-3 frases sobre el enfoque adoptado. Solo menciona alternativas si aparecen en los commits.]
 
-<!-- PASTE HERE the ## Tipo de cambio block verbatim from the "Pre-resolved stamp and change-type checkboxes" context block. Do not modify it. -->
+<!-- PASTE HERE the ## Tipo de cambio block verbatim from the "Pre-resolved stamp and change-type checkboxes" context block. Do not modify it. Omit this block entirely if that context block is empty (non-forge repository). -->
 
 ---
 
@@ -184,8 +186,8 @@ tipo(scope): descripción concisa en imperativo (máx 72 chars)
 - **[zona/fichero/símbolo concreto]** — [tipo de riesgo] — [qué verificar].
 - **[zona/fichero/símbolo concreto]** — [tipo de riesgo] — [qué verificar].
 
-<!-- PASTE HERE the stamp line verbatim from the "Pre-resolved stamp and change-type checkboxes" context block. It must be the very last line of the output. -->
+<!-- PASTE HERE the stamp line verbatim from the "Pre-resolved stamp and change-type checkboxes" context block. It must be the very last line of the output. Omit entirely if that context block is empty (non-forge repository). -->
 
 ---
 
-FINAL REMINDER: the template ends with the `<!-- forge:pr-description ... -->` stamp on the last line. Copy the stamp line exactly as it appears in the "Pre-resolved stamp and change-type checkboxes" context block — do not substitute SHA or timestamp by hand. The stamp is MANDATORY and MUST be the very last line of your output — your last character must be the closing `>` of the HTML comment. Do not append any text after the stamp. The stamp is required even when sections (Riesgos, Motivación, etc.) are omitted. The output of this skill is saved as `PR-DESCRIPTION.md` at the repository root by the invoking skill (`create-pr`).
+FINAL REMINDER: if the "Pre-resolved stamp and change-type checkboxes" context block above is non-empty (forge mode), the template ends with the `<!-- forge:pr-description ... -->` stamp on the last line. Copy the stamp line exactly as it appears there — do not substitute SHA or timestamp by hand. In that case the stamp is MANDATORY and MUST be the very last line of your output — your last character must be the closing `>` of the HTML comment. Do not append any text after the stamp. The stamp is required even when sections (Riesgos, Motivación, etc.) are omitted. If that context block is empty (non-forge repository), do not emit any stamp line — the output simply ends with the last filled-in section of the template. The output of this skill is saved as `PR-DESCRIPTION.md` at the repository root by the invoking skill (`create-pr`).
