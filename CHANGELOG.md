@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- instalar agents/commands/plugins como copia en vez de symlink
+
+
+### Fixed
 - marcar checkboxes por-paso en modo batch del applier
 
 

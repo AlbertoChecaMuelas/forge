@@ -121,15 +121,22 @@ bash "$REPO_ROOT/shared/scripts/generate-agents.sh" --target=opencode
 mkdir -p "$AGENTS_DIR" "$PLUGINS_DIR" "$COMMANDS_DIR" "$LAUNCHER_DIR"
 
 for role in applier senior tech tester orchestrator; do
-  ln -sfn "$REPO_ROOT/open-code/agents/${role}.md" "$AGENTS_DIR/${role}.md"
+  dest="$AGENTS_DIR/${role}.md"
+  [ -L "$dest" ] && rm "$dest"
+  cp "$REPO_ROOT/open-code/agents/${role}.md" "$dest"
 done
 
 for cmd in create-plan execute-plan review create-pr pr-description update-changelog; do
-  ln -sfn "$REPO_ROOT/open-code/commands/${cmd}.md" "$COMMANDS_DIR/${cmd}.md"
+  dest="$COMMANDS_DIR/${cmd}.md"
+  [ -L "$dest" ] && rm "$dest"
+  cp "$REPO_ROOT/open-code/commands/${cmd}.md" "$dest"
 done
 
-ln -sfn "$REPO_ROOT/open-code/plugins/forge-guard.js" "$PLUGINS_DIR/forge-guard.js"
-ln -sfn "$REPO_ROOT/open-code/AGENTS.md" "$AGENTS_MD_PATH"
+[ -L "$PLUGINS_DIR/forge-guard.js" ] && rm "$PLUGINS_DIR/forge-guard.js"
+cp "$REPO_ROOT/open-code/plugins/forge-guard.js" "$PLUGINS_DIR/forge-guard.js"
+
+[ -L "$AGENTS_MD_PATH" ] && rm "$AGENTS_MD_PATH"
+cp "$REPO_ROOT/open-code/AGENTS.md" "$AGENTS_MD_PATH"
 
 python3 - "$REPO_ROOT/open-code/opencode.jsonc" "$CONFIG_FILE" "$AGENTS_MD_PATH" <<'PY'
 import pathlib
@@ -145,6 +152,9 @@ dst.write_text(content, encoding="utf-8")
 PY
 
 chmod +x "$REPO_ROOT/open-code/forge-opencode.sh"
+# Launcher stays a symlink: it runs in the user shell and exec's opencode before any
+# sandboxed session exists, so it never triggers the external-directory prompt; the
+# symlink is required so resolve_path() can locate env.sh in the repo and load API keys.
 ln -sfn "$REPO_ROOT/open-code/forge-opencode.sh" "$LAUNCHER_PATH"
 
 if [ -f "$REPO_ROOT/open-code/env.sh" ]; then
