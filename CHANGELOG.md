@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- usar RELEASE_PAT en vez de GITHUB_TOKEN para el auto-merge de release
+
 ## [0.7.0] - 2026-08-18
 
 ### Added
