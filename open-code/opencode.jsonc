@@ -10,7 +10,7 @@
     "__FORGE_OPENCODE_AGENTS_MD__"
   ],
   "plugin": [
-    "./plugins/forge-guard.js"
+    "./plugins/forge-guard.js", "./plugins/forge-task-observer.js"
   ],
   "mcp": {
     "playwright": {
