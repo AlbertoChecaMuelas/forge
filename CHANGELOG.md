@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-18
+
 ### Added
 - superficializar detalle real en fallos de infra de tech
 - capturar error estructurado en fallos de task del subagente
