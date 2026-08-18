@@ -69,6 +69,8 @@ If `$ARGUMENTS` contains both the `--- BEGIN RESEARCH SUMMARY ---` and `--- END 
 > - `[A]` (applier): fully specifiable mechanical step, no micro-decisions.
 > - `[T]` (tech): step requiring code judgment, local decisions, or debugging.
 >
+> **Splitting large `[T]` steps**: any `[T]` step whose expected output is large or heavy-generation (e.g. writing a long new file from scratch, a broad multi-file rewrite, an extensive documentation section, or anything else likely to require a long, uninterrupted single turn) MUST be split into several smaller `[T]` sub-steps, each with a narrower and independently verifiable output (e.g. `Step N.2` generates section A, `Step N.3` generates section B, instead of one `Step N.2` generating everything). A single oversized `[T]` step run as one long turn increases the risk of an empty completion or an infrastructure failure with no continuity — this happened in practice on a `task` invocation that ran for 1h12m before failing after an unproductive auto-retry. Rule of thumb when drafting a `[T]` step: if its expected output alone could plausibly fill a long single turn, split it before emitting the plan.
+>
 > Reviewer CHECKPOINT placement rule:
 > - `P <= 3` phases: emit exactly 1 CHECKPOINT block, placed after the last phase (final only).
 > - `P >= 4` phases: emit exactly 2 CHECKPOINT blocks — one after phase `ceil(P/2)` (midpoint), one after the last phase (final).
