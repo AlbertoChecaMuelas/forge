@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- paridad de protocolo de fallo de infraestructura de subagente
+
+
 ## [0.5.4] - 2026-08-17
 
 ### Fixed
