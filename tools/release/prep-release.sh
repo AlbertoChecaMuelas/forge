@@ -25,8 +25,12 @@
 #                       (public API stable release, breaking change announcement),
 #                       never auto-derived from commit history.
 #
-# Required environment when running in CI (provided by GitHub Actions):
-#   - GITHUB_TOKEN      : used for `gh pr create` / `gh pr merge --auto`
+# Required environment when running in CI:
+#   - GITHUB_TOKEN      : a fine-grained PAT (secret RELEASE_PAT) injected as GITHUB_TOKEN by the
+#                         workflow, used for `gh pr create` / `gh pr merge --auto`. A user-identity
+#                         token is required so the release PR triggers the required checks; the
+#                         default Actions GITHUB_TOKEN would leave CI as action_required
+#                         (anti-recursion) and block auto-merge.
 #                         and remote URL auth (must have contents:write +
 #                         pull-requests:write at the workflow level)
 #   - GITHUB_REPOSITORY : owner/repo

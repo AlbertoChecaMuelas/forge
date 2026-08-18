@@ -12,8 +12,12 @@
 # Designed to run inside GitHub Actions on the default branch, but is safe to
 # run locally for verification: pass --dry-run to skip the push.
 #
-# Required environment when running in CI (all provided automatically by GitHub Actions):
-#   - GITHUB_TOKEN      : provided by GitHub Actions (must have contents:write)
+# Required environment when running in CI:
+#   - GITHUB_TOKEN      : a fine-grained PAT (secret RELEASE_PAT) injected as GITHUB_TOKEN by the
+#                         workflow. A user-identity token is required so the tag/commit push this
+#                         script performs triggers the required checks; the default Actions
+#                         GITHUB_TOKEN would leave CI as action_required (anti-recursion) and block
+#                         auto-merge. Needs contents:write.
 #   - GITHUB_REPOSITORY : provided by GitHub Actions (owner/repo)
 #
 # Exit codes:
