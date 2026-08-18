@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- superficializar detalle real en fallos de infra de tech
+- capturar error estructurado en fallos de task del subagente
+
+### Changed
+- guiar la división de pasos [T] grandes en create-plan
+
+### Fixed
+- robustecer captura de error en forge-task-observer
+
+
 ## [0.6.0] - 2026-08-18
 
 ### Added
