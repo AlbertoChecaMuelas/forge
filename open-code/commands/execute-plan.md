@@ -159,6 +159,8 @@ d. If `@applier` returns `BLOCKED` or `VERIFIER_FAILED`:
    - `@tech` fixes and reports back. If `@tech` resolves it, mark the step as completed (same `flip_step` + front-matter update as above).
    - If `@tech` returns `ESCALATE_SENIOR`, invoke `@senior`, wait for resolution, then resume.
 
+e. If the `task` dispatch of `@applier` fails with an infrastructure error (no return code — provider/model/sandbox/network failure, distinct from `BLOCKED`, `VERIFIER_FAILED`, or any other escalation code): stop, surface `Fallo de infraestructura del subagente applier: <error literal>` to the user, no retry, no re-route.
+
 #### If the dispatched item is a batch (via `@applier`)
 
 a. **Dispatch**: issue a single `task` invocation of `@applier` whose first line is exactly:
@@ -178,6 +180,8 @@ c. **On `BLOCKED_BATCH: step N.M — <reason>`** (failure at step `N.M`):
    - Steps completed before the failure are not re-executed (their `[x]` persists).
    - Pass the failure to `@tech` exactly as in the single-step `BLOCKED`/`VERIFIER_FAILED` flow above: `@tech` diagnoses and fixes, then reports back. If `@tech` resolves it, mark step `N.M` as `[x]` (`flip_step`) and resume the batch algorithm from the next pending step. If `@tech` returns `ESCALATE_SENIOR`, invoke `@senior`, wait for resolution, then resume.
 
+d. If the batch `task` dispatch of `@applier` fails with an infrastructure error (no return code — provider/model/sandbox/network failure, distinct from `OK_BATCH`, `BLOCKED_BATCH`, or any other escalation code): stop, surface `Fallo de infraestructura del subagente applier: <error literal>` to the user, no retry, no re-route.
+
 #### If the step is `[T]` (via `@tech`)
 
 a. Invoke `@tech` via the `task` tool with the full step block: path(s), responsibilities, success criteria, verifier.
@@ -187,6 +191,8 @@ b. `@tech` executes the step (may delegate mechanical sub-steps to `@applier` in
 c. On success, `@tech` reports `OK`. Via `bash`: `flip_step "<plan-path>" "N.M"` and update `current_phase`/`current_step` in the front-matter.
 
 d. If `@tech` returns `ESCALATE_SENIOR`: invoke `@senior` with the reason. `@senior` resolves or modifies the plan. Resume.
+
+e. If the `task` dispatch of `@tech` fails with an infrastructure error (no return code — provider/model/sandbox/network failure, distinct from `ESCALATE_SENIOR` or any other escalation code): stop, surface `Fallo de infraestructura del subagente tech: <error literal>` to the user, no retry, no re-route.
 
 ### Step 5 — Review checkpoint trigger
 
