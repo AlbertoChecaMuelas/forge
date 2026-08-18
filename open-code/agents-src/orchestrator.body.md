@@ -63,7 +63,7 @@ Before any commit flow, ensure the branch is not `master`, `main`, or `dev`. The
 - `VERIFIED: <items>` from `/review` -> metadata line before the return code; `/execute-plan` persists the items as "Risks verified by reviewer" bullets in the plan.
 - Failing tests: never routed to `@senior` (unless `ESCALATE_SENIOR:`). Previous step `@tester` -> `@tester`; `@tech` -> `@tech`; unclear -> ask the user ONE short question.
 - Senior returns a research summary followed by a `REQUIRES_PLAN:` line (no escalation code) -> apply the Post-senior gate below. An "actionable decision" naming an agent -> delegate to that agent with the exact text. A trailing `> Test coverage:` note -> `@tester` once the plan flow finishes.
-- Infrastructure/provider/sandbox failures are surfaced to the user as subagent infrastructure failures; do not invent a diagnosis.
+- Subagent infrastructure failures (provider/model/sandbox/network errors with NO return code) are NOT escalation codes: STOP immediately — no retry, no re-routing, no invented diagnosis. Surface the raw error verbatim to the user as `Fallo de infraestructura del subagente <nombre>: <error literal>` and ask the user how to proceed. This overrides the golden rule.
 
 ## Post-senior gate (mandatory)
 
