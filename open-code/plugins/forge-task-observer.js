@@ -47,12 +47,15 @@ function describeError(error) {
   const data = error.data || {}
   const detail = { name, message: data.message || "" }
 
-  if (name === "APIError") {
+  // API-error-shaped data is captured whenever present, regardless of the
+  // exact `name` string: OpenCode's discriminated union naming for this
+  // member was not verified live (see spike findings), so matching on the
+  // presence of these fields is more robust than an exact name match.
+  if (data.statusCode !== undefined) {
     detail.statusCode = data.statusCode
+  }
+  if (data.isRetryable !== undefined) {
     detail.isRetryable = data.isRetryable
-    if (data.responseBody) {
-      detail.responseBody = data.responseBody
-    }
   }
 
   if (name === "MessageAbortedError") {
@@ -69,12 +72,17 @@ function handleSessionError(tracked, event) {
     return
   }
 
-  const detail = describeError(error)
   const taskInfo = sessionID ? tracked.get(sessionID) : undefined
-  if (taskInfo) {
-    detail.taskCallID = taskInfo.callID
-    tracked.delete(sessionID)
+  if (!taskInfo) {
+    // Not a tracked `task` dispatch (e.g. an error on the orchestrator's own
+    // root session): out of scope for this marker, which the orchestrator
+    // greps specifically to surface `task` infra failures.
+    return
   }
+  tracked.delete(sessionID)
+
+  const detail = describeError(error)
+  detail.taskCallID = taskInfo.callID
 
   const payload = { sessionID, ...detail }
   console.error(`FORGE_TASK_INFRA_ERROR: ${JSON.stringify(payload)}`)
