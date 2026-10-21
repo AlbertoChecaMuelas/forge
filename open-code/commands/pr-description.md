@@ -23,7 +23,7 @@ when it chains into this one) is responsible for saving the returned Markdown to
 2. Fill the prompt template below, substituting before dispatch:
    - `{BASE}` -> the resolved base branch name (e.g. `master` or `main`).
 3. Dispatch a FRESH subagent via the `task` tool whose entire prompt is the filled template,
-   explicitly overriding the model for that call to `minimax-coding-plan/MiniMax-M2.5-highspeed`.
+   explicitly overriding the model for that call to `minimax-coding-plan/MiniMax-M3`.
    Do not paraphrase or trim the template.
 4. Relay the subagent's output to the caller VERBATIM — no surrounding commentary, no
    reformatting. The caller (the user directly, or `/create-pr` when chaining) is responsible

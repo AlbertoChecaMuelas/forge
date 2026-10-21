@@ -5,7 +5,7 @@
   // This top-level model is the fallback for sessions that do not pick an agent model.
   "default_agent": "orchestrator",
   "model": "minimax-coding-plan/MiniMax-M3",
-  "small_model": "minimax-coding-plan/MiniMax-M2.5-highspeed",
+  "small_model": "minimax-coding-plan/MiniMax-M3",
   "instructions": [
     "__FORGE_OPENCODE_AGENTS_MD__"
   ],
@@ -24,7 +24,12 @@
         "apiKey": "{env:OPENAI_API_KEY}"
       },
       "models": {
-        "gpt-5.6-sol": {
+        "gpt-6.1-sol": {
+          "options": {
+            "reasoningEffort": "high"
+          }
+        },
+        "gpt-6-luna": {
           "options": {
             "reasoningEffort": "xhigh"
           }

@@ -15,7 +15,7 @@ jobs:
         run: sudo apt-get install -y shellcheck
 
       - name: Install OpenCode CLI
-        run: npm install -g opencode-ai
+        run: npm install -g opencode-ai@1.19.3
 
       - name: Run test suite
         run: bash tests/run-all.sh
