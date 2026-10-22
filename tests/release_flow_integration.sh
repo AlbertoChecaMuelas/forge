@@ -74,8 +74,10 @@ forge_changelog_tail() {
   sed -n '/^## \[0\.1\.0\]/,$p' "$1"
 }
 
-# run_release_flow — bump, changelog and commit in one go. Must be called with
-# the sandbox repo as CWD. Leaves BUMP/NEXT in globals.
+# run_release_flow <base> — bump, changelog and commit in one go against <base>
+# (default master, same convention as forge_release_once in release_fixtures.sh:
+# every call site passes the base explicitly instead of leaning on the default).
+# Must be called with the sandbox repo as CWD. Leaves BUMP/NEXT in globals.
 run_release_flow() {
   local base="${1:-master}"
   FLOW_OUT="$("$BUMP_VERSION" --base "$base")"
@@ -108,7 +110,7 @@ test_fl1_flow_twice_second_is_noop() {
 
     cd "$dir"
     # --- first invocation -------------------------------------------------
-    run_release_flow
+    run_release_flow master
     tf_eq "$FLOW_BUMP" "minor" "FL1 — first run bump policy"
     tf_eq "$FLOW_NEXT" "0.2.0" "FL1 — first run NEXT"
 
@@ -255,7 +257,7 @@ test_fl4_failure_at_commit_is_resumable() {
     setup_standard_repo "$dir"
 
     cd "$dir"
-    run_release_flow || tf_fail "FL4 — setup flow failed with $?"
+    run_release_flow master || tf_fail "FL4 — setup flow failed with $?"
 
     # Rebuild the release state and let the hook reject the commit.
     forge_touch "$dir" src/opencode.sh "echo pinned v2"
@@ -342,7 +344,7 @@ EOF
       "fix(opencode): modelos sol/luna, purga de highspeed y pin de opencode-ai@1.19.3"
 
     cd "$dir"
-    run_release_flow
+    run_release_flow master
     tf_eq "$FLOW_NEXT" "0.7.2" "FL5 — the branch produces the v0.7.2 checkpoint"
 
     # The checkpoint must have the exact shape of 91b4229.
