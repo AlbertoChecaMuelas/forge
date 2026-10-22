@@ -7,7 +7,6 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - modelos sol/luna, purga de highspeed y pin de opencode-ai@1.19.3
 
-
 ## [0.7.1] - 2026-08-18
 
 ### Fixed
@@ -52,47 +51,27 @@ All notable changes to this project will be documented in this file.
 
 ## [0.5.1] - 2026-08-14
 
-### Fixed
-- enrutar investigación de bugs a senior antes que tech
-
-
 ### Added
 - port Grupo B PR/MR flow — create-pr, pr-description, update-changelog
 - port Grupo C parity — escalation codes, failing-tests rule, tech ESCALATE_TECH
 - regenerar agentes opencode para el carril de auditoría
 - enrutar auditorías a los carriles senior y /review
 - añadir comando /review para auditoría de diff/PR
+- port post-senior gate and create-plan/execute-plan commands
 
 ### Fixed
+- enrutar investigación de bugs a senior antes que tech
 - sincronizar uninstall-opencode.sh con los 6 comandos instalados
 - excluir /review del sentinel de referencias Claude-only en tests
 - añadir señal fwkcna-parent a la detección de Spring Boot
 - reparar carril de testing del tester (contenido inline)
 - propagar el scope de auditoría de working-tree en /review
-
-
-### Added
-- port post-senior gate and create-plan/execute-plan commands
-
-### Fixed
 - use repo's canonical Sonnet-equivalent model for re-review
-
-
-### Fixed
 - actualizar test y docs tras migración a minimax-coding-plan
 - regenerar agentes con provider minimax-coding-plan
 - reapuntar tech/tester/applier/orchestrator a minimax-coding-plan
-
-
-### Fixed
 - prohibir EnterPlanMode/ExitPlanMode built-in en favor de /create-plan
-
-
-### Fixed
 - delegar update-changelog directamente al script determinista
-
-
-### Fixed
 - release: `create-pr` no longer invokes the `/update-changelog` skill for its changelog step; it now delegates directly to the deterministic `tools/release/update-changelog.sh` script, avoiding a skill-runner `$ARGUMENTS` expansion failure that could leave the base branch empty and abort the changelog refresh
 
 ## [0.3.1] - 2026-06-29

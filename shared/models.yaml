@@ -1,6 +1,8 @@
 applier:
   claude: haiku
-  # GPT equiv: openai/gpt-5.4-mini-fast
+  # GPT equiv: n/a — the mini-fast tier was purged from the provider
+  # (minimax-coding-plan/MiniMax-M2.5-highspeed no longer exists), so the
+  # role shares the tier of tester/orchestrator until that tier is back.
   opencode: minimax-coding-plan/MiniMax-M3
 tech:
   claude: sonnet
