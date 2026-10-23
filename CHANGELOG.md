@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-10-23
+
 ### Fixed
 - sincronizar los plugins declarados en opencode.jsonc
 
