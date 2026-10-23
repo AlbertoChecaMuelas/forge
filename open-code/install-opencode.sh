@@ -5,8 +5,12 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode-forge}"
 CONFIG_FILE="${OPENCODE_CONFIG:-$CONFIG_DIR/opencode.jsonc}"
+# Relative paths inside the config (e.g. "./plugins/forge-guard.js") resolve
+# against the directory that holds the config file, so that is where the
+# overlay files must land.
+CONFIG_ROOT_DIR="$(dirname "$CONFIG_FILE")"
 AGENTS_DIR="$CONFIG_DIR/agents"
-PLUGINS_DIR="$CONFIG_DIR/plugins"
+PLUGINS_DIR="$CONFIG_ROOT_DIR/plugins"
 COMMANDS_DIR="$CONFIG_DIR/commands"
 AGENTS_MD_PATH="$CONFIG_DIR/AGENTS.md"
 AUTH_FILE="$HOME/.local/share/opencode/auth.json"
@@ -132,11 +136,18 @@ for cmd in create-plan execute-plan review create-pr pr-description update-chang
   cp "$REPO_ROOT/open-code/commands/${cmd}.md" "$dest"
 done
 
-[ -L "$PLUGINS_DIR/forge-guard.js" ] && rm "$PLUGINS_DIR/forge-guard.js"
-cp "$REPO_ROOT/open-code/plugins/forge-guard.js" "$PLUGINS_DIR/forge-guard.js"
+# Plugins are derived from the `plugin` field of the source config instead of
+# being hardcoded here: a plugin declared in the config but missing on disk
+# disables its feature silently, so the list is never duplicated.
+python3 "$SCRIPT_DIR/lib/plugin-sync.py" sync \
+  --config "$REPO_ROOT/open-code/opencode.jsonc" \
+  --source-root "$REPO_ROOT/open-code" \
+  --target-root "$CONFIG_ROOT_DIR"
 
 [ -L "$AGENTS_MD_PATH" ] && rm "$AGENTS_MD_PATH"
 cp "$REPO_ROOT/open-code/AGENTS.md" "$AGENTS_MD_PATH"
+
+mkdir -p "$(dirname "$CONFIG_FILE")"
 
 python3 - "$REPO_ROOT/open-code/opencode.jsonc" "$CONFIG_FILE" "$AGENTS_MD_PATH" <<'PY'
 import pathlib
@@ -150,6 +161,11 @@ content = src.read_text(encoding="utf-8")
 content = content.replace("__FORGE_OPENCODE_AGENTS_MD__", str(agents_md))
 dst.write_text(content, encoding="utf-8")
 PY
+
+# The installed config must never reference a plugin that is not on disk:
+# OpenCode does not report the failure, so the overlay would be silently
+# incomplete. Verify the installed config against the installed files.
+python3 "$SCRIPT_DIR/lib/plugin-sync.py" verify --config "$CONFIG_FILE"
 
 chmod +x "$REPO_ROOT/open-code/forge-opencode.sh"
 # Launcher stays a symlink: it runs in the user shell and exec's opencode before any

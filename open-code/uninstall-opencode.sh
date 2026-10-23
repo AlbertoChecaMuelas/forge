@@ -4,8 +4,12 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_LAUNCHER="$SCRIPT_DIR/forge-opencode.sh"
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode-forge}"
+CONFIG_FILE="${OPENCODE_CONFIG:-$CONFIG_DIR/opencode.jsonc}"
+# Relative paths inside the config resolve against the directory that holds
+# the config file, so that is where the plugins were installed.
+CONFIG_ROOT_DIR="$(dirname "$CONFIG_FILE")"
 AGENTS_DIR="$CONFIG_DIR/agents"
-PLUGINS_DIR="$CONFIG_DIR/plugins"
+PLUGINS_DIR="$CONFIG_ROOT_DIR/plugins"
 COMMANDS_DIR="$CONFIG_DIR/commands"
 LAUNCHER_PATH="$HOME/.local/bin/forge-opencode"
 
@@ -17,7 +21,10 @@ for cmd in create-plan execute-plan review create-pr pr-description update-chang
   rm -f "$COMMANDS_DIR/${cmd}.md"
 done
 
-rm -f "$PLUGINS_DIR/forge-guard.js"
+# Plugins are derived from the installed config, never hardcoded: the
+# uninstaller must remove exactly what the installer put in place.
+python3 "$SCRIPT_DIR/lib/plugin-sync.py" remove --config "$CONFIG_FILE"
+
 rm -f "$CONFIG_DIR/opencode.jsonc"
 rm -f "$CONFIG_DIR/AGENTS.md"
 
