@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-10-23
+
 ### Fixed
 - modelos sol/luna, purga de highspeed y pin de opencode-ai@1.19.3
 - idempotencia del flujo /create-pr antes del merge
