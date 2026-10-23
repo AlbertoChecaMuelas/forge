@@ -397,7 +397,7 @@ Forge soporta [OpenCode](https://opencode.ai) desde este mismo repositorio. Open
 1. Requiere `opencode` en `PATH`.
 2. Regenera los 5 agentes OpenCode.
 3. Instala una overlay aislada en `~/.config/opencode-forge/` en vez de tocar la configuración global del usuario.
-4. Symlinka los agentes generados, `AGENTS.md` y `plugins/forge-guard.js` dentro de esa overlay aislada.
+4. Copia los agentes generados, `AGENTS.md` y todos los plugins declarados en `opencode.jsonc` (`plugins/forge-guard.js`, `plugins/forge-task-observer.js`) dentro de esa overlay aislada. La lista de plugins se deriva de la config, nunca se duplica en el instalador, y la instalación falla si algún plugin declarado no está en disco.
 5. Copia `open-code/opencode.jsonc` a la overlay aislada y reescribe la ruta de instrucciones de `AGENTS.md`.
 6. Instala un launcher independiente en `~/.local/bin/forge-opencode` que exporta `OPENCODE_CONFIG_DIR` y `OPENCODE_CONFIG` antes de invocar el binario real `opencode`.
 7. Verifica que existan credenciales de OpenCode o autenticación por tokens vía `open-code/env.sh`.
@@ -416,7 +416,10 @@ El instalador es idempotente y no modifica `~/.config/opencode/`, `.bashrc`, `.z
 open-code/
   agents/                     Agentes OpenCode generados
   agents-src/orchestrator.body.md
-  plugins/forge-guard.js     Plugin de branch guard para OpenCode
+  plugins/                    Plugins OpenCode declarados en opencode.jsonc
+    forge-guard.js            Plugin de branch guard para OpenCode
+    forge-task-observer.js    Observador de fallos de infra de task (marcador FORGE_TASK_INFRA_ERROR)
+  lib/plugin-sync.py          Deriva la overlay de plugins instalada desde opencode.jsonc
   AGENTS.md                  Instrucciones OpenCode compartidas mínimas
   opencode.jsonc             Plantilla de configuración del proveedor
   env.sh                     Loader POSIX de tokens

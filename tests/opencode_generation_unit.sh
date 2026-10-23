@@ -139,23 +139,23 @@ test_opencode_escalation_codes_present() {
 }
 
 test_generated_models_match_expected_mapping() {
-  local expected_applier='model: minimax-coding-plan/MiniMax-M3'
-  local expected_worker='model: minimax-coding-plan/MiniMax-M3'
+  local expected_applier='model: minimax-coding-plan/MiniMax-M3.1-Flash'
+  local expected_worker='model: minimax-coding-plan/MiniMax-M3.1-Flash'
   local expected_tech='model: openai/gpt-6-luna'
   local expected_senior='model: openai/gpt-6.1-sol'
 
   if grep -qxF "${expected_applier}" "$FORGE_ROOT/open-code/agents/applier.md"; then
-    pass "applier model matches MiniMax M3 mapping"
+    pass "applier model matches MiniMax M3.1 Flash mapping"
   else
-    fail "applier model does not match MiniMax M3 mapping"
+    fail "applier model does not match MiniMax M3.1 Flash mapping"
   fi
 
   local role
   for role in tester orchestrator; do
     if grep -qxF "${expected_worker}" "$FORGE_ROOT/open-code/agents/${role}.md"; then
-      pass "${role} model matches MiniMax M3 mapping"
+      pass "${role} model matches MiniMax M3.1 Flash mapping"
     else
-      fail "${role} model does not match MiniMax M3 mapping"
+      fail "${role} model does not match MiniMax M3.1 Flash mapping"
     fi
   done
 
@@ -197,17 +197,38 @@ test_no_custom_minimax_provider_block() {
 test_root_level_models_use_minimax_coding_plan() {
   local jsonc="$FORGE_ROOT/open-code/opencode.jsonc"
 
-  if grep -qxF '  "model": "minimax-coding-plan/MiniMax-M3",' "$jsonc"; then
-    pass "opencode.jsonc root model uses minimax-coding-plan/MiniMax-M3"
+  if grep -qxF '  "model": "minimax-coding-plan/MiniMax-M3.1-Flash",' "$jsonc"; then
+    pass "opencode.jsonc root model uses minimax-coding-plan/MiniMax-M3.1-Flash"
   else
-    fail "opencode.jsonc root model does not use minimax-coding-plan/MiniMax-M3"
+    fail "opencode.jsonc root model does not use minimax-coding-plan/MiniMax-M3.1-Flash"
   fi
 
-  if grep -qxF '  "small_model": "minimax-coding-plan/MiniMax-M3",' "$jsonc"; then
-    pass "opencode.jsonc root small_model uses minimax-coding-plan/MiniMax-M3"
+  if grep -qxF '  "small_model": "minimax-coding-plan/MiniMax-M3.1-Flash",' "$jsonc"; then
+    pass "opencode.jsonc root small_model uses minimax-coding-plan/MiniMax-M3.1-Flash"
   else
-    fail "opencode.jsonc root small_model does not use minimax-coding-plan/MiniMax-M3"
+    fail "opencode.jsonc root small_model does not use minimax-coding-plan/MiniMax-M3.1-Flash"
   fi
+}
+
+test_no_deprecated_minimax_model_ids() {
+  # The active id is MiniMax-M3.1-Flash. The "-Preview" build is deprecated and
+  # must not survive in the model mapping, the OpenCode config or the
+  # generated agents.
+  local active_model='MiniMax-M3.1-Flash'
+  local deprecated_model="${active_model}-Preview"
+  local target
+
+  for target in "$FORGE_ROOT/shared/models.yaml" \
+                "$FORGE_ROOT/open-code/opencode.jsonc" \
+                "$FORGE_ROOT/open-code/agents"; do
+    if [ ! -e "$target" ]; then
+      fail "cannot check deprecated model id ${deprecated_model}: ${target#"$FORGE_ROOT"/} missing"
+    elif grep -rqF "$deprecated_model" "$target"; then
+      fail "deprecated model id ${deprecated_model} still present in ${target#"$FORGE_ROOT"/}"
+    else
+      pass "no deprecated model id ${deprecated_model} in ${target#"$FORGE_ROOT"/}"
+    fi
+  done
 }
 
 test_openai_provider_models_have_expected_efforts() {
@@ -282,6 +303,7 @@ test_opencode_escalation_codes_present
 test_generated_models_match_expected_mapping
 test_no_custom_minimax_provider_block
 test_root_level_models_use_minimax_coding_plan
+test_no_deprecated_minimax_model_ids
 test_openai_provider_models_have_expected_efforts
 test_check_mode_and_drift_detection
 
