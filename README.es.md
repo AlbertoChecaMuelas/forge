@@ -130,8 +130,8 @@ Ejecuta el instalador desde la raíz del repositorio. Cada subcomando es idempot
 | `bash install.sh install --show-cost` | Instala y activa el coste monetario más estadísticas históricas en la statusline. |
 | `bash install.sh install --only=agents,commands` | Instala solo los componentes `agents` y `commands`. |
 | `bash install.sh install --only=statusline` | Instala solo el componente `statusline`. |
-| `bash install.sh status` | Informa de qué symlinks están en su sitio por target (acotado a componentes). |
-| `bash install.sh doctor` | Ejecuta diagnósticos solo sobre los componentes instalados: valida integridad de symlinks, presencia de RTK y salud de configuración. |
+| `bash install.sh status` | Informa en modo solo lectura de la salud por target: symlinks/settings/`CLAUDE.md` acotados a componentes para Claude, o copias, config, plugins declarados y launcher para OpenCode. |
+| `bash install.sh doctor` | Ejecuta diagnósticos por target y de solo lectura: componentes/RTK/config de Claude u overlay/config/plugins/launcher de OpenCode. |
 | `bash install.sh update` | Ejecuta `git pull` y repara symlinks, actuando solo sobre los componentes registrados en el state. |
 | `bash install.sh repair` | Recrea symlinks rotos o ausentes de los componentes instalados, sin hacer pull. |
 | `bash install.sh version` | Imprime `FORGE_VERSION`. |

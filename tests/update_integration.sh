@@ -46,6 +46,19 @@ assert_file_not_exists() {
 }
 
 # ---------------------------------------------------------------------------
+# Isolated runner for the installer.
+#
+# OPENCODE_CONFIG_DIR / OPENCODE_CONFIG are removed on purpose: the overlay
+# installer gives them precedence over HOME, so an inherited real-user config
+# would be rewritten by any command that reaches the OpenCode target.
+# ---------------------------------------------------------------------------
+run_install() {
+  local home="$1"
+  shift
+  env -u OPENCODE_CONFIG_DIR -u OPENCODE_CONFIG HOME="$home" "$@"
+}
+
+# ---------------------------------------------------------------------------
 # Test 1: update --show-cost creates .forge-show-cost sentinel
 # ---------------------------------------------------------------------------
 test_update_show_cost_creates_sentinel() {
@@ -58,14 +71,14 @@ test_update_show_cost_creates_sentinel() {
   mkdir -p "$TMPHOME/.claude"
 
   # Step 1: install without --show-cost
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_install "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
   # Verify sentinel is NOT present after plain install
   assert_file_not_exists "$TMPHOME/.claude/.forge-show-cost" \
     "sentinel ausente tras install sin --show-cost"
 
   # Step 2: update with --show-cost
-  HOME="$TMPHOME" bash "$INSTALL_SH" update --show-cost >/dev/null 2>&1
+  run_install "$TMPHOME" bash "$INSTALL_SH" update --show-cost >/dev/null 2>&1
 
   # Sentinel must now exist
   assert_file_exists "$TMPHOME/.claude/.forge-show-cost" \
@@ -88,13 +101,13 @@ test_update_no_show_cost_removes_sentinel() {
   mkdir -p "$TMPHOME/.claude"
 
   # Install with --show-cost so sentinel is created
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude --show-cost >/dev/null 2>&1
+  run_install "$TMPHOME" bash "$INSTALL_SH" install --target=claude --show-cost >/dev/null 2>&1
 
   assert_file_exists "$TMPHOME/.claude/.forge-show-cost" \
     "sentinel presente tras install --show-cost"
 
   # Update WITHOUT --show-cost: sentinel must be removed
-  HOME="$TMPHOME" bash "$INSTALL_SH" update >/dev/null 2>&1
+  run_install "$TMPHOME" bash "$INSTALL_SH" update >/dev/null 2>&1
 
   assert_file_not_exists "$TMPHOME/.claude/.forge-show-cost" \
     "sentinel eliminado por update sin --show-cost"
@@ -116,10 +129,10 @@ test_update_show_cost_both_targets() {
   mkdir -p "$TMPHOME/.claude"
 
   # Install targeting both; OpenCode uses its own isolated overlay target.
-  HOME="$TMPHOME" OPENAI_API_KEY=test-openai-key bash "$INSTALL_SH" install --target=both >/dev/null 2>&1
+  run_install "$TMPHOME" OPENAI_API_KEY=test-openai-key bash "$INSTALL_SH" install --target=both >/dev/null 2>&1
 
   # Update with --show-cost
-  HOME="$TMPHOME" OPENAI_API_KEY=test-openai-key bash "$INSTALL_SH" update --show-cost >/dev/null 2>&1
+  run_install "$TMPHOME" OPENAI_API_KEY=test-openai-key bash "$INSTALL_SH" update --show-cost >/dev/null 2>&1
 
   assert_file_exists "$TMPHOME/.claude/.forge-show-cost" \
     "sentinel creado en target claude por update --show-cost"
@@ -161,7 +174,7 @@ test_update_show_cost_skips_opencode() {
 
   # Run update --show-cost; redirect all output to /dev/null
   local exit_code=0
-  HOME="$TMPHOME" OPENAI_API_KEY=test-openai-key bash "$INSTALL_SH" update --show-cost >/dev/null 2>&1 || exit_code=$?
+  run_install "$TMPHOME" OPENAI_API_KEY=test-openai-key bash "$INSTALL_SH" update --show-cost >/dev/null 2>&1 || exit_code=$?
 
   assert_true "update --show-cost exits 0 with opencode in manifest" \
     test "$exit_code" -eq 0

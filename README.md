@@ -127,8 +127,8 @@ Run the installer from the repository root. Each subcommand is idempotent and sa
 | `bash install.sh install --show-cost` | Installs and enables monetary cost plus lifetime stats in the statusline. |
 | `bash install.sh install --only=agents,commands` | Installs only the `agents` and `commands` components. |
 | `bash install.sh install --only=statusline` | Installs only the `statusline` component. |
-| `bash install.sh status` | Reports which symlinks are in place per target (component-scoped). |
-| `bash install.sh doctor` | Runs diagnostics on installed components only: validates symlink integrity, RTK presence and configuration health. |
+| `bash install.sh status` | Reports read-only, target-aware installation health: component-scoped symlinks/settings/`CLAUDE.md` for Claude, or overlay copies, config, declared plugins and launcher for OpenCode. |
+| `bash install.sh doctor` | Runs read-only, target-aware diagnostics: Claude component/RTK/config checks or OpenCode overlay/config/plugin/launcher checks. |
 | `bash install.sh update` | Runs `git pull` and repairs symlinks, acting only on components recorded in state. |
 | `bash install.sh repair` | Recreates missing or broken symlinks for installed components, without pulling. |
 | `bash install.sh version` | Prints `FORGE_VERSION`. |

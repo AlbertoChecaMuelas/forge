@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- `status` y `doctor` son de solo lectura: ya no migran ni reescriben un state file legado
+
+### Fixed
+- `status`/`doctor` diagnostican el target OpenCode por su contrato real (copias, config, plugins declarados y launcher) en vez de aplicar comprobaciones de Claude
+
 ## [0.7.4] - 2026-10-23
 
 ### Fixed

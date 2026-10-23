@@ -666,6 +666,454 @@ EOF
   rm -rf "$tmp_home"
 }
 
+# ---------------------------------------------------------------------------
+# status / doctor contract for the OpenCode target
+# ---------------------------------------------------------------------------
+# `status` and `doctor` diagnose every target against the contract of its own
+# installer. For the OpenCode target that contract is the overlay: regular
+# file copies of the agents and the commands, AGENTS.md, the JSONC config, the
+# plugins declared by that config and the global launcher. The Claude
+# catalogue must never be projected onto it: that projection was the source of
+# the permanent false DEGRADADO.
+#
+# Both commands are strictly read-only: they never write the state file and
+# never touch the installed overlay.
+# ---------------------------------------------------------------------------
+
+# Tokens that must never show up in the OpenCode diagnostics: they belong to
+# the Claude contract (CLAUDE.md refs, settings.json and the Claude component
+# catalogue).
+OPENCODE_CLAUDE_TOKENS="CLAUDE.md settings.json CLAUDE-shared.md Componentes: managed key statusline branch-guard rtk-hook cost-report"
+
+# Sandbox of the current status/doctor test. Filled by prepare_overlay_sandbox.
+SD_HOME=""
+SD_REPO=""
+SD_OVERLAY=""
+
+# prepare_overlay_sandbox <sandbox_dir>
+# Creates an isolated HOME plus a disposable checkout of forge and installs
+# the OpenCode overlay through the root installer (so the state file records
+# the opencode target and the launcher points to the disposable checkout).
+prepare_overlay_sandbox() {
+  local sandbox="$1"
+
+  SD_HOME="$sandbox/home"
+  SD_REPO="$sandbox/repo"
+  SD_OVERLAY="$SD_HOME/.config/opencode-forge"
+
+  mkdir -p "$SD_HOME"
+  create_repo_fixture "$SD_REPO" >/dev/null
+
+  # The overlay installer only requires an `opencode` binary in PATH.
+  mkdir -p "$SD_HOME/fakebin"
+  printf '#!/usr/bin/env sh\nexit 0\n' > "$SD_HOME/fakebin/opencode"
+  chmod +x "$SD_HOME/fakebin/opencode"
+
+  if ! run_isolated "$SD_HOME" PATH="$SD_HOME/fakebin:$PATH" OPENAI_API_KEY=test-openai-key \
+    bash "$SD_REPO/install.sh" install --target=opencode \
+    > "$sandbox/install.log" 2>&1 < /dev/null; then
+    return 1
+  fi
+  return 0
+}
+
+# snapshot_overlay <sandbox_dir>
+# Freezes the healthy installation so every breakage case starts from the very
+# same state (mtimes included: cp -a keeps them).
+snapshot_overlay() {
+  local sandbox="$1"
+
+  rm -rf "$sandbox/healthy"
+  mkdir -p "$sandbox/healthy"
+  cp -a "$SD_OVERLAY" "$sandbox/healthy/opencode-forge"
+  cp -a "$SD_HOME/.forge-state.json" "$sandbox/healthy/forge-state.json"
+  cp -a "$SD_HOME/.local/bin" "$sandbox/healthy/local-bin"
+}
+
+restore_overlay() {
+  local sandbox="$1"
+
+  rm -rf "$SD_OVERLAY" "$SD_HOME/.local/bin" "$SD_HOME/.forge-state.json"
+  cp -a "$sandbox/healthy/opencode-forge" "$SD_OVERLAY"
+  cp -a "$sandbox/healthy/local-bin" "$SD_HOME/.local/bin"
+  cp -a "$sandbox/healthy/forge-state.json" "$SD_HOME/.forge-state.json"
+}
+
+# snapshot_tree <root>
+# Canonical listing of every regular file (sha256) and symlink (raw target)
+# below <root>. Used to prove that a command writes nothing.
+snapshot_tree() {
+  local root="$1"
+
+  (
+    cd "$root" 2>/dev/null || exit 0
+    find . -mindepth 1 \( -type f -o -type l \) 2>/dev/null | LC_ALL=C sort |
+      while IFS= read -r path; do
+        if [ -L "$path" ]; then
+          printf 'L\t%s\t%s\n' "$path" "$(readlink "$path")"
+        else
+          printf 'F\t%s\t%s\n' "$path" "$(sha256sum "$path" 2>/dev/null | cut -d' ' -f1)"
+        fi
+      done
+  )
+}
+
+# apply_opencode_break <case_name>
+# Breaks exactly one artifact of the healthy overlay.
+apply_opencode_break() {
+  local case_name="$1"
+
+  case "$case_name" in
+    plugin_deleted)
+      rm -f "$SD_OVERLAY/plugins/forge-guard.js"
+      ;;
+    agent_deleted)
+      rm -f "$SD_OVERLAY/agents/senior.md"
+      ;;
+    config_deleted)
+      rm -f "$SD_OVERLAY/opencode.jsonc"
+      ;;
+    config_corrupt)
+      printf '{\n  "plugin": [ "./plugins/forge-guard.js",\n}\n' > "$SD_OVERLAY/opencode.jsonc"
+      ;;
+    agent_content_diff)
+      printf 'contenido que diverge del origen\n' > "$SD_OVERLAY/agents/tech.md"
+      ;;
+    agents_md_deleted)
+      rm -f "$SD_OVERLAY/AGENTS.md"
+      ;;
+    launcher_repointed)
+      ln -sfn "$SD_REPO/open-code/forge-opencode.sh.renamed" "$SD_HOME/.local/bin/forge-opencode"
+      ;;
+    unexpected_file)
+      printf 'fichero no previsto\n' > "$SD_OVERLAY/agents/ghost.md"
+      ;;
+    inventory_broken)
+      rm -rf "$SD_REPO/open-code/agents"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+# opencode_break_expectations <case_name>
+# Fills EXPECT_TOKEN (status token), EXPECT_NEEDLE (the artifact that must be
+# reported exactly once) and EXPECT_HINT (the action hint).
+opencode_break_expectations() {
+  local case_name="$1"
+
+  EXPECT_TOKEN=""
+  EXPECT_NEEDLE=""
+  EXPECT_HINT="bash install.sh install --target=opencode"
+
+  case "$case_name" in
+    plugin_deleted)
+      EXPECT_TOKEN="MISSING"
+      EXPECT_NEEDLE="plugins/forge-guard.js"
+      ;;
+    agent_deleted)
+      EXPECT_TOKEN="MISSING"
+      EXPECT_NEEDLE="agents/senior.md"
+      ;;
+    config_deleted)
+      EXPECT_TOKEN="MISSING"
+      EXPECT_NEEDLE="opencode.jsonc"
+      ;;
+    config_corrupt)
+      EXPECT_TOKEN="INVALID"
+      EXPECT_NEEDLE="opencode.jsonc"
+      ;;
+    agent_content_diff)
+      EXPECT_TOKEN="MISMATCH"
+      EXPECT_NEEDLE="agents/tech.md"
+      ;;
+    agents_md_deleted)
+      EXPECT_TOKEN="MISSING"
+      EXPECT_NEEDLE="AGENTS.md"
+      ;;
+    launcher_repointed)
+      EXPECT_TOKEN="MISMATCH"
+      EXPECT_NEEDLE="forge-opencode"
+      ;;
+    unexpected_file)
+      EXPECT_TOKEN="UNEXPECTED"
+      EXPECT_NEEDLE="agents/ghost.md"
+      ;;
+    inventory_broken)
+      EXPECT_TOKEN="INVENTORY ERROR"
+      EXPECT_NEEDLE="no se pudo inventariar el origen"
+      EXPECT_HINT="revisa open-code/ en el repositorio"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+# count_lines_with <needle> <file>
+count_lines_with() {
+  local needle="$1"
+  local file="$2"
+
+  grep -c -F -- "$needle" "$file" 2>/dev/null || true
+}
+
+# assert_no_claude_contract <file> <label>
+# The OpenCode diagnostics must never mention the Claude contract.
+assert_no_claude_contract() {
+  local file="$1"
+  local label="$2"
+  local token offender=""
+
+  for token in $OPENCODE_CLAUDE_TOKENS; do
+    if grep -q -F -- "$token" "$file" 2>/dev/null; then
+      offender="$token"
+      break
+    fi
+  done
+
+  if [ -z "$offender" ]; then
+    pass "$label"
+  else
+    fail "$label (menciona '$offender')"
+  fi
+}
+
+test_status_doctor_healthy_overlay() {
+  echo ""
+  echo "--- test_status_doctor_healthy_overlay"
+
+  local sandbox
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/diag-healthy.XXXXXX")"
+  TMP_TEST_HOME="$sandbox/home"
+
+  if ! prepare_overlay_sandbox "$sandbox"; then
+    fail "no se pudo instalar el overlay aislado para el diagnóstico"
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+
+  local status_rc=0 doctor_rc=0
+  run_isolated "$SD_HOME" bash "$SD_REPO/install.sh" status \
+    > "$sandbox/status.out" 2>&1 || status_rc=$?
+  run_isolated "$SD_HOME" bash "$SD_REPO/install.sh" doctor \
+    > "$sandbox/doctor.out" 2>&1 || doctor_rc=$?
+
+  if [ "$status_rc" -eq 0 ]; then
+    pass "status sale 0 con el overlay sano"
+  else
+    fail "status debería salir 0 con el overlay sano (got $status_rc)"
+  fi
+
+  if grep -q "Estado general: OK" "$sandbox/status.out"; then
+    pass "status informa de Estado general: OK con el overlay sano"
+  else
+    fail "status no informó de Estado general: OK con el overlay sano"
+  fi
+
+  if grep -q "OpenCode overlay (" "$sandbox/status.out"; then
+    pass "status muestra la sección del overlay OpenCode"
+  else
+    fail "status no mostró la sección del overlay OpenCode"
+  fi
+
+  if [ "$doctor_rc" -eq 0 ]; then
+    pass "doctor sale 0 con el overlay sano"
+  else
+    fail "doctor debería salir 0 con el overlay sano (got $doctor_rc)"
+  fi
+
+  if grep -q "OpenCode overlay (" "$sandbox/doctor.out"; then
+    pass "doctor muestra la sección del overlay OpenCode"
+  else
+    fail "doctor no mostró la sección del overlay OpenCode"
+  fi
+
+  if grep -q "Resumen: FAILs=0" "$sandbox/doctor.out"; then
+    pass "doctor no reporta FAILs con el overlay sano"
+  else
+    fail "doctor reportó FAILs con el overlay sano"
+  fi
+
+  assert_no_claude_contract "$sandbox/status.out" \
+    "status del overlay sano no menciona el contrato Claude"
+  assert_no_claude_contract "$sandbox/doctor.out" \
+    "doctor del overlay sano no menciona el contrato Claude"
+
+  TMP_TEST_HOME=""
+  rm -rf "$sandbox"
+}
+
+test_status_doctor_do_not_write() {
+  echo ""
+  echo "--- test_status_doctor_do_not_write"
+
+  local sandbox
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/diag-readonly.XXXXXX")"
+  TMP_TEST_HOME="$sandbox/home"
+
+  if ! prepare_overlay_sandbox "$sandbox"; then
+    fail "no se pudo instalar el overlay aislado para el test de solo lectura"
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+
+  local state="$SD_HOME/.forge-state.json"
+  local sha_before mtime_before home_before repo_before
+  sha_before="$(sha256sum "$state" | cut -d' ' -f1)"
+  mtime_before="$(stat -c '%y' "$state")"
+  home_before="$(snapshot_tree "$SD_HOME")"
+  repo_before="$(snapshot_tree "$SD_REPO")"
+
+  local status_rc=0 doctor_rc=0
+  run_isolated "$SD_HOME" bash "$SD_REPO/install.sh" status \
+    > "$sandbox/status.out" 2>&1 </dev/null || status_rc=$?
+  run_isolated "$SD_HOME" bash "$SD_REPO/install.sh" doctor \
+    > "$sandbox/doctor.out" 2>&1 </dev/null || doctor_rc=$?
+
+  if [ "$status_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ]; then
+    pass "status/doctor salen 0 con el overlay sano"
+  else
+    fail "status/doctor deberían salir 0 con el overlay sano (status=$status_rc doctor=$doctor_rc)"
+  fi
+
+  local sha_after mtime_after home_after repo_after
+  sha_after="$(sha256sum "$state" | cut -d' ' -f1)"
+  mtime_after="$(stat -c '%y' "$state")"
+  home_after="$(snapshot_tree "$SD_HOME")"
+  repo_after="$(snapshot_tree "$SD_REPO")"
+
+  if [ "$sha_before" = "$sha_after" ]; then
+    pass "status/doctor no cambian el sha256 del state file"
+  else
+    fail "status/doctor cambiaron el sha256 del state file ($sha_before -> $sha_after)"
+  fi
+
+  if [ "$mtime_before" = "$mtime_after" ]; then
+    pass "status/doctor no cambian el mtime del state file"
+  else
+    fail "status/doctor cambiaron el mtime del state file ($mtime_before -> $mtime_after)"
+  fi
+
+  if [ "$home_before" = "$home_after" ]; then
+    pass "status/doctor no modifican nada del HOME aislado"
+  else
+    fail "status/doctor modificaron el HOME aislado"
+    diff <(printf '%s\n' "$home_before") <(printf '%s\n' "$home_after") | head -20 >&2 || true
+  fi
+
+  if [ "$repo_before" = "$repo_after" ]; then
+    pass "status/doctor no modifican el checkout desechable"
+  else
+    fail "status/doctor modificaron el checkout desechable"
+    diff <(printf '%s\n' "$repo_before") <(printf '%s\n' "$repo_after") | head -20 >&2 || true
+  fi
+
+  TMP_TEST_HOME=""
+  rm -rf "$sandbox"
+}
+
+test_status_doctor_report_each_opencode_break() {
+  echo ""
+  echo "--- test_status_doctor_report_each_opencode_break"
+
+  local sandbox
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/diag-break.XXXXXX")"
+  TMP_TEST_HOME="$sandbox/home"
+
+  if ! prepare_overlay_sandbox "$sandbox"; then
+    fail "no se pudo instalar el overlay aislado para los casos de rotura"
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+  snapshot_overlay "$sandbox"
+
+  local case_name
+  for case_name in plugin_deleted agent_deleted config_deleted config_corrupt \
+    agent_content_diff agents_md_deleted launcher_repointed unexpected_file \
+    inventory_broken; do
+    restore_overlay "$sandbox"
+
+    if ! apply_opencode_break "$case_name"; then
+      fail "caso de rotura desconocido: $case_name"
+      continue
+    fi
+    opencode_break_expectations "$case_name"
+
+    local status_rc=0 doctor_rc=0
+    run_isolated "$SD_HOME" bash "$SD_REPO/install.sh" status \
+      > "$sandbox/status.out" 2>&1 || status_rc=$?
+    run_isolated "$SD_HOME" bash "$SD_REPO/install.sh" doctor \
+      > "$sandbox/doctor.out" 2>&1 || doctor_rc=$?
+
+    if [ "$status_rc" -eq 1 ]; then
+      pass "[$case_name] status sale 1"
+    else
+      fail "[$case_name] status debería salir 1 (got $status_rc)"
+    fi
+
+    if grep -qE "^[[:space:]]+${EXPECT_TOKEN}[[:space:]]" "$sandbox/status.out"; then
+      pass "[$case_name] status reporta el estado $EXPECT_TOKEN"
+    else
+      fail "[$case_name] status no reportó el estado $EXPECT_TOKEN"
+    fi
+
+    local status_mentions
+    status_mentions="$(count_lines_with "$EXPECT_NEEDLE" "$sandbox/status.out")"
+    if [ "$status_mentions" = "1" ]; then
+      pass "[$case_name] status menciona el artefacto roto exactamente una vez"
+    else
+      fail "[$case_name] status mencionó el artefacto roto $status_mentions veces (esperado 1)"
+    fi
+
+    if grep -qF -- "$EXPECT_HINT" "$sandbox/status.out"; then
+      pass "[$case_name] status muestra el hint de acción"
+    else
+      fail "[$case_name] status no mostró el hint de acción"
+    fi
+
+    if [ "$doctor_rc" -eq 1 ]; then
+      pass "[$case_name] doctor sale 1"
+    else
+      fail "[$case_name] doctor debería salir 1 (got $doctor_rc)"
+    fi
+
+    if grep -qE "^  FAIL  ${EXPECT_TOKEN}:" "$sandbox/doctor.out"; then
+      pass "[$case_name] doctor reporta FAIL con el estado $EXPECT_TOKEN"
+    else
+      fail "[$case_name] doctor no reportó FAIL con el estado $EXPECT_TOKEN"
+    fi
+
+    local doctor_mentions
+    doctor_mentions="$(count_lines_with "$EXPECT_NEEDLE" "$sandbox/doctor.out")"
+    if [ "$doctor_mentions" = "1" ]; then
+      pass "[$case_name] doctor menciona el artefacto roto exactamente una vez"
+    else
+      fail "[$case_name] doctor mencionó el artefacto roto $doctor_mentions veces (esperado 1)"
+    fi
+
+    if grep -qF -- "$EXPECT_HINT" "$sandbox/doctor.out"; then
+      pass "[$case_name] doctor muestra el hint de acción"
+    else
+      fail "[$case_name] doctor no mostró el hint de acción"
+    fi
+
+    assert_no_claude_contract "$sandbox/status.out" \
+      "[$case_name] status no menciona el contrato Claude"
+    assert_no_claude_contract "$sandbox/doctor.out" \
+      "[$case_name] doctor no menciona el contrato Claude"
+  done
+
+  TMP_TEST_HOME=""
+  rm -rf "$sandbox"
+}
+
 echo "================================"
 echo " opencode_install_integration.sh"
 echo "================================"
@@ -677,6 +1125,9 @@ test_both_target_opencode_failure_leaves_claude_installed
 test_api_key_setup_skip
 test_api_key_setup_add_one_key
 test_api_key_setup_replace_existing_key
+test_status_doctor_healthy_overlay
+test_status_doctor_do_not_write
+test_status_doctor_report_each_opencode_break
 
 echo ""
 echo "================================"
