@@ -1,5 +1,5 @@
 ---
-description: Executes a multi-step plan from .plans/<slug>.md, delegating [A] steps to @applier and [T] steps to @tech, with review checkpoints (template-filled fresh subagent, model openai/gpt-5.6-sol) at phase boundaries and at plan close.
+description: Executes a multi-step plan from .plans/<slug>.md, delegating [A] steps to @applier and [T] steps to @tech, with review checkpoints (template-filled fresh subagent, model openai/gpt-6.1-sol) at phase boundaries and at plan close.
 agent: orchestrator
 ---
 
@@ -217,7 +217,7 @@ e. If the `task` dispatch of `@tech` fails with an infrastructure error (no retu
    - `{HEAD_SHA}`: `git rev-parse HEAD`.
    - `{PLAN_STEP}`: the plan path + the phase range covered (`phases 1..ceil(P/2)` for midpoint, `phases ceil(P/2)+1..P` for final, `phases 1..P` when `P <= 3`).
    - `{SCOPE}`: the checkpoint criteria from the plan's `CHECKPOINT` section (or `full diff of the range`).
-2. Dispatch via the `task` tool a FRESH, standalone reviewer invocation whose ENTIRE prompt is the filled template — do not paraphrase or trim it. This invocation is NOT attached to the `@applier`, `@tech`, or `@senior` identity: it is a generic task subagent, and the `task` call for it explicitly sets `model: openai/gpt-5.6-sol` for that invocation only (overriding whatever the default subagent model would be). Its mandate is reviewing only; it never carries planning, implementation, or mechanical-execution intent.
+2. Dispatch via the `task` tool a FRESH, standalone reviewer invocation whose ENTIRE prompt is the filled template — do not paraphrase or trim it. This invocation is NOT attached to the `@applier`, `@tech`, or `@senior` identity: it is a generic task subagent, and the `task` call for it explicitly sets `model: openai/gpt-6.1-sol` for that invocation only (overriding whatever the default subagent model would be). Its mandate is reviewing only; it never carries planning, implementation, or mechanical-execution intent.
 3. After processing the return, via `bash`: `set_frontmatter "<plan-path>" "last_review_sha" "<HEAD_SHA>"` (used as the base of the incremental re-review of this checkpoint and as `{BASE_SHA}` for the next checkpoint's initial review). Also `set_frontmatter "<plan-path>" "review_rounds" "0"` when opening a new checkpoint (reset to 0 each time this command moves to a new checkpoint). `review_rounds` starts at 0 and is incremented to 1 when a re-review is fired; the incremental re-review reads only `last_review_sha..HEAD` (not the full checkpoint range).
 4. If the dispatch fails with an infrastructure error (no return code): stop, surface `Fallo de infraestructura del subagente review: <error literal>` to the user, no retry, no re-route.
 
@@ -235,7 +235,7 @@ e. If the `task` dispatch of `@tech` fails with an infrastructure error (no retu
 - `FINDINGS_PHASE: impl=N, design=M[, coverage=K]`:
   - **Batch-fix first**: group ALL impl findings (N > 0) into a single batch `task` delegation to `@tech`, and ALL design findings (M > 0) into a single batch `task` delegation to `@senior`. Coverage findings (K > 0) are NOT fixed here — they are recorded and routed to `@tester` after the plan closes (Step 7). Do NOT re-invoke the reviewer per individual finding.
   - **After the batch of fixes is applied**, check `review_rounds`:
-    - If `review_rounds < 1`: via `bash`, `set_frontmatter "<plan-path>" "review_rounds" "1"`, then fire EXACTLY ONE re-review. This re-review reads only the incremental diff `last_review_sha..HEAD` (not the full checkpoint range) and uses the SAME dispatch mechanism as above but with `model: minimax-coding-plan/MiniMax-M3` (the repo's configured OpenCode Sonnet-equivalent model, per `shared/models.yaml`) instead of `openai/gpt-5.6-sol` — the diff is small and bounded, so a lighter model suffices.
+    - If `review_rounds < 1`: via `bash`, `set_frontmatter "<plan-path>" "review_rounds" "1"`, then fire EXACTLY ONE re-review. This re-review reads only the incremental diff `last_review_sha..HEAD` (not the full checkpoint range) and uses the SAME dispatch mechanism as above but with `model: minimax-coding-plan/MiniMax-M3` (the repo's configured OpenCode Sonnet-equivalent model, per `shared/models.yaml`) instead of `openai/gpt-6.1-sol` — the diff is small and bounded, so a lighter model suffices.
       - If the re-review returns `OK_PHASE`: apply the standard `OK_PHASE` processing (mark CHECKPOINT approved, persist any `VERIFIED` bullets), then close the checkpoint.
       - If the re-review returns `FINDINGS_PHASE`: since `review_rounds` is now 1, fall directly to the `review_rounds == 1` branch below.
     - If `review_rounds` is already 1 and the re-review returns another `FINDINGS_PHASE`: do NOT fire another re-review. Record the remaining findings as follow-ups (impl→`@tech`, design→`@senior`, coverage→`@tester`) and close the checkpoint.
@@ -249,7 +249,7 @@ e. If the `task` dispatch of `@tech` fails with an infrastructure error (no retu
 When all steps are marked `[x]`:
 
 1. Run the `# GLOBAL VERIFIER` of the plan (the shell commands in that block) via `bash`.
-2. Dispatch the mandatory **final** review (same dispatch mechanism as Step 5, `model: openai/gpt-5.6-sol`, NOT `@applier`/`@tech`/`@senior`) on the accumulated diff (`git diff master...HEAD` or `git diff <base>...HEAD`), passing the phase range:
+2. Dispatch the mandatory **final** review (same dispatch mechanism as Step 5, `model: openai/gpt-6.1-sol`, NOT `@applier`/`@tech`/`@senior`) on the accumulated diff (`git diff master...HEAD` or `git diff <base>...HEAD`), passing the phase range:
    - `P >= 4`: `phases ceil(P/2)+1..P` (the second half, not already covered by the midpoint reviewer).
    - `P <= 3`: `phases 1..P` (the full plan, since no intermediate reviewer was run).
 3. If the review returns `OK_PHASE` or `OK`:
@@ -300,7 +300,7 @@ The reviewer trigger is phase-count-based (not commit-based), so resuming after 
 
 - Use the `task` tool. For `[A]` steps and batches: target `@applier`. For `[T]` steps, diagnosis of `BLOCKED`/`VERIFIER_FAILED`, and correction of impl findings: target `@tech`. For `ESCALATE_SENIOR` resolution and correction of design findings: target `@senior`. For coverage-finding follow-ups after the plan closes: target `@tester`.
 - Always pass the necessary context: current step, plan path, literal instructions (for `@applier`), success criteria (for `@tech`).
-- **Review checkpoints do not use a resident agent.** Fill the review template below with `{BASE_SHA}`, `{HEAD_SHA}`, `{PLAN_STEP}` (plan path + phase range, e.g. "phases 1..ceil(P/2)") and `{SCOPE}`, and dispatch via `task` a FRESH, standalone reviewer invocation whose entire prompt is the filled template, explicitly overriding the model for that call to `openai/gpt-5.6-sol` (or `minimax-coding-plan/MiniMax-M3`, the lighter OpenCode Sonnet-equivalent model, for the single allowed re-review, see Step 5). Do not name `@applier`, `@tech`, or `@senior` as the target of a review-checkpoint dispatch. If the dispatch fails with an infrastructure error (no return code), apply the standard infra-failure protocol: stop, surface `Fallo de infraestructura del subagente review: <error>` to the user, no retry, no re-route.
+- **Review checkpoints do not use a resident agent.** Fill the review template below with `{BASE_SHA}`, `{HEAD_SHA}`, `{PLAN_STEP}` (plan path + phase range, e.g. "phases 1..ceil(P/2)") and `{SCOPE}`, and dispatch via `task` a FRESH, standalone reviewer invocation whose entire prompt is the filled template, explicitly overriding the model for that call to `openai/gpt-6.1-sol` (or `minimax-coding-plan/MiniMax-M3`, the lighter OpenCode Sonnet-equivalent model, for the single allowed re-review, see Step 5). Do not name `@applier`, `@tech`, or `@senior` as the target of a review-checkpoint dispatch. If the dispatch fails with an infrastructure error (no return code), apply the standard infra-failure protocol: stop, surface `Fallo de infraestructura del subagente review: <error>` to the user, no retry, no re-route.
 
 ## Review template
 

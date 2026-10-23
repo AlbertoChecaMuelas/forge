@@ -139,18 +139,19 @@ test_opencode_escalation_codes_present() {
 }
 
 test_generated_models_match_expected_mapping() {
-  local expected_applier='model: minimax-coding-plan/MiniMax-M2.5-highspeed'
+  local expected_applier='model: minimax-coding-plan/MiniMax-M3'
   local expected_worker='model: minimax-coding-plan/MiniMax-M3'
-  local expected_senior='model: openai/gpt-5.6-sol'
+  local expected_tech='model: openai/gpt-6-luna'
+  local expected_senior='model: openai/gpt-6.1-sol'
 
   if grep -qxF "${expected_applier}" "$FORGE_ROOT/open-code/agents/applier.md"; then
-    pass "applier model matches MiniMax M2.5-highspeed mapping"
+    pass "applier model matches MiniMax M3 mapping"
   else
-    fail "applier model does not match MiniMax M2.5-highspeed mapping"
+    fail "applier model does not match MiniMax M3 mapping"
   fi
 
   local role
-  for role in tech tester orchestrator; do
+  for role in tester orchestrator; do
     if grep -qxF "${expected_worker}" "$FORGE_ROOT/open-code/agents/${role}.md"; then
       pass "${role} model matches MiniMax M3 mapping"
     else
@@ -158,10 +159,16 @@ test_generated_models_match_expected_mapping() {
     fi
   done
 
-  if grep -qxF "${expected_senior}" "$FORGE_ROOT/open-code/agents/senior.md"; then
-    pass "senior model matches GPT-5.6 Sol mapping"
+  if grep -qxF "${expected_tech}" "$FORGE_ROOT/open-code/agents/tech.md"; then
+    pass "tech model matches openai/gpt-6-luna mapping"
   else
-    fail "senior model does not match GPT-5.6 Sol mapping"
+    fail "tech model does not match openai/gpt-6-luna mapping"
+  fi
+
+  if grep -qxF "${expected_senior}" "$FORGE_ROOT/open-code/agents/senior.md"; then
+    pass "senior model matches GPT-6.1 Sol mapping"
+  else
+    fail "senior model does not match GPT-6.1 Sol mapping"
   fi
 }
 
@@ -196,10 +203,38 @@ test_root_level_models_use_minimax_coding_plan() {
     fail "opencode.jsonc root model does not use minimax-coding-plan/MiniMax-M3"
   fi
 
-  if grep -qxF '  "small_model": "minimax-coding-plan/MiniMax-M2.5-highspeed",' "$jsonc"; then
-    pass "opencode.jsonc root small_model uses minimax-coding-plan/MiniMax-M2.5-highspeed"
+  if grep -qxF '  "small_model": "minimax-coding-plan/MiniMax-M3",' "$jsonc"; then
+    pass "opencode.jsonc root small_model uses minimax-coding-plan/MiniMax-M3"
   else
-    fail "opencode.jsonc root small_model does not use minimax-coding-plan/MiniMax-M2.5-highspeed"
+    fail "opencode.jsonc root small_model does not use minimax-coding-plan/MiniMax-M3"
+  fi
+}
+
+test_openai_provider_models_have_expected_efforts() {
+  local jsonc="$FORGE_ROOT/open-code/opencode.jsonc"
+
+  # Both gpt-6.1-sol and gpt-6-luna must be declared under provider.openai.models
+  # with their expected reasoningEffort values (senior/tech, respectively).
+  # The jsonc is pretty-printed, so reasoningEffort sits ~2 lines below the model id.
+  if grep -q '"gpt-6.1-sol":' "$jsonc" \
+     && grep -A 3 '"gpt-6.1-sol":' "$jsonc" | grep -qF '"reasoningEffort": "high"'; then
+    pass "opencode.jsonc declares gpt-6.1-sol with reasoningEffort=high"
+  else
+    fail "opencode.jsonc missing gpt-6.1-sol with reasoningEffort=high"
+  fi
+
+  if grep -q '"gpt-6-luna":' "$jsonc" \
+     && grep -A 3 '"gpt-6-luna":' "$jsonc" | grep -qF '"reasoningEffort": "xhigh"'; then
+    pass "opencode.jsonc declares gpt-6-luna with reasoningEffort=xhigh"
+  else
+    fail "opencode.jsonc missing gpt-6-luna with reasoningEffort=xhigh"
+  fi
+
+  # Stale gpt-5.6-sol entry must be gone (it was replaced by gpt-6.1-sol).
+  if grep -qF '"gpt-5.6-sol":' "$jsonc"; then
+    fail "opencode.jsonc still declares stale gpt-5.6-sol provider model"
+  else
+    pass "opencode.jsonc no longer declares stale gpt-5.6-sol provider model"
   fi
 }
 
@@ -247,6 +282,7 @@ test_opencode_escalation_codes_present
 test_generated_models_match_expected_mapping
 test_no_custom_minimax_provider_block
 test_root_level_models_use_minimax_coding_plan
+test_openai_provider_models_have_expected_efforts
 test_check_mode_and_drift_detection
 
 echo ""

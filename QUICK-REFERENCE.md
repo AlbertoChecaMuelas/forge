@@ -130,10 +130,11 @@ Declara el proveedor una sola vez (endpoint base + `"apiKey": "{env:<VARIABLE>}"
 
 **Asignación actual (ejemplo)**
 
-| Rol                               | Modelo asignado                          |
-|-----------------------------------|-------------------------------------------|
-| senior, tech, tester, orchestrator | `minimax-coding-plan/MiniMax-M3`          |
-| applier                           | `minimax-coding-plan/MiniMax-M2.5-highspeed` |
+| Rol                            | Modelo asignado                 |
+|--------------------------------|----------------------------------|
+| senior                         | `openai/gpt-6.1-sol`             |
+| tech                           | `openai/gpt-6-luna`              |
+| tester, orchestrator, applier  | `minimax-coding-plan/MiniMax-M3` |
 
 **Caso A — Ya tienes una clave de OpenAI (GPT) o de Anthropic (Claude API)**
 

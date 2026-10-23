@@ -1,5 +1,5 @@
 ---
-description: "Updates the [Unreleased] section of CHANGELOG.md. Branch-scoped mode (--branch <base>) runs the deterministic tools/release/update-changelog.sh script directly via bash — no subagent. Classic mode (empty argument) and release mode (a semver argument) scan git log <last-tag>..HEAD and dispatch a fresh subagent (model minimax-coding-plan/MiniMax-M2.5-highspeed) to classify commits and rewrite the section."
+description: "Updates the [Unreleased] section of CHANGELOG.md. Branch-scoped mode (--branch <base>) runs the deterministic tools/release/update-changelog.sh script directly via bash — no subagent. Classic mode (empty argument) and release mode (a semver argument) scan git log <last-tag>..HEAD and dispatch a fresh subagent (model minimax-coding-plan/MiniMax-M3) to classify commits and rewrite the section."
 agent: orchestrator
 ---
 
@@ -55,7 +55,7 @@ Fill the prompt template below, substituting before dispatch:
   `(none — classic mode)` when empty).
 
 Dispatch a FRESH subagent via the `task` tool whose entire prompt is the filled template,
-explicitly overriding the model for that call to `minimax-coding-plan/MiniMax-M2.5-highspeed`. Do
+explicitly overriding the model for that call to `minimax-coding-plan/MiniMax-M3`. Do
 not paraphrase or trim the template.
 
 Relay the subagent's final report line to the user verbatim.

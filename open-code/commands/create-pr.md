@@ -3,11 +3,11 @@ description: "Drives the full PR-creation flow for the current branch: version b
 agent: orchestrator
 ---
 
-You are running the `/create-pr` command. You orchestrate the full release flow for the current
-branch: version bump, changelog refresh, release commit, PR description regeneration and `gh` PR
-creation. Every script invocation and git lookup here is performed directly via `bash` — this
-flow is FULLY DETERMINISTIC and script-driven; you never improvise with raw `gh pr create` or
-REST API calls, and you never push to the remote at any point.
+You are running the `/create-pr` command. You orchestrate the release flow for the current
+branch: version bump, changelog refresh, release commit, PR description regeneration and `gh`
+PR creation. Every script invocation and git lookup here is performed directly via `bash` —
+this flow is script-driven and deterministic for the git-side operations; you never improvise
+with raw `gh pr create` or REST API calls, and you never push to the remote at any point.
 
 ## Argument
 
@@ -26,7 +26,12 @@ steps below.
 
 ## Flow
 
-Execute this sequence in order, fully automatic — no manual version input from the user.
+Execute this sequence in order, fully automatic for the git-side operations — no manual version
+input from the user. In forge mode the flow has a deliberate handoff after a release commit is
+created locally: the agent MUST NOT push, and the PR creation step runs in a re-invoked
+`/create-pr master` once the user has pushed the release commit themselves. This split keeps
+`tools/release/create-pr.sh` Precondition 5 (`origin/<rama>` == `HEAD`) honest and makes the
+flow resumable.
 
 ### Step 0 — Detect forge mode
 
@@ -93,11 +98,26 @@ creates the commit `chore(release): bump version to v<NEXT>`:
   always travel in the commit or the CI version-sync check fails on `master`.
 
 Handle `commit-release.sh`'s exit code explicitly:
-- **Exit 0**: the release commit was created. Continue to Step 3.
-- **Exit 3** (nothing staged — e.g. no user-facing commits and `plugin.json` already in sync):
-  there is no release commit to make. Skip straight to Step 3.
-- **Exit 2** (bad args / missing required file) or **exit 4** (`git commit` failed): report the
-  failure to the user in Spanish and stop.
+- **Exit 0**: a new release commit exists locally on `HEAD`. This means `origin/<rama>` and the
+  local `HEAD` have diverged, so the next steps (`/pr-description`, `create-pr.sh`) would fail
+  Precondition 5 of `create-pr.sh`. The agent MUST NOT push and MUST NOT proceed to Step 3 in
+  this invocation. Report the result to the user in Spanish with the literal command they must
+  run themselves:
+  ```
+  git push origin <rama-actual>
+  ```
+  Then ask the user to re-run `/create-pr master` after that push completes. Stop this invocation
+  cleanly — the handoff is expected, not an error.
+- **Exit 3** (no release artifact has a staged change — e.g. no user-facing commits and
+  `plugin.json` already in sync): there is no release commit to make and nothing new was added
+  to `HEAD`. Skip straight to Step 3.
+- **Exit 2** (bad args / missing required file / foreign staged content / version mismatch) or
+  **Exit 4** (`git commit` failed): report the failure to the user in Spanish and stop.
+
+The re-invocation after `git push origin <rama-actual>` is safe and idempotent: the new
+release commit on the remote becomes the validated checkpoint, `bump-version.sh` and
+`update-changelog.sh` see an empty pending range, and `commit-release.sh` will return Exit 3.
+`Step 3` and `Step 4` then run normally against the now-published `HEAD`.
 
 ### Step 3 — Regenerate and write `PR-DESCRIPTION.md`
 
@@ -208,10 +228,13 @@ placeholder).
 
 ## Hard rules
 
-- **Never push, in either mode.** The user pushes manually after the PR is opened. In forge mode,
-  the release commit travels with the PR; once it merges into `master`, CI `auto-tag` creates and
-  pushes the tag, then closes `[Unreleased]` as `[v<NEXT>] - YYYY-MM-DD` and pushes that follow-up
-  commit to `master`.
+- **Never push, in either mode.** In forge mode the user must push the release commit BEFORE the
+  PR can be opened, never "after the PR is opened": `tools/release/create-pr.sh` Precondition 5
+  requires `origin/<rama>` to be byte-identical to the local `HEAD` whose release it advertises,
+  so the release commit must be on the remote before `/create-pr` reaches `create-pr.sh`. The
+  agent never runs `git push` on the user's behalf under any circumstance. Once the PR merges
+  into `master`, CI `auto-tag` creates and pushes the tag, then closes `[Unreleased]` as
+  `[v<NEXT>] - YYYY-MM-DD` and pushes that follow-up commit to `master`.
 - **Forge mode**: never call the update-changelog command from this flow — always call the
   `update-changelog.sh` script under `tools/release/` directly via `bash` (see Step 2).
 - **Forge mode**: never improvise PR creation with raw `gh pr create`/`gh pr edit`/REST calls —
