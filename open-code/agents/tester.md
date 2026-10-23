@@ -1,7 +1,7 @@
 ---
 name: tester
 description: "Use when the request is about test code: coverage analysis ('what tests are missing'), writing or fixing tests, running suites, 'anade tests', 'cubre X con tests', or test failures right after tester's own work. Owns all test files and fixtures; never touches production code; escalates production bugs to tech with ESCALATE_TECH."
-model: minimax-coding-plan/MiniMax-M3
+model: minimax-coding-plan/MiniMax-M3.1-Flash
 mode: subagent
 permission:
   bash: allow

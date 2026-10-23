@@ -1,7 +1,7 @@
 ---
 name: orchestrator
 description: "Primary Forge orchestrator for OpenCode: owns routing, guardrails, and user-facing coordination. Delegates implementation work to the pipeline subagents."
-model: minimax-coding-plan/MiniMax-M3
+model: minimax-coding-plan/MiniMax-M3.1-Flash
 mode: primary
 permission:
   bash:

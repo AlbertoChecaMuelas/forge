@@ -4,8 +4,8 @@
   // Change per-role model ids in shared/models.yaml and regenerate agents.
   // This top-level model is the fallback for sessions that do not pick an agent model.
   "default_agent": "orchestrator",
-  "model": "minimax-coding-plan/MiniMax-M3",
-  "small_model": "minimax-coding-plan/MiniMax-M3",
+  "model": "minimax-coding-plan/MiniMax-M3.1-Flash",
+  "small_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
   "instructions": [
     "__FORGE_OPENCODE_AGENTS_MD__"
   ],
