@@ -70,8 +70,14 @@ write_token() {
   fi
 }
 
-printf '¿Deseas configurar API keys ahora? (s/N) '
-read -r configure_keys || true
+# Only prompt when stdin is a terminal. With a pipe or a heredoc the read
+# does not fail, it swallows a line of whatever the caller piped in, so the
+# installer would silently eat the input of whoever invoked it.
+configure_keys=""
+if [ -t 0 ]; then
+  printf '¿Deseas configurar API keys ahora? (s/N) '
+  read -r configure_keys || true
+fi
 configure_keys="${configure_keys:-N}"
 
 case "$configure_keys" in

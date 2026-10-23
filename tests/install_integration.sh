@@ -1708,6 +1708,171 @@ test_purge_removes_pre_forge() {
 }
 
 # ---------------------------------------------------------------------------
+# Test harness contract: the runner must execute EVERY candidate suite.
+#
+# Regression guard. The runner used to feed the list of suites to the suites
+# themselves through a heredoc, so a suite that read stdin swallowed one line
+# of that list and the suite right after it was never run. The summary still
+# said "Passed: 14 / Failed: 0": a green run that had silently dropped half
+# of the suites.
+#
+# The runner is exercised against a sandbox copy that mirrors the real
+# candidate set (tests/*_unit.sh + tests/*_integration.sh + EXTRA_TESTS). The
+# first candidate is a stub that greedily reads stdin: with the regression the
+# executed count drops by one and the stub steals the path of the next suite;
+# with the fix every candidate runs and the stub reads nothing.
+# ---------------------------------------------------------------------------
+
+# Prints the basenames of the suites the runner would collect.
+run_all_candidate_names() {
+  local runner="$1"
+  local tests_dir="$2"
+
+  find "$tests_dir" -maxdepth 1 \( -name '*_unit.sh' -o -name '*_integration.sh' \) \
+    | sed 's|.*/||' | sort
+
+  local extra_line
+  extra_line="$(grep -m1 '^EXTRA_TESTS=' "$runner" 2>/dev/null || true)"
+  if [ -n "$extra_line" ]; then
+    (
+      SCRIPT_DIR="$tests_dir"
+      export SCRIPT_DIR
+      # shellcheck disable=SC1090
+      eval "$extra_line"
+      # shellcheck disable=SC2086
+      for f in $EXTRA_TESTS; do
+        [ -f "$f" ] && basename "$f"
+      done
+    )
+  fi
+}
+
+# Suites that used to be swallowed by the heredoc and never ran.
+RUN_ALL_PREVIOUSLY_LOST_SUITES="protocol_unit.sh readme_sync_unit.sh
+release_flow_integration.sh release_skill_unit.sh rtk_unit.sh
+settings_integration.sh state_migration_unit.sh symlink_unit.sh
+total_usage_unit.sh update_integration.sh"
+
+test_run_all_executes_every_candidate_suite() {
+  echo ""
+  echo "--- test_run_all_executes_every_candidate_suite"
+
+  local runner="$FORGE_ROOT/tests/run-all.sh"
+  local tests_dir="$FORGE_ROOT/tests"
+  local SANDBOX sandbox_tests candidates_file candidates candidate_count
+  local greedy_name output runner_rc=0 reported_count reported_failed
+  local missing known_suite
+
+  candidates="$(run_all_candidate_names "$runner" "$tests_dir")"
+  if [ -z "$candidates" ]; then
+    fail "run-all: no candidate suite found in $tests_dir"
+    return
+  fi
+  candidate_count="$(printf '%s\n' "$candidates" | wc -l | tr -d ' ')"
+
+  if [ "$candidate_count" -gt 0 ]; then
+    pass "run-all: $candidate_count candidate suites collected from $tests_dir"
+  else
+    fail "run-all: 0 candidate suites collected from $tests_dir"
+  fi
+
+  SANDBOX="$(mktemp -d "$FORGE_TEST_TMP_ROOT/run-all-contract.XXXXXX")"
+  trap 'rm -rf "$SANDBOX"' EXIT
+  sandbox_tests="$SANDBOX/tests"
+  mkdir -p "$sandbox_tests"
+  candidates_file="$SANDBOX/candidates.txt"
+  printf '%s\n' "$candidates" > "$candidates_file"
+
+  # The real runner, byte for byte: only the suites are replaced by stubs.
+  cp "$runner" "$sandbox_tests/run-all.sh"
+
+  greedy_name="$(head -n 1 "$candidates_file")"
+  while IFS= read -r candidate; do
+    [ -z "$candidate" ] && continue
+    if [ "$candidate" = "$greedy_name" ]; then
+      cat > "$sandbox_tests/$candidate" <<'STUB'
+#!/usr/bin/env bash
+IFS= read -r stolen || true
+printf 'GREEDY_STDIN=[%s]\n' "$stolen"
+exit 0
+STUB
+    else
+      cat > "$sandbox_tests/$candidate" <<'STUB'
+#!/usr/bin/env bash
+printf 'STUB_OK\n'
+exit 0
+STUB
+    fi
+    chmod +x "$sandbox_tests/$candidate"
+  done < "$candidates_file"
+
+  # FORGE_TEST_FILTER must not leak into the sandbox run.
+  output="$(cd "$sandbox_tests" && env -u FORGE_TEST_FILTER \
+    bash "$sandbox_tests/run-all.sh" 2>&1)" || runner_rc=$?
+
+  if [ "$runner_rc" -eq 0 ]; then
+    pass "run-all: the runner exits 0"
+  else
+    fail "run-all: the runner exited $runner_rc (expected 0)"
+  fi
+
+  reported_count="$(printf '%s\n' "$output" \
+    | grep -E '^[[:space:]]*Tests run:' | grep -oE '[0-9]+' | head -n 1)"
+  reported_failed="$(printf '%s\n' "$output" \
+    | grep -E '^[[:space:]]*Failed:' | grep -oE '[0-9]+' | head -n 1)"
+
+  if [ "$reported_count" = "$candidate_count" ]; then
+    pass "run-all: executed $reported_count suites, one per candidate"
+  else
+    fail "run-all: executed ${reported_count:-0} suites but $candidate_count were candidates"
+  fi
+
+  if [ "${reported_failed:-1}" = "0" ]; then
+    pass "run-all: no suite failed"
+  else
+    fail "run-all: ${reported_failed:-?} suite(s) failed"
+  fi
+
+  missing=""
+  while IFS= read -r candidate; do
+    [ -z "$candidate" ] && continue
+    if ! printf '%s\n' "$output" | grep -qF "PASS  $candidate"; then
+      missing="$missing $candidate"
+    fi
+  done < "$candidates_file"
+
+  if [ -z "$missing" ]; then
+    pass "run-all: every candidate suite was executed"
+  else
+    fail "run-all: candidate suites never executed:$missing"
+  fi
+
+  # The greedy stub proves the suites no longer share the stdin of the runner:
+  # it must not be able to steal the path of the next suite.
+  if printf '%s\n' "$output" | grep -qF 'GREEDY_STDIN=[]'; then
+    pass "run-all: a suite reading stdin gets its own stdin, not the suite list"
+  else
+    fail "run-all: a suite reading stdin stole the suite list (stdin devorado regression)"
+  fi
+
+  # The suites that used to disappear silently must be part of the run.
+  for known_suite in $RUN_ALL_PREVIOUSLY_LOST_SUITES; do
+    if [ ! -f "$tests_dir/$known_suite" ]; then
+      fail "run-all: $known_suite does not exist in $tests_dir"
+      continue
+    fi
+    if printf '%s\n' "$output" | grep -qF "PASS  $known_suite"; then
+      pass "run-all: $known_suite is executed"
+    else
+      fail "run-all: $known_suite was not executed"
+    fi
+  done
+
+  rm -rf "$SANDBOX"
+  trap - EXIT
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 echo "=============================="
@@ -1743,6 +1908,7 @@ test_full_uninstall_strips_claude_md_ref_and_dirs
 test_full_uninstall_rtk_default_and_keep
 test_uninstall_sanitizes_restored_broken_settings
 test_purge_removes_pre_forge
+test_run_all_executes_every_candidate_suite
 
 echo ""
 echo "=============================="

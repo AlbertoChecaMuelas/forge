@@ -10,6 +10,21 @@ FORGE_ROOT="$(cd "$(dirname "$0")" && pwd)"
 FORGE_VERSION="0.7.4"
 FORGE_STATE_FILE="$HOME/.forge-state.json"
 FORGE_OPENCODE_DIR_DEFAULT="$HOME/.config/opencode-forge"
+# ---------------------------------------------------------------------------
+# Effective OpenCode overlay paths.
+#
+# These MUST mirror open-code/install-opencode.sh exactly, because the overlay
+# installer is a child process that inherits this very environment:
+#   CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode-forge}"
+#   CONFIG_FILE="${OPENCODE_CONFIG:-$CONFIG_DIR/opencode.jsonc}"
+#
+# The root installer resolves them here so the manifest records where the
+# overlay really landed. Recording the default unconditionally would make the
+# manifest point at a directory the overlay was never installed into, and
+# `status`/`doctor` would then diagnose the wrong location.
+# ---------------------------------------------------------------------------
+FORGE_OPENCODE_DIR="${OPENCODE_CONFIG_DIR:-$FORGE_OPENCODE_DIR_DEFAULT}"
+FORGE_OPENCODE_CONFIG="${OPENCODE_CONFIG:-$FORGE_OPENCODE_DIR/opencode.jsonc}"
 FORGE_OPENCODE_INSTALLER="$FORGE_ROOT/open-code/install-opencode.sh"
 FORGE_OPENCODE_UNINSTALLER="$FORGE_ROOT/open-code/uninstall-opencode.sh"
 
@@ -272,7 +287,10 @@ forge_resolve_targets() {
   _forge_targets_count=0
 
   local claude_dir="$HOME/.claude"
-  local opencode_dir="$FORGE_OPENCODE_DIR_DEFAULT"
+  # The OpenCode target resolves to the directory the overlay installer will
+  # really use (OPENCODE_CONFIG_DIR with its default), not to the default
+  # unconditionally: the manifest records this path.
+  local opencode_dir="$FORGE_OPENCODE_DIR"
 
   case "$target_arg" in
     claude)
@@ -310,6 +328,80 @@ forge_state_has_opencode_target() {
   jq -e '[(.targets_manifest // [])[]?.name] | index("opencode") != null' "$FORGE_STATE_FILE" >/dev/null 2>&1
 }
 
+# ---------------------------------------------------------------------------
+# Recorded OpenCode overlay paths (the manifest is the source of truth)
+# ---------------------------------------------------------------------------
+# The state file records where the overlay installer really deployed the
+# overlay: `dir` (the directory holding agents/, commands/ and AGENTS.md) and
+# `config_file` (the JSONC config, which may live outside `dir` when
+# OPENCODE_CONFIG points elsewhere).
+#
+# These helpers read that record. They fall back to the effective paths only
+# when the state file carries no opencode entry (a legacy state, or no
+# installation at all): in that case there is nothing better to go on.
+#
+# _forge_state_opencode_dir — prints the recorded directory
+# _forge_state_opencode_config — prints the recorded config file
+_forge_state_opencode_dir() {
+  local _dir=""
+
+  if [ -f "$FORGE_STATE_FILE" ] && jq empty "$FORGE_STATE_FILE" 2>/dev/null; then
+    _dir="$(jq -r '[.targets_manifest[]? | select(.name == "opencode")][0] | (.dir // empty)' \
+      "$FORGE_STATE_FILE" 2>/dev/null || true)"
+  fi
+
+  if [ -n "$_dir" ]; then
+    printf '%s\n' "$_dir"
+    return 0
+  fi
+  printf '%s\n' "$FORGE_OPENCODE_DIR"
+}
+
+_forge_state_opencode_config() {
+  local _cfg=""
+
+  if [ -f "$FORGE_STATE_FILE" ] && jq empty "$FORGE_STATE_FILE" 2>/dev/null; then
+    _cfg="$(jq -r '[.targets_manifest[]? | select(.name == "opencode")][0] | (.config_file // empty)' \
+      "$FORGE_STATE_FILE" 2>/dev/null || true)"
+  fi
+
+  if [ -n "$_cfg" ]; then
+    printf '%s\n' "$_cfg"
+    return 0
+  fi
+  printf '%s\n' "$(_forge_state_opencode_dir)/opencode.jsonc"
+}
+
+# _forge_state_sync_opencode_paths
+# Records where the overlay installer just deployed the overlay. Used after a
+# (re)install performed by `update`/`repair`: the manifest must keep pointing
+# at the directory that really holds the overlay, otherwise `status`/`doctor`
+# would diagnose a location the overlay no longer occupies.
+_forge_state_sync_opencode_paths() {
+  if [ ! -f "$FORGE_STATE_FILE" ] || ! jq empty "$FORGE_STATE_FILE" 2>/dev/null; then
+    return 0
+  fi
+
+  local _tmp
+  _tmp="$(mktemp)"
+  jq \
+    --arg dir "$FORGE_OPENCODE_DIR" \
+    --arg config_file "$FORGE_OPENCODE_CONFIG" \
+    '
+    .targets_manifest = (
+      (.targets_manifest // [])
+      | map(if .name == "opencode" then .dir = $dir | .config_file = $config_file else . end)
+    )
+    ' "$FORGE_STATE_FILE" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 0; }
+
+  if jq empty "$_tmp" 2>/dev/null; then
+    mv "$_tmp" "$FORGE_STATE_FILE"
+  else
+    rm -f "$_tmp"
+  fi
+  return 0
+}
+
 forge_run_opencode_installer() {
   if [ ! -f "$FORGE_OPENCODE_INSTALLER" ]; then
     echo "[forge] ERROR: OpenCode target requested but installer is missing: $FORGE_OPENCODE_INSTALLER" >&2
@@ -327,7 +419,12 @@ forge_run_opencode_uninstaller() {
     return 0
   fi
 
-  bash "$FORGE_OPENCODE_UNINSTALLER"
+  # The uninstaller resolves its paths from the environment, so the recorded
+  # location is exported for it: uninstalling must remove what was installed,
+  # not what an ambient variable happens to point at right now.
+  OPENCODE_CONFIG_DIR="$(_forge_state_opencode_dir)" \
+  OPENCODE_CONFIG="$(_forge_state_opencode_config)" \
+    bash "$FORGE_OPENCODE_UNINSTALLER"
 }
 
 forge_drop_target_from_state() {
@@ -390,7 +487,8 @@ forge_write_opencode_only_state() {
   jq \
     --arg version "$FORGE_VERSION" \
     --arg installed_at "$base_installed_at" \
-    --arg dir "$FORGE_OPENCODE_DIR_DEFAULT" \
+    --arg dir "$FORGE_OPENCODE_DIR" \
+    --arg config_file "$FORGE_OPENCODE_CONFIG" \
     '
     .version = $version |
     .installed_at = $installed_at |
@@ -399,6 +497,7 @@ forge_write_opencode_only_state() {
     .targets_manifest = ((.targets_manifest // []) | map(select(.name != "opencode")) + [{
       name: "opencode",
       dir: $dir,
+      config_file: $config_file,
       symlinks: [],
       symlinks_objects: [],
       components: [],
@@ -491,7 +590,7 @@ _forge_state_migrate() {
       tgt_name="$(jq -r --argjson i "$t" '.targets[$i]' "$_state_file")"
       case "$tgt_name" in
         claude)   tgt_dir="$HOME/.claude" ;;
-        opencode) tgt_dir="$FORGE_OPENCODE_DIR_DEFAULT" ;;
+        opencode) tgt_dir="$FORGE_OPENCODE_DIR" ;;
         *)        tgt_dir="$HOME/.claude" ;;
       esac
 
@@ -627,7 +726,10 @@ _forge_state_view() {
   esac
 
   local _claude_dir="$HOME/.claude"
-  local _opencode_dir="$FORGE_OPENCODE_DIR_DEFAULT"
+  # Legacy (pre-v2) states carry no directory for their targets, so the
+  # effective overlay directory is the only usable guess: it is the directory
+  # the overlay installer would have used in this very environment.
+  local _opencode_dir="$FORGE_OPENCODE_DIR"
 
   # Legacy (pre-v2) manifests point at the .pre-forge snapshot when it exists.
   # The probe is a read: the view never creates nor removes that file.
@@ -838,12 +940,14 @@ print(json.dumps({"ok": True, "config": data}))
 ' "$1" "$2" 2>/dev/null
 }
 
-# _forge_opencode_check_config <tgt_dir> <hint>
+# _forge_opencode_check_config <tgt_dir> <config_file> <hint>
 # Validates the installed opencode.jsonc and publishes the parsed config so
 # the plugin family can use the `plugin` declaration of the *installed* file.
+# The config file is passed in (and not derived from the target directory)
+# because OPENCODE_CONFIG may place it outside the overlay directory.
 _forge_opencode_check_config() {
-  local _tgt_dir="$1" _hint="$2"
-  local _cfg="$_tgt_dir/opencode.jsonc"
+  local _tgt_dir="$1" _hint="$3"
+  local _cfg="$2"
   local _helper="$FORGE_ROOT/open-code/lib/plugin-sync.py"
 
   _FORGE_OPENCODE_CONFIG_JSON=""
@@ -898,13 +1002,13 @@ _forge_opencode_check_config() {
   _FORGE_OPENCODE_CONFIG_READY=1
 }
 
-# _forge_opencode_check_plugins <tgt_dir> <hint>
+# _forge_opencode_check_plugins <tgt_dir> <config_file> <hint>
 # The plugin set is never hardcoded: it is the `plugin` field of the installed
 # config, and its presence on disk is decided by plugin-sync.py verify.
 _forge_opencode_check_plugins() {
-  local _tgt_dir="$1" _hint="$2"
+  local _tgt_dir="$1" _hint="$3"
   local _helper="$FORGE_ROOT/open-code/lib/plugin-sync.py"
-  local _cfg="$_tgt_dir/opencode.jsonc"
+  local _cfg="$2"
 
   # The declaration lives in the installed config: when the config cannot be
   # read, the root cause is already reported by the config family, so the
@@ -986,28 +1090,29 @@ _forge_opencode_check_launcher() {
   fi
 }
 
-# _forge_opencode_diagnostics <tgt_dir>
+# _forge_opencode_diagnostics <tgt_dir> <config_file>
 _forge_opencode_diagnostics() {
   local _tgt_dir="$1"
+  local _cfg="$2"
   local _hint="bash install.sh install --target=opencode"
 
   _forge_opencode_check_collection "agents" "$FORGE_ROOT/open-code/agents" "$_tgt_dir/agents" "$_hint"
   _forge_opencode_check_collection "commands" "$FORGE_ROOT/open-code/commands" "$_tgt_dir/commands" "$_hint"
   _forge_opencode_check_agents_md "$_tgt_dir" "$_hint"
-  _forge_opencode_check_config "$_tgt_dir" "$_hint"
-  _forge_opencode_check_plugins "$_tgt_dir" "$_hint"
+  _forge_opencode_check_config "$_tgt_dir" "$_cfg" "$_hint"
+  _forge_opencode_check_plugins "$_tgt_dir" "$_cfg" "$_hint"
   _forge_opencode_check_launcher "$_hint"
 }
 
-# _forge_opencode_render <mode> <tgt_dir>
+# _forge_opencode_render <mode> <tgt_dir> <config_file>
 # mode: status | doctor. Prints the records and sets _FORGE_OPENCODE_FAILURES
 # to the number of non-OK records.
 _forge_opencode_render() {
-  local _mode="$1" _tgt_dir="$2"
+  local _mode="$1" _tgt_dir="$2" _cfg="$3"
   local _records _st _fam _msg _hint _col
 
   _FORGE_OPENCODE_FAILURES=0
-  _records="$(_forge_opencode_diagnostics "$_tgt_dir")"
+  _records="$(_forge_opencode_diagnostics "$_tgt_dir" "$_cfg")"
 
   while IFS='|' read -r _st _fam _msg _hint; do
     [ -z "$_st" ] && continue
@@ -1036,6 +1141,52 @@ _forge_opencode_render() {
       esac
     fi
   done < <(printf '%s\n' "$_records")
+}
+
+# ---------------------------------------------------------------------------
+# Environment vs manifest divergence (OpenCode overlay)
+# ---------------------------------------------------------------------------
+# The manifest is the source of truth for the location of the overlay: it is
+# written by the very run that deployed the files, so it knows exactly where
+# the overlay landed. The environment is ambient: it can change between the
+# install and the check, or point at a different overlay instance.
+#
+# Therefore `status`/`doctor` NEVER follow the environment to decide where to
+# look — they always diagnose the recorded location. But the divergence is
+# not silently ignored either: the launcher and opencode itself resolve the
+# config through the environment, so an environment pointing elsewhere means
+# the user would run opencode without the forge overlay. It is reported as an
+# actionable warning and not as a failure: the installed artifacts are
+# healthy in the recorded location, so the installation itself is not
+# degraded and the exit code keeps meaning "is the installation healthy?".
+#
+# _forge_opencode_env_divergence <installed_dir> <installed_config>
+# Prints one "MESSAGE|HINT" record per detected divergence; nothing when the
+# environment does not contradict the manifest. An unset variable never
+# contradicts anything: only an explicitly exported path can diverge.
+#
+# <installed_config> is the config file as recorded in the manifest. An empty
+# value means "not recorded" (a legacy state): the comparison is then skipped
+# instead of guessing, because a guessed contradiction would be a false alarm.
+_forge_opencode_env_divergence() {
+  local _inst_dir="$1" _inst_config="$2"
+  local _msg _hint
+
+  [ -n "$_inst_dir" ] || return 0
+
+  if [ -n "${OPENCODE_CONFIG_DIR:-}" ] && [ "$OPENCODE_CONFIG_DIR" != "$_inst_dir" ]; then
+    _msg="opencode: OPENCODE_CONFIG_DIR apunta a $OPENCODE_CONFIG_DIR pero el overlay está instalado en $_inst_dir"
+    _hint="desexporta OPENCODE_CONFIG_DIR o reinstala el overlay en esa ruta: bash install.sh install --target=opencode"
+    printf '%s|%s\n' "${_msg//|/ }" "${_hint//|/ }"
+  fi
+
+  if [ -n "${OPENCODE_CONFIG:-}" ] && [ -n "$_inst_config" ] && [ "$OPENCODE_CONFIG" != "$_inst_config" ]; then
+    _msg="opencode: OPENCODE_CONFIG apunta a $OPENCODE_CONFIG pero la config instalada está en $_inst_config"
+    _hint="desexporta OPENCODE_CONFIG o reinstala el overlay en esa ruta: bash install.sh install --target=opencode"
+    printf '%s|%s\n' "${_msg//|/ }" "${_hint//|/ }"
+  fi
+
+  return 0
 }
 
 # _forge_status_rtk_block <tgt_name> <tgt_dir> <has_rtk_hook> <tracked_global>
@@ -1218,11 +1369,25 @@ cmd_status() {
         # CLAUDE.md refs and RTK) is evaluated inline below, unchanged.
         ;;
       opencode)
+        # The overlay location comes from the manifest (the source of truth):
+        # the config may live outside the overlay directory when
+        # OPENCODE_CONFIG points elsewhere.
+        local _oc_cfg _oc_cfg_recorded _oc_msg _oc_hint
+        _oc_cfg_recorded="$(_forge_state_query --argjson i "$t" '.targets_manifest[$i].config_file // empty')"
+        _oc_cfg="$_oc_cfg_recorded"
+        [ -n "$_oc_cfg" ] || _oc_cfg="$tgt_dir/opencode.jsonc"
         echo "  OpenCode overlay ($tgt_dir):"
-        _forge_opencode_render status "$tgt_dir"
+        _forge_opencode_render status "$tgt_dir" "$_oc_cfg"
         if [ "$_FORGE_OPENCODE_FAILURES" -gt 0 ]; then
           any_fail=1
         fi
+        # The environment never decides where to look, but a divergence is
+        # reported: it would make the launcher load a different config.
+        while IFS='|' read -r _oc_msg _oc_hint; do
+          [ -z "$_oc_msg" ] && continue
+          printf '    %-9s%s\n' "WARN" "$_oc_msg"
+          [ -n "$_oc_hint" ] && printf '      → %s\n' "$_oc_hint"
+        done < <(_forge_opencode_env_divergence "$tgt_dir" "$_oc_cfg_recorded")
         # The overlay has no Claude components, so the RTK block can only be
         # shown here for the global rtk.tracked case (at most once per run).
         _forge_status_rtk_block "$tgt_name" "$tgt_dir" 0 "$_rtk_tracked_global"
@@ -1503,6 +1668,9 @@ cmd_update() {
 
         if [ "$upd_tgt_name" = "opencode" ]; then
           forge_run_opencode_installer || return 1
+          # The overlay was just (re)deployed: the manifest must point at the
+          # directory that really holds it now.
+          _forge_state_sync_opencode_paths
           upd_t=$((upd_t + 1))
           continue
         fi
@@ -2100,7 +2268,7 @@ cmd_uninstall() {
     local tgt_dir
     case "$tgt_name" in
       claude)   tgt_dir="$HOME/.claude" ;;
-      opencode) tgt_dir="$FORGE_OPENCODE_DIR_DEFAULT" ;;
+      opencode) tgt_dir="$(_forge_state_opencode_dir)" ;;
       *)        tgt_dir="$HOME/.claude" ;;
     esac
     local sfile="$tgt_dir/settings.json"
@@ -2247,6 +2415,9 @@ cmd_repair() {
 
     if [ "$tgt_name" = "opencode" ]; then
       forge_run_opencode_installer || return 1
+      # The overlay was just (re)deployed: the manifest must point at the
+      # directory that really holds it now.
+      _forge_state_sync_opencode_paths
       t=$((t + 1))
       continue
     fi
@@ -2398,9 +2569,20 @@ cmd_doctor() {
           # CLAUDE.md refs) is evaluated inline below, unchanged.
           ;;
         opencode)
+          # Same contract as `status`: the manifest decides where to look and
+          # the environment only produces a warning when it contradicts it.
+          local _doc_cfg _doc_cfg_recorded _doc_msg _doc_hint
+          _doc_cfg_recorded="$(_forge_state_query --argjson i "$_dt" '.targets_manifest[$i].config_file // empty')"
+          _doc_cfg="$_doc_cfg_recorded"
+          [ -n "$_doc_cfg" ] || _doc_cfg="$_dtgt_dir/opencode.jsonc"
           echo "  OpenCode overlay ($_dtgt_dir):"
-          _forge_opencode_render doctor "$_dtgt_dir"
+          _forge_opencode_render doctor "$_dtgt_dir" "$_doc_cfg"
           fail_count=$((fail_count + _FORGE_OPENCODE_FAILURES))
+          while IFS='|' read -r _doc_msg _doc_hint; do
+            [ -z "$_doc_msg" ] && continue
+            _doc_warn "$_doc_msg"
+            [ -n "$_doc_hint" ] && echo "  HINT  $_doc_hint"
+          done < <(_forge_opencode_env_divergence "$_dtgt_dir" "$_doc_cfg_recorded")
           _dt=$((_dt + 1))
           continue
           ;;
@@ -3138,6 +3320,13 @@ cmd_install() {
     eval "manifest_symlinks_objects_json=\${_TARGET_MANIFEST_SYMLINKS_OBJECTS_${tgt_name}:-[]}"
     eval "manifest_dir=\${_TARGET_MANIFEST_DIR_${tgt_name}:-}"
     settings_merged_bool="true"
+    # The OpenCode overlay records the config file it really wrote: it may
+    # live outside the overlay directory (OPENCODE_CONFIG). The Claude
+    # target has no such field.
+    local manifest_config_file=""
+    if [ "$tgt_name" = "opencode" ]; then
+      manifest_config_file="$FORGE_OPENCODE_CONFIG"
+    fi
     local pre_forge_check="${tgt}/settings.json.pre-forge"
     if [ -f "$pre_forge_check" ]; then
       settings_backup_val="$pre_forge_check"
@@ -3196,21 +3385,25 @@ cmd_install() {
       manifest_entry="$(jq -n \
         --arg name "$tgt_name" \
         --arg dir "$manifest_dir" \
+        --arg config_file "$manifest_config_file" \
         --argjson symlinks "$unioned_symlinks_flat_json" \
         --argjson symlinks_objects "$unioned_symlinks_objects_json" \
         --argjson components "$target_components_json" \
         --argjson settings_merged "$settings_merged_bool" \
         --arg settings_backup "$settings_backup_val" \
-        '{name: $name, dir: $dir, symlinks: $symlinks, symlinks_objects: $symlinks_objects, "components": $components, settings_merged: $settings_merged, settings_backup: $settings_backup}')"
+        '{name: $name, dir: $dir, symlinks: $symlinks, symlinks_objects: $symlinks_objects, "components": $components, settings_merged: $settings_merged, settings_backup: $settings_backup}
+         + (if $config_file == "" then {} else {config_file: $config_file} end)')"
     else
       manifest_entry="$(jq -n \
         --arg name "$tgt_name" \
         --arg dir "$manifest_dir" \
+        --arg config_file "$manifest_config_file" \
         --argjson symlinks "$unioned_symlinks_flat_json" \
         --argjson symlinks_objects "$unioned_symlinks_objects_json" \
         --argjson components "$target_components_json" \
         --argjson settings_merged "$settings_merged_bool" \
-        '{name: $name, dir: $dir, symlinks: $symlinks, symlinks_objects: $symlinks_objects, "components": $components, settings_merged: $settings_merged, settings_backup: null}')"
+        '{name: $name, dir: $dir, symlinks: $symlinks, symlinks_objects: $symlinks_objects, "components": $components, settings_merged: $settings_merged, settings_backup: null}
+         + (if $config_file == "" then {} else {config_file: $config_file} end)')"
     fi
 
     [ "$m" -gt 0 ] && targets_manifest_json="$targets_manifest_json,"
