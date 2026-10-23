@@ -63,6 +63,12 @@ jobs:
           fi
 
           echo "$prefix" >> "$GITHUB_PATH"
+          # $GITHUB_PATH is only applied to LATER steps, so without this the
+          # checks below would resolve `shellcheck` to the runner's apt 0.9.0 in
+          # /usr/bin. The runner prepends $GITHUB_PATH entries to PATH in those
+          # steps, so mirroring the same prepend here makes this step validate
+          # the exact PATH resolution that subsequent steps get.
+          export PATH="$prefix:$PATH"
           shellcheck --version
           # Guards against the runner's apt shellcheck (0.9.0) shadowing the pin.
           shellcheck --version | grep -q "version: $SHELLCHECK_VERSION" || {
