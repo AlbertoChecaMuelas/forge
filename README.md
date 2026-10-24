@@ -127,8 +127,8 @@ Run the installer from the repository root. Each subcommand is idempotent and sa
 | `bash install.sh install --show-cost` | Installs and enables monetary cost plus lifetime stats in the statusline. |
 | `bash install.sh install --only=agents,commands` | Installs only the `agents` and `commands` components. |
 | `bash install.sh install --only=statusline` | Installs only the `statusline` component. |
-| `bash install.sh status` | Reports which symlinks are in place per target (component-scoped). |
-| `bash install.sh doctor` | Runs diagnostics on installed components only: validates symlink integrity, RTK presence and configuration health. |
+| `bash install.sh status` | Reports read-only, target-aware installation health: component-scoped symlinks/settings/`CLAUDE.md` for Claude, or overlay copies, config, declared plugins and launcher for OpenCode — always at the location recorded at install time, warning when the environment points elsewhere. |
+| `bash install.sh doctor` | Runs read-only, target-aware diagnostics: Claude component/RTK/config checks or OpenCode overlay/config/plugin/launcher checks, always at the location recorded at install time. |
 | `bash install.sh update` | Runs `git pull` and repairs symlinks, acting only on components recorded in state. |
 | `bash install.sh repair` | Recreates missing or broken symlinks for installed components, without pulling. |
 | `bash install.sh version` | Prints `FORGE_VERSION`. |
@@ -393,10 +393,10 @@ Forge supports [OpenCode](https://opencode.ai) from the same repository. OpenCod
 
 1. Requires `opencode` on `PATH`.
 2. Regenerates the 5 OpenCode agents.
-3. Installs an isolated overlay under `~/.config/opencode-forge/` instead of touching the user's global OpenCode config.
+3. Installs an isolated overlay under `~/.config/opencode-forge/` (or under `$OPENCODE_CONFIG_DIR` when set) instead of touching the user's global OpenCode config, and records the effective overlay and config paths in the state file.
 4. Copies the generated agents, `AGENTS.md`, and every plugin declared in `opencode.jsonc` (`plugins/forge-guard.js`, `plugins/forge-task-observer.js`) into that isolated overlay. The plugin list is derived from the config, never duplicated in the installer, and the install fails if a declared plugin is missing on disk.
 5. Copies `open-code/opencode.jsonc` into the isolated overlay and rewrites the `AGENTS.md` instruction path.
-6. Installs a separate launcher at `~/.local/bin/forge-opencode` that exports `OPENCODE_CONFIG_DIR` and `OPENCODE_CONFIG` before running the real `opencode` binary.
+6. Installs a separate launcher at `~/.local/bin/forge-opencode` that exports the recorded `OPENCODE_CONFIG_DIR` and `OPENCODE_CONFIG` before running the real `opencode` binary, warning when the exported environment points elsewhere.
 7. Verifies that either OpenCode credentials already exist or token-based auth is available via `open-code/env.sh`.
 
 The installer is idempotent and does not modify `~/.config/opencode/`, `.bashrc`, `.zshrc`, or `config.fish`.

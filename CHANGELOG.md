@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- `status` y `doctor` son de solo lectura: ya no migran ni reescriben un state file legado
+
+### Fixed
+- `status`/`doctor` diagnostican el target OpenCode por su contrato real (copias, config, plugins declarados y launcher) en vez de aplicar comprobaciones de Claude
+- el manifest registra la ruta efectiva del overlay y la ruta real de la config de OpenCode: `status` y `doctor` diagnostican la ruta registrada en vez de seguir `OPENCODE_CONFIG_DIR`/`OPENCODE_CONFIG` (con aviso accionable cuando el entorno la contradice), y el launcher y el desinstalador usan la ruta registrada
+- el changelog publica una entrada por cambio, sin repetir las ya escritas a mano, y con el código inline bien cerrado
+
 ## [0.7.4] - 2026-10-23
 
 ### Fixed

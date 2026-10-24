@@ -25,7 +25,7 @@ done
 # uninstaller must remove exactly what the installer put in place.
 python3 "$SCRIPT_DIR/lib/plugin-sync.py" remove --config "$CONFIG_FILE"
 
-rm -f "$CONFIG_DIR/opencode.jsonc"
+rm -f "$CONFIG_FILE"
 rm -f "$CONFIG_DIR/AGENTS.md"
 
 if [ -L "$LAUNCHER_PATH" ]; then

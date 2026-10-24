@@ -25,6 +25,9 @@ tests/.tmp/
 .agents/
 skills-lock.json
 
+# Playwright MCP server (project-local artifacts, generated on demand)
+.playwright-mcp/
+
 # .claude/ is tracked — forge-specific skills live there.
 # Personal content (settings.local.json) is excluded via .claude/.gitignore.
 .plans/

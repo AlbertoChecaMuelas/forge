@@ -40,6 +40,15 @@
 #   refactor / perf / docs             -> ### Changed
 #   chore / build / ci / style / test  -> omitted (not user-facing)
 #
+# The bullet text is the commit subject with the conventional prefix and the
+# optional scope removed. Two rules keep the block clean:
+#   - a commit that already curated its own entry in the [Unreleased] section
+#     of CHANGELOG.md is NOT documented again (its reviewed entry is already
+#     in the baseline; re-adding the raw subject duplicated the change);
+#   - the derived text is normalised: an inline-code marker that is left
+#     unpaired (an odd number of "`") is dropped, so a malformed bullet can
+#     never ship.
+#
 # Entries are merged into the [Unreleased] subsection of the same name when
 # the baseline already carries one (a second release on a branch that
 # already published one must not duplicate the heading); the heading is
@@ -305,34 +314,116 @@ EOF
   MERGE_LAST=""   # subsection closed on a blank line
 }
 
-# Classifies the commit subjects read from stdin into the globals ADDED /
-# CHANGED / FIXED (each one a "- " bullet list, empty when the range holds
-# no commit of that kind).
-_classify_subjects() {
-  local SUBJECT STRIPPED
+# ---------------------------------------------------------------------------
+# Entry text helpers
+#
+# The bullet text is derived from the commit subject, i.e. from free-form
+# prose written by a human. Two rules keep the rendered block clean and
+# byte-deterministic:
+#
+#   - a commit that ALREADY curated its own entry in the [Unreleased]
+#     section of CHANGELOG.md is not documented a second time. Its
+#     reviewed entry is part of the baseline, and re-adding the raw subject
+#     on top of it duplicates the very same change (this is what used to
+#     leave a near-duplicate pair in the block);
+#   - the derived text is normalised: an inline-code marker that is not
+#     paired (an odd number of "`") is a typo in the subject and would ship
+#     a malformed bullet, because Markdown renders an unmatched backtick as
+#     a literal character.
+# ---------------------------------------------------------------------------
+
+# _strip_prefix <subject> — removes the conventional-commit prefix and the
+# optional scope: "fix(opencode): texto" -> "texto".
+_strip_prefix() {
+  printf '%s' "$1" | sed 's/^[a-z]*([^)]*): *//' | sed 's/^[a-z]*: *//'
+}
+
+# _normalise_bullet <text> — drops a dangling inline-code marker.
+#
+# The markers that pair up are kept; only the LAST one, the one left
+# unpaired, is removed. An even number of "`" leaves the text untouched.
+_normalise_bullet() {
+  local text="$1" n
+  n="$(printf '%s' "${text}" | tr -cd '`' | wc -c | tr -d ' ')"
+  n="${n:-0}"
+  if (( n % 2 != 0 )); then
+    text="$(printf '%s' "${text}" | awk '{
+      s = $0
+      for (i = length(s); i > 0; i--) {
+        if (substr(s, i, 1) == "`") { s = substr(s, 1, i - 1) substr(s, i + 1); break }
+      }
+      print s
+    }')"
+  fi
+  printf '%s' "${text}"
+}
+
+# _unreleased_block_of <rev> — the [Unreleased] section of <rev>:CHANGELOG.md
+# (heading included). Empty when that revision has no CHANGELOG.md or no
+# such section.
+_unreleased_block_of() {
+  { git show "${1}:CHANGELOG.md" 2>/dev/null || true; } | awk '
+    /^## \[Unreleased\]/                        { inside = 1 }
+    inside && /^## \[/ && !/^## \[Unreleased\]/ { inside = 0 }
+    inside                                       { print }
+  '
+}
+
+# _commit_curated_itself <sha> — true when <sha> added at least one bullet to
+# the [Unreleased] section of CHANGELOG.md. Such a commit already documented
+# itself with a reviewed entry, so the generator must not add the raw subject
+# on top of it: that is the duplicate this rule removes.
+_commit_curated_itself() {
+  local sha="$1" before after added
+  before="$(_unreleased_block_of "${sha}^")"
+  after="$(_unreleased_block_of "${sha}")"
+  [[ -n "${after}" ]] || return 1
+  added="$(LC_ALL=C comm -13 \
+    <(printf '%s\n' "${before}" | LC_ALL=C sort -u) \
+    <(printf '%s\n' "${after}"  | LC_ALL=C sort -u) | grep -c '^- ' || true)"
+  [[ "${added:-0}" -gt 0 ]]
+}
+
+# Classifies the "<sha> <subject>" lines read from stdin into the globals
+# ADDED / CHANGED / FIXED (each one a "- " bullet list, empty when the range
+# holds no commit of that kind) and counts the user-facing commits in
+# USER_FACING.
+_classify_commits() {
+  local LINE SHA SUBJECT KIND STRIPPED
   ADDED=""
   CHANGED=""
   FIXED=""
-  while IFS= read -r SUBJECT; do
-    [[ -z "${SUBJECT}" ]] && continue
+  USER_FACING=0
+  while IFS= read -r LINE; do
+    [[ -z "${LINE}" ]] && continue
+    SHA="${LINE%% *}"
+    SUBJECT="${LINE#* }"
+    [[ -n "${SUBJECT}" && "${SUBJECT}" != "${LINE}" ]] || continue
     case "${SUBJECT}" in
-      feat:*|feat\(*\):*|feature:*|feature\(*\):*)
-        STRIPPED="$(printf '%s' "${SUBJECT}" | sed 's/^[a-z]*([^)]*): *//' | sed 's/^[a-z]*: *//')"
+      feat:*|feat\(*\):*|feature:*|feature\(*\):*) KIND="Added" ;;
+      fix:*|fix\(*\):*)                            KIND="Fixed" ;;
+      refactor:*|refactor\(*\):*|perf:*|perf\(*\):*|docs:*|docs\(*\):*) KIND="Changed" ;;
+      *)
+        # chore / build / ci / style / test / prefixless: not user-facing
+        continue
+        ;;
+    esac
+    USER_FACING=$((USER_FACING + 1))
+    # Already documented by the commit itself: do not duplicate it.
+    _commit_curated_itself "${SHA}" && continue
+    STRIPPED="$(_normalise_bullet "$(_strip_prefix "${SUBJECT}")")"
+    case "${KIND}" in
+      Added)
         if [[ -n "${ADDED}" ]]; then ADDED="${ADDED}
 - ${STRIPPED}"; else ADDED="- ${STRIPPED}"; fi
         ;;
-      fix:*|fix\(*\):*)
-        STRIPPED="$(printf '%s' "${SUBJECT}" | sed 's/^[a-z]*([^)]*): *//' | sed 's/^[a-z]*: *//')"
+      Fixed)
         if [[ -n "${FIXED}" ]]; then FIXED="${FIXED}
 - ${STRIPPED}"; else FIXED="- ${STRIPPED}"; fi
         ;;
-      refactor:*|refactor\(*\):*|perf:*|perf\(*\):*|docs:*|docs\(*\):*)
-        STRIPPED="$(printf '%s' "${SUBJECT}" | sed 's/^[a-z]*([^)]*): *//' | sed 's/^[a-z]*: *//')"
+      Changed)
         if [[ -n "${CHANGED}" ]]; then CHANGED="${CHANGED}
 - ${STRIPPED}"; else CHANGED="- ${STRIPPED}"; fi
-        ;;
-      *)
-        # chore / build / ci / style / test / prefixless: not user-facing
         ;;
     esac
   done
@@ -477,6 +568,7 @@ _render_desired() {
 _scan_superseded_state() {
   local wt="$1" c
   local save_added="${ADDED}" save_changed="${CHANGED}" save_fixed="${FIXED}"
+  local save_user_facing="${USER_FACING}"
   local subjects
 
   SUPER_COMMIT=""
@@ -484,9 +576,9 @@ _scan_superseded_state() {
 
   while IFS= read -r c; do
     [[ -z "${c}" ]] && continue
-    subjects="$(git log "${ANCHOR_SHA}..${c}" --no-merges --format='%s' 2>/dev/null || true)"
+    subjects="$(git log "${ANCHOR_SHA}..${c}" --no-merges --format='%H %s' 2>/dev/null || true)"
     [[ -z "${subjects}" ]] && continue
-    _classify_subjects <<EOF
+    _classify_commits <<EOF
 ${subjects}
 EOF
     if [[ -z "${ADDED}" && -z "${CHANGED}" && -z "${FIXED}" ]]; then
@@ -497,6 +589,7 @@ EOF
       SUPER_COMMIT="${c}"
       SUPER_ENTRIES=$(( $(_count_bullets "${ADDED}") + $(_count_bullets "${CHANGED}") + $(_count_bullets "${FIXED}") ))
       ADDED="${save_added}"; CHANGED="${save_changed}"; FIXED="${save_fixed}"
+      USER_FACING="${save_user_facing}"
       return 0
     fi
   done <<EOF
@@ -504,6 +597,7 @@ $(git log "${ANCHOR_SHA}..HEAD" --no-merges --reverse --format='%H' 2>/dev/null 
 EOF
 
   ADDED="${save_added}"; CHANGED="${save_changed}"; FIXED="${save_fixed}"
+  USER_FACING="${save_user_facing}"
   return 1
 }
 
@@ -554,10 +648,10 @@ ${PAIRS}
 EOF
 
 # ---------------------------------------------------------------------------
-# Classify anchor..HEAD subjects into the three user-facing buckets.
+# Classify anchor..HEAD commits into the three user-facing buckets.
 # ---------------------------------------------------------------------------
-SUBJECTS="$(git log "${ANCHOR_SHA}..HEAD" --no-merges --format='%s' 2>/dev/null || true)"
-_classify_subjects <<EOF
+SUBJECTS="$(git log "${ANCHOR_SHA}..HEAD" --no-merges --format='%H %s' 2>/dev/null || true)"
+_classify_commits <<EOF
 ${SUBJECTS}
 EOF
 
@@ -582,11 +676,17 @@ if ! git show "${HEAD_SHA}:CHANGELOG.md" > "${TMP_BASELINE}" 2>/dev/null; then
   exit 2
 fi
 
-# No user-facing commits in the range: desired == baseline exactly. The
-# WT must already be at baseline (otherwise reject the manual edit).
+# No entry to add: either the range holds no user-facing commit, or every
+# user-facing commit in it already curated its own entry in [Unreleased].
+# In both cases desired == baseline exactly, so the WT must already be at
+# baseline (otherwise reject the manual edit).
 if [[ -z "${ADDED}" && -z "${CHANGED}" && -z "${FIXED}" ]]; then
   if [[ -f "${CHANGELOG}" ]] && cmp -s "${CHANGELOG}" "${TMP_BASELINE}"; then
-    echo "update-changelog: no user-facing commits vs anchor ${ANCHOR_SHA}; CHANGELOG unchanged"
+    if [[ "${USER_FACING:-0}" -gt 0 ]]; then
+      echo "update-changelog: ${USER_FACING} user-facing commit(s) vs anchor ${ANCHOR_SHA} are already documented in [Unreleased]; CHANGELOG unchanged"
+    else
+      echo "update-changelog: no user-facing commits vs anchor ${ANCHOR_SHA}; CHANGELOG unchanged"
+    fi
     exit 0
   fi
   echo "update-changelog: working tree differs from baseline but no entries are pending; not overwriting manual changes" >&2

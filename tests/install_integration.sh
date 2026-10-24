@@ -81,6 +81,37 @@ assert_file_not_exists() {
 }
 
 # ---------------------------------------------------------------------------
+# Diagnostic runner: runs a forge subcommand in an isolated HOME and captures
+# the combined output (stdout+stderr) plus the exit code.
+#
+# OPENCODE_CONFIG_DIR / OPENCODE_CONFIG are removed on purpose: the installer
+# gives them precedence over HOME, so an inherited real-user config could
+# otherwise be read (or written) by a test.
+#
+# Sets: RUN_OUT (combined output), RUN_RC (exit code).
+# ---------------------------------------------------------------------------
+run_forge() {
+  local home="$1"
+  shift
+  RUN_RC=0
+  RUN_OUT="$(env -u OPENCODE_CONFIG_DIR -u OPENCODE_CONFIG HOME="$home" \
+    bash "$INSTALL_SH" "$@" 2>&1)" || RUN_RC=$?
+}
+
+# Disposable sandbox root for the diagnostics tests: isolated from the real
+# HOME, from the repo and from any other suite.
+FORGE_TEST_TMP_ROOT="/tmp/opencode"
+
+# make_diag_home <label>
+# Creates an isolated HOME below the disposable sandbox root.
+make_diag_home() {
+  local label="$1"
+
+  mkdir -p "$FORGE_TEST_TMP_ROOT"
+  mktemp -d "$FORGE_TEST_TMP_ROOT/${label}.XXXXXX"
+}
+
+# ---------------------------------------------------------------------------
 # Test 1: e2e install → uninstall roundtrip (settings byte-a-byte identical)
 # ---------------------------------------------------------------------------
 test_e2e_install_uninstall_roundtrip() {
@@ -354,13 +385,21 @@ test_repair_uses_state_not_hardcoded() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: state v1 migrates to v2 on status
+# Test 8: `status` is read-only on a legacy v1 state (in-memory migration)
 # ---------------------------------------------------------------------------
-test_state_v1_migrates_to_v2() {
+# Contract:
+#   * `status` NEVER rewrites the state file: the bytes and the mtime must be
+#     identical before and after the run (the on-disk migration belongs to
+#     `repair`/`update`, not to the diagnostics).
+#   * `status` still READS a legacy v1 state: the diagnostic view reproduces
+#     the v1 -> v3 migration in memory, so the target and its components are
+#     reported exactly as they would be after an on-disk migration.
+# ---------------------------------------------------------------------------
+test_state_v1_status_is_read_only() {
   echo ""
-  echo "--- test_state_v1_migrates_to_v2"
+  echo "--- test_state_v1_status_is_read_only"
   local TMPHOME
-  TMPHOME="$(mktemp -d)"
+  TMPHOME="$(make_diag_home "claude-state-v1")"
   trap 'rm -rf "$TMPHOME"' EXIT
 
   mkdir -p "$TMPHOME/.claude/agents"
@@ -396,27 +435,226 @@ test_state_v1_migrates_to_v2() {
 }
 STATEOF
 
-  # Run status — triggers _forge_state_migrate
-  HOME="$TMPHOME" bash "$INSTALL_SH" status >/dev/null 2>&1 || true
+  local sha_before mtime_before
+  sha_before="$(sha256sum "$state" | cut -d' ' -f1)"
+  mtime_before="$(stat -c '%y' "$state")"
 
-  local schema
-  schema="$(jq -r '.state_schema // 0' "$state")"
-  if [ "$schema" -ge "2" ] 2>/dev/null; then
-    pass "state migrado a schema >= 2 tras status (got $schema)"
+  # Run status — must be strictly read-only
+  run_forge "$TMPHOME" status
+
+  local sha_after mtime_after
+  sha_after="$(sha256sum "$state" | cut -d' ' -f1)"
+  mtime_after="$(stat -c '%y' "$state")"
+
+  # --- (a) the state file is not rewritten ---
+  if [ "$sha_before" = "$sha_after" ]; then
+    pass "status no reescribe el state file v1 (sha256 idéntico)"
   else
-    fail "state_schema esperado >= 2 tras migración por status, got $schema"
+    fail "status reescribió el state file v1 (sha256 $sha_before -> $sha_after)"
   fi
 
-  local manifest_len
-  manifest_len="$(jq -r '.targets_manifest | length' "$state" 2>/dev/null || echo "0")"
-  if [ "$manifest_len" -ge 1 ]; then
-    pass "targets_manifest generado por migración (length $manifest_len)"
+  if [ "$mtime_before" = "$mtime_after" ]; then
+    pass "status no toca el mtime del state file v1"
   else
-    fail "targets_manifest vacío tras migración (got $manifest_len)"
+    fail "status cambió el mtime del state file v1 ($mtime_before -> $mtime_after)"
+  fi
+
+  local schema_on_disk manifest_on_disk
+  schema_on_disk="$(jq -r '.state_schema // "absent"' "$state")"
+  manifest_on_disk="$(jq -r '.targets_manifest // "absent"' "$state")"
+  if [ "$schema_on_disk" = "absent" ] && [ "$manifest_on_disk" = "absent" ]; then
+    pass "el state v1 sigue en disco sin state_schema ni targets_manifest"
+  else
+    fail "status migró el state v1 en disco (schema=$schema_on_disk manifest=$manifest_on_disk)"
+  fi
+
+  # --- (b) the legacy state is still read correctly (in-memory migration) ---
+  if printf '%s' "$RUN_OUT" | grep -q "Target: claude ($claude_dir)"; then
+    pass "status lee el state v1 y muestra el target claude con su directorio"
+  else
+    fail "status no mostró el target claude leído del state v1"
+  fi
+
+  local expected_components="agents commands statusline branch-guard rtk-hook cost-report cost-report-skill"
+  if printf '%s' "$RUN_OUT" | grep -q "Componentes: $expected_components"; then
+    pass "status replica en memoria la migración v1 (componentes por defecto)"
+  else
+    fail "status no replicó la migración v1 en memoria (componentes)"
+  fi
+
+  # The migrated view is really applied: the artifacts of the migrated
+  # manifest are evaluated against the disk, so the run is degraded.
+  if [ "$RUN_RC" -ne 0 ]; then
+    pass "status sale != 0 con el manifiesto v1 migrado en memoria"
+  else
+    fail "status debería salir != 0 (el manifiesto migrado se evalúa contra el disco)"
   fi
 
   trap - EXIT
   rm -rf "$TMPHOME"
+}
+
+# ---------------------------------------------------------------------------
+# Test 8b: Claude parity — the Claude contract of status/doctor is unchanged
+# ---------------------------------------------------------------------------
+# The OpenCode rework must not alter the Claude behaviour. This test pins it:
+#   * a missing symlink is reported as BROKEN and the run exits non-zero
+#   * a symlink pointing elsewhere is reported as MISMATCH (and so is a
+#     regular file in place of a symlink)
+#   * `--only=statusline` does not report the agents that are not installed
+#   * a corrupt state file makes status fail (exit 1)
+#   * a missing state file makes status succeed (exit 0) and doctor too
+#     (regression: `_doc_rtk_hook_present` used to be unbound -> crash)
+# ---------------------------------------------------------------------------
+test_claude_status_doctor_parity() {
+  echo ""
+  echo "--- test_claude_status_doctor_parity"
+  local TMPHOME
+  TMPHOME="$(make_diag_home "claude-diag-parity")"
+  trap 'rm -rf "$TMPHOME"' EXIT
+
+  mkdir -p "$TMPHOME/.claude"
+  env -u OPENCODE_CONFIG_DIR -u OPENCODE_CONFIG HOME="$TMPHOME" \
+    bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+
+  # --- (1) missing symlink -> BROKEN + non-zero exit ---
+  rm "$TMPHOME/.claude/agents/senior.md"
+  run_forge "$TMPHOME" status
+  if [ "$RUN_RC" -ne 0 ]; then
+    pass "claude: status sale != 0 con symlink ausente"
+  else
+    fail "claude: status debería salir != 0 con symlink ausente"
+  fi
+  if printf '%s' "$RUN_OUT" | grep -q "BROKEN.*agents/senior.md"; then
+    pass "claude: status reporta BROKEN para el symlink ausente"
+  else
+    fail "claude: status no reportó BROKEN para el symlink ausente"
+  fi
+
+  run_forge "$TMPHOME" doctor
+  if [ "$RUN_RC" -ne 0 ]; then
+    pass "claude: doctor sale != 0 con symlink ausente"
+  else
+    fail "claude: doctor debería salir != 0 con symlink ausente"
+  fi
+  if printf '%s' "$RUN_OUT" | grep -q "symlink BROKEN"; then
+    pass "claude: doctor reporta symlink BROKEN"
+  else
+    fail "claude: doctor no reportó symlink BROKEN"
+  fi
+
+  # --- (2) symlink pointing elsewhere -> MISMATCH + non-zero exit ---
+  ln -s "/nonexistent/path" "$TMPHOME/.claude/agents/senior.md"
+  run_forge "$TMPHOME" status
+  if [ "$RUN_RC" -ne 0 ]; then
+    pass "claude: status sale != 0 con symlink que apunta a otro sitio"
+  else
+    fail "claude: status debería salir != 0 con symlink que apunta a otro sitio"
+  fi
+  if printf '%s' "$RUN_OUT" | grep -q "MISMATCH.*agents/senior.md"; then
+    pass "claude: status reporta MISMATCH para el symlink que apunta a otro sitio"
+  else
+    fail "claude: status no reportó MISMATCH para el symlink que apunta a otro sitio"
+  fi
+
+  # --- (3) regular file in place of a symlink -> MISMATCH (no es symlink) ---
+  rm "$TMPHOME/.claude/agents/senior.md"
+  printf 'no soy un symlink\n' > "$TMPHOME/.claude/agents/senior.md"
+  run_forge "$TMPHOME" status
+  if printf '%s' "$RUN_OUT" | grep -q "MISMATCH.*agents/senior.md.*no es symlink"; then
+    pass "claude: status reporta MISMATCH (no es symlink) para un fichero regular"
+  else
+    fail "claude: status no reportó MISMATCH (no es symlink) para un fichero regular"
+  fi
+
+  # --- (4) corrupt state file -> status/doctor fail ---
+  printf 'esto no es json' > "$TMPHOME/.forge-state.json"
+  run_forge "$TMPHOME" status
+  if [ "$RUN_RC" -ne 0 ]; then
+    pass "claude: status sale != 0 con state file corrupto"
+  else
+    fail "claude: status debería salir != 0 con state file corrupto"
+  fi
+  if printf '%s' "$RUN_OUT" | grep -q "state file inválido"; then
+    pass "claude: status informa del state file corrupto"
+  else
+    fail "claude: status no informó del state file corrupto"
+  fi
+
+  run_forge "$TMPHOME" doctor
+  if [ "$RUN_RC" -ne 0 ]; then
+    pass "claude: doctor sale != 0 con state file corrupto"
+  else
+    fail "claude: doctor debería salir != 0 con state file corrupto"
+  fi
+  if printf '%s' "$RUN_OUT" | grep -q "state file corrupto"; then
+    pass "claude: doctor informa del state file corrupto"
+  else
+    fail "claude: doctor no informó del state file corrupto"
+  fi
+
+  # --- (5) no state file -> status/doctor succeed ---
+  rm -f "$TMPHOME/.forge-state.json"
+  run_forge "$TMPHOME" status
+  if [ "$RUN_RC" -eq 0 ]; then
+    pass "claude: status sale 0 sin state file"
+  else
+    fail "claude: status debería salir 0 sin state file (got $RUN_RC)"
+  fi
+  if printf '%s' "$RUN_OUT" | grep -q "no instalado"; then
+    pass "claude: status informa de que no está instalado sin state file"
+  else
+    fail "claude: status no informó de que no está instalado sin state file"
+  fi
+
+  run_forge "$TMPHOME" doctor
+  if [ "$RUN_RC" -eq 0 ]; then
+    pass "claude: doctor sale 0 sin state file (regresión _doc_rtk_hook_present)"
+  else
+    fail "claude: doctor debería salir 0 sin state file (got $RUN_RC)"
+  fi
+  if printf '%s' "$RUN_OUT" | grep -q "state file no encontrado"; then
+    pass "claude: doctor avisa de que no hay state file"
+  else
+    fail "claude: doctor no avisó de que no hay state file"
+  fi
+  if printf '%s' "$RUN_OUT" | grep -q "^  FAIL "; then
+    fail "claude: doctor no debería reportar ningún FAIL sin state file"
+  else
+    pass "claude: doctor no reporta ningún FAIL sin state file"
+  fi
+
+  trap - EXIT
+  rm -rf "$TMPHOME"
+
+  # --- (6) --only=statusline: the agents that are not installed are not reported ---
+  local TMPHOME2
+  TMPHOME2="$(make_diag_home "claude-diag-statusline")"
+  trap 'rm -rf "$TMPHOME2"' EXIT
+
+  mkdir -p "$TMPHOME2/.claude"
+  env -u OPENCODE_CONFIG_DIR -u OPENCODE_CONFIG HOME="$TMPHOME2" \
+    bash "$INSTALL_SH" install --target=claude --only=statusline >/dev/null 2>&1
+
+  run_forge "$TMPHOME2" status
+  if [ "$RUN_RC" -eq 0 ]; then
+    pass "claude: status sale 0 con --only=statusline"
+  else
+    fail "claude: status debería salir 0 con --only=statusline (got $RUN_RC)"
+  fi
+  if printf '%s' "$RUN_OUT" | grep -q "Componentes: statusline"; then
+    pass "claude: status muestra solo el componente statusline"
+  else
+    fail "claude: status no mostró solo el componente statusline"
+  fi
+  if printf '%s' "$RUN_OUT" | grep -qi "senior\|BROKEN\|MISSING"; then
+    fail "claude: status no debe reportar agentes ausentes con --only=statusline"
+  else
+    pass "claude: status no reporta agentes ausentes con --only=statusline"
+  fi
+
+  trap - EXIT
+  rm -rf "$TMPHOME2"
 }
 
 # ---------------------------------------------------------------------------
@@ -1470,6 +1708,171 @@ test_purge_removes_pre_forge() {
 }
 
 # ---------------------------------------------------------------------------
+# Test harness contract: the runner must execute EVERY candidate suite.
+#
+# Regression guard. The runner used to feed the list of suites to the suites
+# themselves through a heredoc, so a suite that read stdin swallowed one line
+# of that list and the suite right after it was never run. The summary still
+# said "Passed: 14 / Failed: 0": a green run that had silently dropped half
+# of the suites.
+#
+# The runner is exercised against a sandbox copy that mirrors the real
+# candidate set (tests/*_unit.sh + tests/*_integration.sh + EXTRA_TESTS). The
+# first candidate is a stub that greedily reads stdin: with the regression the
+# executed count drops by one and the stub steals the path of the next suite;
+# with the fix every candidate runs and the stub reads nothing.
+# ---------------------------------------------------------------------------
+
+# Prints the basenames of the suites the runner would collect.
+run_all_candidate_names() {
+  local runner="$1"
+  local tests_dir="$2"
+
+  find "$tests_dir" -maxdepth 1 \( -name '*_unit.sh' -o -name '*_integration.sh' \) \
+    | sed 's|.*/||' | sort
+
+  local extra_line
+  extra_line="$(grep -m1 '^EXTRA_TESTS=' "$runner" 2>/dev/null || true)"
+  if [ -n "$extra_line" ]; then
+    (
+      SCRIPT_DIR="$tests_dir"
+      export SCRIPT_DIR
+      # shellcheck disable=SC1090
+      eval "$extra_line"
+      # shellcheck disable=SC2086
+      for f in $EXTRA_TESTS; do
+        [ -f "$f" ] && basename "$f"
+      done
+    )
+  fi
+}
+
+# Suites that used to be swallowed by the heredoc and never ran.
+RUN_ALL_PREVIOUSLY_LOST_SUITES="protocol_unit.sh readme_sync_unit.sh
+release_flow_integration.sh release_skill_unit.sh rtk_unit.sh
+settings_integration.sh state_migration_unit.sh symlink_unit.sh
+total_usage_unit.sh update_integration.sh"
+
+test_run_all_executes_every_candidate_suite() {
+  echo ""
+  echo "--- test_run_all_executes_every_candidate_suite"
+
+  local runner="$FORGE_ROOT/tests/run-all.sh"
+  local tests_dir="$FORGE_ROOT/tests"
+  local SANDBOX sandbox_tests candidates_file candidates candidate_count
+  local greedy_name output runner_rc=0 reported_count reported_failed
+  local missing known_suite
+
+  candidates="$(run_all_candidate_names "$runner" "$tests_dir")"
+  if [ -z "$candidates" ]; then
+    fail "run-all: no candidate suite found in $tests_dir"
+    return
+  fi
+  candidate_count="$(printf '%s\n' "$candidates" | wc -l | tr -d ' ')"
+
+  if [ "$candidate_count" -gt 0 ]; then
+    pass "run-all: $candidate_count candidate suites collected from $tests_dir"
+  else
+    fail "run-all: 0 candidate suites collected from $tests_dir"
+  fi
+
+  SANDBOX="$(mktemp -d "$FORGE_TEST_TMP_ROOT/run-all-contract.XXXXXX")"
+  trap 'rm -rf "$SANDBOX"' EXIT
+  sandbox_tests="$SANDBOX/tests"
+  mkdir -p "$sandbox_tests"
+  candidates_file="$SANDBOX/candidates.txt"
+  printf '%s\n' "$candidates" > "$candidates_file"
+
+  # The real runner, byte for byte: only the suites are replaced by stubs.
+  cp "$runner" "$sandbox_tests/run-all.sh"
+
+  greedy_name="$(head -n 1 "$candidates_file")"
+  while IFS= read -r candidate; do
+    [ -z "$candidate" ] && continue
+    if [ "$candidate" = "$greedy_name" ]; then
+      cat > "$sandbox_tests/$candidate" <<'STUB'
+#!/usr/bin/env bash
+IFS= read -r stolen || true
+printf 'GREEDY_STDIN=[%s]\n' "$stolen"
+exit 0
+STUB
+    else
+      cat > "$sandbox_tests/$candidate" <<'STUB'
+#!/usr/bin/env bash
+printf 'STUB_OK\n'
+exit 0
+STUB
+    fi
+    chmod +x "$sandbox_tests/$candidate"
+  done < "$candidates_file"
+
+  # FORGE_TEST_FILTER must not leak into the sandbox run.
+  output="$(cd "$sandbox_tests" && env -u FORGE_TEST_FILTER \
+    bash "$sandbox_tests/run-all.sh" 2>&1)" || runner_rc=$?
+
+  if [ "$runner_rc" -eq 0 ]; then
+    pass "run-all: the runner exits 0"
+  else
+    fail "run-all: the runner exited $runner_rc (expected 0)"
+  fi
+
+  reported_count="$(printf '%s\n' "$output" \
+    | grep -E '^[[:space:]]*Tests run:' | grep -oE '[0-9]+' | head -n 1)"
+  reported_failed="$(printf '%s\n' "$output" \
+    | grep -E '^[[:space:]]*Failed:' | grep -oE '[0-9]+' | head -n 1)"
+
+  if [ "$reported_count" = "$candidate_count" ]; then
+    pass "run-all: executed $reported_count suites, one per candidate"
+  else
+    fail "run-all: executed ${reported_count:-0} suites but $candidate_count were candidates"
+  fi
+
+  if [ "${reported_failed:-1}" = "0" ]; then
+    pass "run-all: no suite failed"
+  else
+    fail "run-all: ${reported_failed:-?} suite(s) failed"
+  fi
+
+  missing=""
+  while IFS= read -r candidate; do
+    [ -z "$candidate" ] && continue
+    if ! printf '%s\n' "$output" | grep -qF "PASS  $candidate"; then
+      missing="$missing $candidate"
+    fi
+  done < "$candidates_file"
+
+  if [ -z "$missing" ]; then
+    pass "run-all: every candidate suite was executed"
+  else
+    fail "run-all: candidate suites never executed:$missing"
+  fi
+
+  # The greedy stub proves the suites no longer share the stdin of the runner:
+  # it must not be able to steal the path of the next suite.
+  if printf '%s\n' "$output" | grep -qF 'GREEDY_STDIN=[]'; then
+    pass "run-all: a suite reading stdin gets its own stdin, not the suite list"
+  else
+    fail "run-all: a suite reading stdin stole the suite list (stdin devorado regression)"
+  fi
+
+  # The suites that used to disappear silently must be part of the run.
+  for known_suite in $RUN_ALL_PREVIOUSLY_LOST_SUITES; do
+    if [ ! -f "$tests_dir/$known_suite" ]; then
+      fail "run-all: $known_suite does not exist in $tests_dir"
+      continue
+    fi
+    if printf '%s\n' "$output" | grep -qF "PASS  $known_suite"; then
+      pass "run-all: $known_suite is executed"
+    else
+      fail "run-all: $known_suite was not executed"
+    fi
+  done
+
+  rm -rf "$SANDBOX"
+  trap - EXIT
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 echo "=============================="
@@ -1482,7 +1885,8 @@ test_e2e_status_reports_broken
 test_e2e_rtk_no_binary_without_confirmation
 test_state_schema_v2_shape
 test_repair_uses_state_not_hardcoded
-test_state_v1_migrates_to_v2
+test_state_v1_status_is_read_only
+test_claude_status_doctor_parity
 test_e2e_new_commands_distributed
 test_e2e_legacy_commands_cleanup
 test_install_only_statusline
@@ -1504,6 +1908,7 @@ test_full_uninstall_strips_claude_md_ref_and_dirs
 test_full_uninstall_rtk_default_and_keep
 test_uninstall_sanitizes_restored_broken_settings
 test_purge_removes_pre_forge
+test_run_all_executes_every_candidate_suite
 
 echo ""
 echo "=============================="

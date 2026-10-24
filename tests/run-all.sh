@@ -79,7 +79,10 @@ while IFS= read -r test_file; do
 
   test_start=$SECONDS
   set +e
-  bash "$test_file"
+  # Each suite gets its own stdin: the loop below feeds the suite list through
+  # the heredoc, and a suite that reads stdin would otherwise swallow a line
+  # of that list — the suite would be skipped and never counted as run.
+  bash "$test_file" </dev/null
   exit_code=$?
   set -e
   elapsed=$(( SECONDS - test_start ))

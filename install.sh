@@ -7,15 +7,33 @@ set -euo pipefail
 # Core constants
 # ---------------------------------------------------------------------------
 FORGE_ROOT="$(cd "$(dirname "$0")" && pwd)"
-FORGE_VERSION="0.7.4"
+FORGE_VERSION="0.7.5"
 FORGE_STATE_FILE="$HOME/.forge-state.json"
 FORGE_OPENCODE_DIR_DEFAULT="$HOME/.config/opencode-forge"
+# ---------------------------------------------------------------------------
+# Effective OpenCode overlay paths.
+#
+# These MUST mirror open-code/install-opencode.sh exactly, because the overlay
+# installer is a child process that inherits this very environment:
+#   CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode-forge}"
+#   CONFIG_FILE="${OPENCODE_CONFIG:-$CONFIG_DIR/opencode.jsonc}"
+#
+# The root installer resolves them here so the manifest records where the
+# overlay really landed. Recording the default unconditionally would make the
+# manifest point at a directory the overlay was never installed into, and
+# `status`/`doctor` would then diagnose the wrong location.
+# ---------------------------------------------------------------------------
+FORGE_OPENCODE_DIR="${OPENCODE_CONFIG_DIR:-$FORGE_OPENCODE_DIR_DEFAULT}"
+FORGE_OPENCODE_CONFIG="${OPENCODE_CONFIG:-$FORGE_OPENCODE_DIR/opencode.jsonc}"
 FORGE_OPENCODE_INSTALLER="$FORGE_ROOT/open-code/install-opencode.sh"
 FORGE_OPENCODE_UNINSTALLER="$FORGE_ROOT/open-code/uninstall-opencode.sh"
 
 # --- summary accumulator ---
 _FORGE_WARN_COUNT=0
 _FORGE_ERR_COUNT=0
+
+# --- RTK block tracker (the rtk.tracked block prints at most once per run) ---
+_FORGE_RTK_TRACKED_PRINTED=0
 
 forge_warn() {
   local msg="${1:-}"
@@ -269,7 +287,10 @@ forge_resolve_targets() {
   _forge_targets_count=0
 
   local claude_dir="$HOME/.claude"
-  local opencode_dir="$FORGE_OPENCODE_DIR_DEFAULT"
+  # The OpenCode target resolves to the directory the overlay installer will
+  # really use (OPENCODE_CONFIG_DIR with its default), not to the default
+  # unconditionally: the manifest records this path.
+  local opencode_dir="$FORGE_OPENCODE_DIR"
 
   case "$target_arg" in
     claude)
@@ -307,6 +328,80 @@ forge_state_has_opencode_target() {
   jq -e '[(.targets_manifest // [])[]?.name] | index("opencode") != null' "$FORGE_STATE_FILE" >/dev/null 2>&1
 }
 
+# ---------------------------------------------------------------------------
+# Recorded OpenCode overlay paths (the manifest is the source of truth)
+# ---------------------------------------------------------------------------
+# The state file records where the overlay installer really deployed the
+# overlay: `dir` (the directory holding agents/, commands/ and AGENTS.md) and
+# `config_file` (the JSONC config, which may live outside `dir` when
+# OPENCODE_CONFIG points elsewhere).
+#
+# These helpers read that record. They fall back to the effective paths only
+# when the state file carries no opencode entry (a legacy state, or no
+# installation at all): in that case there is nothing better to go on.
+#
+# _forge_state_opencode_dir — prints the recorded directory
+# _forge_state_opencode_config — prints the recorded config file
+_forge_state_opencode_dir() {
+  local _dir=""
+
+  if [ -f "$FORGE_STATE_FILE" ] && jq empty "$FORGE_STATE_FILE" 2>/dev/null; then
+    _dir="$(jq -r '[.targets_manifest[]? | select(.name == "opencode")][0] | (.dir // empty)' \
+      "$FORGE_STATE_FILE" 2>/dev/null || true)"
+  fi
+
+  if [ -n "$_dir" ]; then
+    printf '%s\n' "$_dir"
+    return 0
+  fi
+  printf '%s\n' "$FORGE_OPENCODE_DIR"
+}
+
+_forge_state_opencode_config() {
+  local _cfg=""
+
+  if [ -f "$FORGE_STATE_FILE" ] && jq empty "$FORGE_STATE_FILE" 2>/dev/null; then
+    _cfg="$(jq -r '[.targets_manifest[]? | select(.name == "opencode")][0] | (.config_file // empty)' \
+      "$FORGE_STATE_FILE" 2>/dev/null || true)"
+  fi
+
+  if [ -n "$_cfg" ]; then
+    printf '%s\n' "$_cfg"
+    return 0
+  fi
+  printf '%s\n' "$(_forge_state_opencode_dir)/opencode.jsonc"
+}
+
+# _forge_state_sync_opencode_paths
+# Records where the overlay installer just deployed the overlay. Used after a
+# (re)install performed by `update`/`repair`: the manifest must keep pointing
+# at the directory that really holds the overlay, otherwise `status`/`doctor`
+# would diagnose a location the overlay no longer occupies.
+_forge_state_sync_opencode_paths() {
+  if [ ! -f "$FORGE_STATE_FILE" ] || ! jq empty "$FORGE_STATE_FILE" 2>/dev/null; then
+    return 0
+  fi
+
+  local _tmp
+  _tmp="$(mktemp)"
+  jq \
+    --arg dir "$FORGE_OPENCODE_DIR" \
+    --arg config_file "$FORGE_OPENCODE_CONFIG" \
+    '
+    .targets_manifest = (
+      (.targets_manifest // [])
+      | map(if .name == "opencode" then .dir = $dir | .config_file = $config_file else . end)
+    )
+    ' "$FORGE_STATE_FILE" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 0; }
+
+  if jq empty "$_tmp" 2>/dev/null; then
+    mv "$_tmp" "$FORGE_STATE_FILE"
+  else
+    rm -f "$_tmp"
+  fi
+  return 0
+}
+
 forge_run_opencode_installer() {
   if [ ! -f "$FORGE_OPENCODE_INSTALLER" ]; then
     echo "[forge] ERROR: OpenCode target requested but installer is missing: $FORGE_OPENCODE_INSTALLER" >&2
@@ -324,7 +419,12 @@ forge_run_opencode_uninstaller() {
     return 0
   fi
 
-  bash "$FORGE_OPENCODE_UNINSTALLER"
+  # The uninstaller resolves its paths from the environment, so the recorded
+  # location is exported for it: uninstalling must remove what was installed,
+  # not what an ambient variable happens to point at right now.
+  OPENCODE_CONFIG_DIR="$(_forge_state_opencode_dir)" \
+  OPENCODE_CONFIG="$(_forge_state_opencode_config)" \
+    bash "$FORGE_OPENCODE_UNINSTALLER"
 }
 
 forge_drop_target_from_state() {
@@ -387,7 +487,8 @@ forge_write_opencode_only_state() {
   jq \
     --arg version "$FORGE_VERSION" \
     --arg installed_at "$base_installed_at" \
-    --arg dir "$FORGE_OPENCODE_DIR_DEFAULT" \
+    --arg dir "$FORGE_OPENCODE_DIR" \
+    --arg config_file "$FORGE_OPENCODE_CONFIG" \
     '
     .version = $version |
     .installed_at = $installed_at |
@@ -396,6 +497,7 @@ forge_write_opencode_only_state() {
     .targets_manifest = ((.targets_manifest // []) | map(select(.name != "opencode")) + [{
       name: "opencode",
       dir: $dir,
+      config_file: $config_file,
       symlinks: [],
       symlinks_objects: [],
       components: [],
@@ -488,7 +590,7 @@ _forge_state_migrate() {
       tgt_name="$(jq -r --argjson i "$t" '.targets[$i]' "$_state_file")"
       case "$tgt_name" in
         claude)   tgt_dir="$HOME/.claude" ;;
-        opencode) tgt_dir="$FORGE_OPENCODE_DIR_DEFAULT" ;;
+        opencode) tgt_dir="$FORGE_OPENCODE_DIR" ;;
         *)        tgt_dir="$HOME/.claude" ;;
       esac
 
@@ -548,6 +650,8 @@ _forge_state_migrate() {
   # update this list here as well.
   # Do NOT derive it from forge_components_default_list(): a migration must be deterministic
   # with respect to its own schema, not to the current catalogue.
+  # The same snapshot is reproduced in _forge_state_view (the read-only view
+  # used by `status` and `doctor`): keep both in sync.
   local _default_components='["agents","commands","statusline","branch-guard","rtk-hook","cost-report","cost-report-skill"]'
 
   local mig_tmp_v3
@@ -584,12 +688,621 @@ _forge_state_migrate() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Read-only diagnostic view of the install state
+# ---------------------------------------------------------------------------
+# _forge_state_view — prints a normalized view of the state file on stdout.
+#
+# This is the reading counterpart of _forge_state_migrate: it applies the same
+# v1 -> v2 -> v3 normalization, but entirely in memory (jq + pipes). It never
+# writes the state file, never creates a temporary file and never mutates the
+# filesystem, so `status` and `doctor` stay strictly read-only.
+#
+# Differences with the on-disk migration:
+#   * The historical "components" fallback is applied to Claude only. An
+#     OpenCode target keeps `components: []` and its real `dir`, so the Claude
+#     component catalogue is never projected onto the OpenCode overlay.
+#   * Every manifest entry carries `components_fallback`, so the callers can
+#     reproduce the historical warning without re-deriving the list.
+#
+# Exit codes: 0 = view printed, 1 = state file missing or not valid JSON.
+# SC2120: $1 is intentionally optional — the diagnostics always read the real
+#         state file; the parameter only mirrors _forge_state_migrate.
+# shellcheck disable=SC2120
+_forge_state_view() {
+  local _state_file="${1:-$FORGE_STATE_FILE}"
+
+  if [ ! -f "$_state_file" ]; then
+    return 1
+  fi
+  if ! jq empty "$_state_file" 2>/dev/null; then
+    return 1
+  fi
+
+  local _schema
+  _schema="$(jq -r '.state_schema // 0' "$_state_file" 2>/dev/null || echo 0)"
+  case "$_schema" in
+    ''|*[!0-9]*) _schema=0 ;;
+  esac
+
+  local _claude_dir="$HOME/.claude"
+  # Legacy (pre-v2) states carry no directory for their targets, so the
+  # effective overlay directory is the only usable guess: it is the directory
+  # the overlay installer would have used in this very environment.
+  local _opencode_dir="$FORGE_OPENCODE_DIR"
+
+  # Legacy (pre-v2) manifests point at the .pre-forge snapshot when it exists.
+  # The probe is a read: the view never creates nor removes that file.
+  local _claude_backup="null" _opencode_backup="null"
+  if [ -f "${_claude_dir}/settings.json.pre-forge" ]; then
+    _claude_backup="$(jq -Rn --arg p "${_claude_dir}/settings.json.pre-forge" '$p')"
+  fi
+  if [ -f "${_opencode_dir}/settings.json.pre-forge" ]; then
+    _opencode_backup="$(jq -Rn --arg p "${_opencode_dir}/settings.json.pre-forge" '$p')"
+  fi
+
+  # Default component list of a *current* catalogue (used when a v3 state
+  # records no components for Claude: the historical live fallback).
+  local _live_defaults
+  _live_defaults="$(forge_components_default_list 2>/dev/null | jq -R -s -c 'split("\n") | map(select(length > 0))' 2>/dev/null || echo '[]')"
+
+  # LOCKSTEP: `migrate_defaults` below reproduces the v3 schema snapshot of
+  # _forge_state_migrate (which persists it). A legacy state must be read
+  # exactly like the migration would have written it, so both lists have to
+  # stay in sync.
+
+  jq \
+    --argjson schema "$_schema" \
+    --arg claude_dir "$_claude_dir" \
+    --arg opencode_dir "$_opencode_dir" \
+    --argjson claude_backup "$_claude_backup" \
+    --argjson opencode_backup "$_opencode_backup" \
+    --argjson migrate_defaults '["agents","commands","statusline","branch-guard","rtk-hook","cost-report","cost-report-skill"]' \
+    --argjson live_defaults "$_live_defaults" \
+    '
+    # Legacy (pre-v2) manifest: derived from the flat `targets` + `symlinks`.
+    def derive_manifest:
+      . as $root
+      | [ ($root.targets // [])[]
+          | . as $name
+          | (if $name == "opencode" then $opencode_dir else $claude_dir end) as $dir
+          | {
+              name: $name,
+              dir: $dir,
+              symlinks: [ ($root.symlinks // [])[] | select(startswith($dir + "/")) | ltrimstr($dir + "/") ],
+              symlinks_objects: [],
+              components: [],
+              components_fallback: false,
+              settings_merged: true,
+              settings_backup: (if $name == "opencode" then $opencode_backup else $claude_backup end)
+            }
+        ];
+
+    (if $schema < 2 then .targets_manifest = derive_manifest else . end)
+    | .state_schema = 3
+    | .targets_manifest = [
+        .targets_manifest[]?
+        | .components = (if .components == null then [] else .components end)
+        | .symlinks = (if .symlinks == null then [] else .symlinks end)
+        | .symlinks_objects = (
+            if .symlinks_objects == null
+            then [ (.symlinks // [])[] | if type == "string" then {"src": "", "dest": .} else . end ]
+            else .symlinks_objects
+            end
+          )
+        # The historical fallback only ever applied to Claude. A legacy
+        # OpenCode target keeps an empty component list: it has no Claude
+        # components at all.
+        | .components_fallback = (
+            (.name == "claude")
+            and ((.components | length) == 0)
+            and ($schema >= 3)
+          )
+        | (if (.name == "claude") and ((.components | length) == 0)
+           then .components = (if $schema < 3 then $migrate_defaults else $live_defaults end)
+           else . end
+          )
+      ]
+    | .rtk = (.rtk // {})
+    ' "$_state_file"
+}
+
+# _forge_state_query — run a jq query against the current diagnostic view.
+_forge_state_query() {
+  jq -r "$@" <<< "$_FORGE_STATE_VIEW"
+}
+
+# ---------------------------------------------------------------------------
+# OpenCode overlay diagnostics (read-only, shared by `status` and `doctor`)
+# ---------------------------------------------------------------------------
+# The OpenCode overlay has its own contract: it is not a set of Claude
+# symlinks. It is a set of regular-file copies, one JSONC config, the plugins
+# declared by that config and one global launcher. The inventory is derived
+# from the real sources (open-code/agents/*.md, open-code/commands/*.md and
+# the `plugin` field of the *installed* config), so the check follows whatever
+# the OpenCode installer produces instead of a duplicated hardcoded list.
+#
+# _forge_opencode_diagnostics <tgt_dir>
+#
+# Emits one record per line:
+#   STATUS|FAMILY|MESSAGE|HINT
+# STATUS is one of: OK, MISSING, MISMATCH, INVALID, UNEXPECTED, INVENTORY ERROR
+#
+# A broken inventory (missing source directory, unreadable helper) is reported
+# as INVENTORY ERROR and blocks only its own family: the installed artifacts
+# are never declared missing just because the inventory could not be built.
+_FORGE_OPENCODE_FAILURES=0
+_FORGE_OPENCODE_CONFIG_JSON=""
+_FORGE_OPENCODE_CONFIG_READY=0
+
+# _forge_files_equal <a> <b> — true when both files hold the same bytes.
+_forge_files_equal() {
+  if command -v cmp >/dev/null 2>&1; then
+    cmp -s "$1" "$2"
+  else
+    diff -q "$1" "$2" >/dev/null 2>&1
+  fi
+}
+
+# _forge_opencode_check_collection <label> <src_dir> <dst_dir> <hint>
+# Compares the installed copies of a family (agents, commands) with the source
+# files: same set, regular files (never symlinks) and identical bytes.
+_forge_opencode_check_collection() {
+  local _label="$1" _src_dir="$2" _dst_dir="$3" _hint="$4"
+  local _name _src _dst _src_count=0
+
+  if [ ! -d "$_src_dir" ]; then
+    printf 'INVENTORY ERROR|%s|no se pudo inventariar el origen %s: el directorio no existe|el checkout de forge esta incompleto: revisa open-code/ en el repositorio\n' "$_label" "$_src_dir"
+    return 0
+  fi
+
+  for _src in "$_src_dir"/*.md; do
+    [ -f "$_src" ] || continue
+    _src_count=$((_src_count + 1))
+    _name="$(basename "$_src")"
+    _dst="$_dst_dir/$_name"
+    if [ -L "$_dst" ]; then
+      printf 'INVALID|%s|%s/%s: es un symlink, se espera un fichero regular|%s\n' "$_label" "$_label" "$_name" "$_hint"
+    elif [ ! -e "$_dst" ]; then
+      printf 'MISSING|%s|%s/%s: ausente en el directorio instalado|%s\n' "$_label" "$_label" "$_name" "$_hint"
+    elif [ ! -f "$_dst" ]; then
+      printf 'INVALID|%s|%s/%s: no es un fichero regular|%s\n' "$_label" "$_label" "$_name" "$_hint"
+    elif ! _forge_files_equal "$_src" "$_dst"; then
+      printf 'MISMATCH|%s|%s/%s: el contenido difiere del origen|%s\n' "$_label" "$_label" "$_name" "$_hint"
+    else
+      printf 'OK|%s|%s/%s: copia regular identica al origen|\n' "$_label" "$_label" "$_name"
+    fi
+  done
+
+  if [ "$_src_count" -eq 0 ]; then
+    printf 'INVENTORY ERROR|%s|no se pudo inventariar el origen %s: no contiene ficheros .md|el checkout de forge esta incompleto: revisa open-code/ en el repositorio\n' "$_label" "$_src_dir"
+    return 0
+  fi
+
+  if [ -d "$_dst_dir" ]; then
+    for _dst in "$_dst_dir"/*.md; do
+      [ -f "$_dst" ] || continue
+      _name="$(basename "$_dst")"
+      if [ ! -f "$_src_dir/$_name" ]; then
+        printf 'UNEXPECTED|%s|%s/%s: presente en el directorio instalado y no declarado en el origen|%s\n' "$_label" "$_label" "$_name" "$_hint"
+      fi
+    done
+  fi
+}
+
+# _forge_opencode_check_agents_md <tgt_dir> <hint>
+_forge_opencode_check_agents_md() {
+  local _tgt_dir="$1" _hint="$2"
+  local _src="$FORGE_ROOT/open-code/AGENTS.md"
+  local _dst="$_tgt_dir/AGENTS.md"
+
+  if [ ! -f "$_src" ]; then
+    printf 'INVENTORY ERROR|agents-md|no se pudo inventariar el origen %s: el fichero no existe|el checkout de forge esta incompleto: revisa open-code/ en el repositorio\n' "$_src"
+    return 0
+  fi
+  if [ -L "$_dst" ]; then
+    printf 'INVALID|agents-md|AGENTS.md: es un symlink, se espera un fichero regular|%s\n' "$_hint"
+  elif [ ! -e "$_dst" ]; then
+    printf 'MISSING|agents-md|AGENTS.md: ausente en el directorio instalado|%s\n' "$_hint"
+  elif [ ! -f "$_dst" ]; then
+    printf 'INVALID|agents-md|AGENTS.md: no es un fichero regular|%s\n' "$_hint"
+  elif ! _forge_files_equal "$_src" "$_dst"; then
+    printf 'MISMATCH|agents-md|AGENTS.md: el contenido difiere del origen|%s\n' "$_hint"
+  else
+    printf 'OK|agents-md|AGENTS.md: copia regular identica al origen|\n'
+  fi
+}
+
+# _forge_opencode_parse_config <helper> <config>
+# Prints {"ok":true,"config":{...}} or {"ok":false,"error":"..."} on stdout.
+# The canonical JSONC parser of the overlay helper is reused, so the installed
+# config is validated exactly like the installer validates it.
+# PYTHONDONTWRITEBYTECODE + sys.dont_write_bytecode keep the diagnostics
+# strictly read-only: importing the helper must not drop a __pycache__ into
+# the checkout.
+_forge_opencode_parse_config() {
+  PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import importlib.util
+import json
+import sys
+
+sys.dont_write_bytecode = True
+helper, config = sys.argv[1], sys.argv[2]
+try:
+    spec = importlib.util.spec_from_file_location("forge_plugin_sync", helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    data = module.parse_config(config)
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": str(exc)}))
+    sys.exit(1)
+print(json.dumps({"ok": True, "config": data}))
+' "$1" "$2" 2>/dev/null
+}
+
+# _forge_opencode_check_config <tgt_dir> <config_file> <hint>
+# Validates the installed opencode.jsonc and publishes the parsed config so
+# the plugin family can use the `plugin` declaration of the *installed* file.
+# The config file is passed in (and not derived from the target directory)
+# because OPENCODE_CONFIG may place it outside the overlay directory.
+_forge_opencode_check_config() {
+  local _tgt_dir="$1" _hint="$3"
+  local _cfg="$2"
+  local _helper="$FORGE_ROOT/open-code/lib/plugin-sync.py"
+
+  _FORGE_OPENCODE_CONFIG_JSON=""
+  _FORGE_OPENCODE_CONFIG_READY=0
+
+  if [ -L "$_cfg" ]; then
+    printf 'INVALID|config|opencode.jsonc: es un symlink, se espera un fichero regular|%s\n' "$_hint"
+    return 0
+  fi
+  if [ ! -e "$_cfg" ]; then
+    printf 'MISSING|config|opencode.jsonc: ausente en el directorio instalado|%s\n' "$_hint"
+    return 0
+  fi
+  if [ ! -f "$_cfg" ]; then
+    printf 'INVALID|config|opencode.jsonc: no es un fichero regular|%s\n' "$_hint"
+    return 0
+  fi
+  if [ ! -f "$_helper" ]; then
+    printf 'INVENTORY ERROR|config|no se pudo verificar la config: falta el helper %s|el checkout de forge esta incompleto: revisa open-code/ en el repositorio\n' "$_helper"
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf 'INVENTORY ERROR|config|no se pudo verificar la config: python3 no esta en PATH|instala python3 para validar la config del overlay\n'
+    return 0
+  fi
+
+  local _parsed _rc=0
+  _parsed="$(_forge_opencode_parse_config "$_helper" "$_cfg")" || _rc=$?
+  if [ "$_rc" -ne 0 ] || [ -z "$_parsed" ]; then
+    local _err
+    _err="$(printf '%s' "$_parsed" | jq -r '.error // empty' 2>/dev/null || true)"
+    [ -z "$_err" ] && _err="no se pudo parsear el JSONC"
+    _err="${_err//|/ }"
+    printf 'INVALID|config|opencode.jsonc: JSONC invalido (%s)|%s\n' "$_err" "$_hint"
+    return 0
+  fi
+
+  local _expected_agents_md="$_tgt_dir/AGENTS.md"
+  if [ -d "$_tgt_dir" ]; then
+    _expected_agents_md="$(cd "$_tgt_dir" && pwd)/AGENTS.md"
+  fi
+
+  local _instructions
+  _instructions="$(printf '%s' "$_parsed" | jq -c '[.config.instructions // [] | (if type == "array" then .[] elif type == "string" then . else empty end) | select(type == "string")]' 2>/dev/null || echo '[]')"
+  if printf '%s' "$_instructions" | jq -e --arg p "$_expected_agents_md" 'index($p) != null' >/dev/null 2>&1; then
+    printf 'OK|config|opencode.jsonc: JSONC valido, instructions apunta al fichero de instrucciones del overlay|\n'
+  else
+    printf 'MISMATCH|config|opencode.jsonc: instructions no apunta al fichero de instrucciones del overlay|%s\n' "$_hint"
+  fi
+
+  _FORGE_OPENCODE_CONFIG_JSON="$_parsed"
+  _FORGE_OPENCODE_CONFIG_READY=1
+}
+
+# _forge_opencode_check_plugins <tgt_dir> <config_file> <hint>
+# The plugin set is never hardcoded: it is the `plugin` field of the installed
+# config, and its presence on disk is decided by plugin-sync.py verify.
+_forge_opencode_check_plugins() {
+  local _tgt_dir="$1" _hint="$3"
+  local _helper="$FORGE_ROOT/open-code/lib/plugin-sync.py"
+  local _cfg="$2"
+
+  # The declaration lives in the installed config: when the config cannot be
+  # read, the root cause is already reported by the config family, so the
+  # plugin family is skipped instead of emitting false positives.
+  if [ "$_FORGE_OPENCODE_CONFIG_READY" -ne 1 ]; then
+    return 0
+  fi
+  if [ ! -f "$_helper" ]; then
+    printf 'INVENTORY ERROR|plugins|no se pudieron verificar los plugins: falta el helper %s|el checkout de forge esta incompleto: revisa open-code/ en el repositorio\n' "$_helper"
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf 'INVENTORY ERROR|plugins|no se pudieron verificar los plugins: python3 no esta en PATH|instala python3 para validar los plugins del overlay\n'
+    return 0
+  fi
+
+  local _declared
+  _declared="$(printf '%s' "$_FORGE_OPENCODE_CONFIG_JSON" | jq -r '[.config.plugin // [] | (if type == "array" then .[] elif type == "string" then . else empty end) | select(type == "string") | select(startswith("./")) | ltrimstr("./")] | .[]' 2>/dev/null || echo '')"
+
+  if [ -z "$_declared" ]; then
+    printf 'OK|plugins|opencode.jsonc no declara plugins locales|\n'
+    return 0
+  fi
+
+  local _out _rc=0
+  _out="$(PYTHONDONTWRITEBYTECODE=1 python3 "$_helper" verify --config "$_cfg" 2>&1)" || _rc=$?
+
+  local _missing=""
+  if [ "$_rc" -ne 0 ]; then
+    _missing="$(printf '%s\n' "$_out" | sed -n "s/.*config declares plugin '\([^']*\)' but .* is missing on disk.*/\1/p")"
+    if [ -z "$_missing" ]; then
+      local _detail
+      _detail="$(printf '%s\n' "$_out" | tr '\n' ' ' | tr -s ' ')"
+      _detail="${_detail//|/ }"
+      printf 'INVENTORY ERROR|plugins|no se pudieron verificar los plugins declarados (%s)|%s\n' "$_detail" "$_hint"
+      return 0
+    fi
+  fi
+
+  local _rel _is_missing
+  while IFS= read -r _rel; do
+    [ -z "$_rel" ] && continue
+    _is_missing=0
+    if printf '%s\n' "$_missing" | grep -qxF "$_rel"; then
+      _is_missing=1
+    fi
+    if [ "$_is_missing" -eq 1 ]; then
+      printf 'MISSING|plugins|%s: declarado por opencode.jsonc y ausente en disco|%s\n' "$_rel" "$_hint"
+    else
+      printf 'OK|plugins|%s: declarado por opencode.jsonc y presente en disco|\n' "$_rel"
+    fi
+  done < <(printf '%s\n' "$_declared")
+}
+
+# _forge_opencode_check_launcher <hint>
+# The launcher is the only global artifact of the overlay: it must be a
+# symlink to the launcher script of this checkout.
+_forge_opencode_check_launcher() {
+  local _hint="$1"
+  local _launcher="$HOME/.local/bin/forge-opencode"
+  local _expected="$FORGE_ROOT/open-code/forge-opencode.sh"
+
+  if [ -L "$_launcher" ]; then
+    local _target _resolved
+    _target="$(readlink "$_launcher")"
+    case "$_target" in
+      /*) _resolved="$_target" ;;
+      *)  _resolved="$(dirname "$_launcher")/$_target" ;;
+    esac
+    if [ "$_resolved" = "$_expected" ]; then
+      printf 'OK|launcher|forge-opencode: symlink a %s|\n' "$_expected"
+    else
+      printf 'MISMATCH|launcher|forge-opencode: el launcher apunta a %s y se esperaba %s|%s\n' "$_resolved" "$_expected" "$_hint"
+    fi
+  elif [ -e "$_launcher" ]; then
+    printf 'INVALID|launcher|forge-opencode: el launcher no es un symlink|%s\n' "$_hint"
+  else
+    printf 'MISSING|launcher|forge-opencode: launcher ausente en ~/.local/bin/forge-opencode|%s\n' "$_hint"
+  fi
+}
+
+# _forge_opencode_diagnostics <tgt_dir> <config_file>
+_forge_opencode_diagnostics() {
+  local _tgt_dir="$1"
+  local _cfg="$2"
+  local _hint="bash install.sh install --target=opencode"
+
+  _forge_opencode_check_collection "agents" "$FORGE_ROOT/open-code/agents" "$_tgt_dir/agents" "$_hint"
+  _forge_opencode_check_collection "commands" "$FORGE_ROOT/open-code/commands" "$_tgt_dir/commands" "$_hint"
+  _forge_opencode_check_agents_md "$_tgt_dir" "$_hint"
+  _forge_opencode_check_config "$_tgt_dir" "$_cfg" "$_hint"
+  _forge_opencode_check_plugins "$_tgt_dir" "$_cfg" "$_hint"
+  _forge_opencode_check_launcher "$_hint"
+}
+
+# _forge_opencode_render <mode> <tgt_dir> <config_file>
+# mode: status | doctor. Prints the records and sets _FORGE_OPENCODE_FAILURES
+# to the number of non-OK records.
+_forge_opencode_render() {
+  local _mode="$1" _tgt_dir="$2" _cfg="$3"
+  local _records _st _fam _msg _hint _col
+
+  _FORGE_OPENCODE_FAILURES=0
+  _records="$(_forge_opencode_diagnostics "$_tgt_dir" "$_cfg")"
+
+  while IFS='|' read -r _st _fam _msg _hint; do
+    [ -z "$_st" ] && continue
+    # Status column: 9 characters wide, like the rest of the status table.
+    _col="$(printf '%-9s' "$_st")"
+    [ "${#_st}" -ge 9 ] && _col="${_col} "
+    if [ "$_st" = "OK" ]; then
+      case "$_mode" in
+        doctor) printf '  PASS  %s\n' "$_msg" ;;
+        *)      printf '    %s%s\n' "$_col" "$_msg" ;;
+      esac
+    else
+      _FORGE_OPENCODE_FAILURES=$((_FORGE_OPENCODE_FAILURES + 1))
+      case "$_mode" in
+        doctor)
+          # The status token is kept in the doctor output: a broken artifact
+          # (MISSING/MISMATCH/INVALID/UNEXPECTED) and a broken inventory
+          # (INVENTORY ERROR) must stay distinguishable there too.
+          printf '  FAIL  %s: %s\n' "$_st" "$_msg" >&2
+          [ -n "$_hint" ] && printf '  HINT  %s\n' "$_hint"
+          ;;
+        *)
+          printf '    %s%s\n' "$_col" "$_msg"
+          [ -n "$_hint" ] && printf '      → %s\n' "$_hint"
+          ;;
+      esac
+    fi
+  done < <(printf '%s\n' "$_records")
+}
+
+# ---------------------------------------------------------------------------
+# Environment vs manifest divergence (OpenCode overlay)
+# ---------------------------------------------------------------------------
+# The manifest is the source of truth for the location of the overlay: it is
+# written by the very run that deployed the files, so it knows exactly where
+# the overlay landed. The environment is ambient: it can change between the
+# install and the check, or point at a different overlay instance.
+#
+# Therefore `status`/`doctor` NEVER follow the environment to decide where to
+# look — they always diagnose the recorded location. But the divergence is
+# not silently ignored either: the launcher and opencode itself resolve the
+# config through the environment, so an environment pointing elsewhere means
+# the user would run opencode without the forge overlay. It is reported as an
+# actionable warning and not as a failure: the installed artifacts are
+# healthy in the recorded location, so the installation itself is not
+# degraded and the exit code keeps meaning "is the installation healthy?".
+#
+# _forge_opencode_env_divergence <installed_dir> <installed_config>
+# Prints one "MESSAGE|HINT" record per detected divergence; nothing when the
+# environment does not contradict the manifest. An unset variable never
+# contradicts anything: only an explicitly exported path can diverge.
+#
+# <installed_config> is the config file as recorded in the manifest. An empty
+# value means "not recorded" (a legacy state): the comparison is then skipped
+# instead of guessing, because a guessed contradiction would be a false alarm.
+_forge_opencode_env_divergence() {
+  local _inst_dir="$1" _inst_config="$2"
+  local _msg _hint
+
+  [ -n "$_inst_dir" ] || return 0
+
+  if [ -n "${OPENCODE_CONFIG_DIR:-}" ] && [ "$OPENCODE_CONFIG_DIR" != "$_inst_dir" ]; then
+    _msg="opencode: OPENCODE_CONFIG_DIR apunta a $OPENCODE_CONFIG_DIR pero el overlay está instalado en $_inst_dir"
+    _hint="desexporta OPENCODE_CONFIG_DIR o reinstala el overlay en esa ruta: bash install.sh install --target=opencode"
+    printf '%s|%s\n' "${_msg//|/ }" "${_hint//|/ }"
+  fi
+
+  if [ -n "${OPENCODE_CONFIG:-}" ] && [ -n "$_inst_config" ] && [ "$OPENCODE_CONFIG" != "$_inst_config" ]; then
+    _msg="opencode: OPENCODE_CONFIG apunta a $OPENCODE_CONFIG pero la config instalada está en $_inst_config"
+    _hint="desexporta OPENCODE_CONFIG o reinstala el overlay en esa ruta: bash install.sh install --target=opencode"
+    printf '%s|%s\n' "${_msg//|/ }" "${_hint//|/ }"
+  fi
+
+  return 0
+}
+
+# _forge_status_rtk_block <tgt_name> <tgt_dir> <has_rtk_hook> <tracked_global>
+# Prints the RTK diagnostic block of a target. The block is shown when the
+# target records the rtk-hook component, or once per run when rtk.tracked is
+# true (Path A tracking: `bash install.sh rtk install`).
+_forge_status_rtk_block() {
+  local _tgt_name="$1" _tgt_dir="$2" _has_rtk_hook="$3" _tracked_global="$4"
+
+  # Determine whether to print the RTK block for this target iteration.
+  # When activated via rtk.tracked (not rtk-hook), print at most once per run.
+  local _print_rtk_block=0
+  if [ "$_has_rtk_hook" -eq 1 ]; then
+    _print_rtk_block=1
+  elif [ "$_tracked_global" = "true" ] && [ "$_FORGE_RTK_TRACKED_PRINTED" -eq 0 ]; then
+    _print_rtk_block=1
+  fi
+
+  if [ "$_print_rtk_block" -ne 1 ]; then
+    return 0
+  fi
+
+  [ "$_has_rtk_hook" -eq 0 ] && _FORGE_RTK_TRACKED_PRINTED=1
+  echo "  RTK ($_tgt_name):"
+  local rtk_pinned rtk_detected
+  # Pinned: prefer rtk/VERSION (single source of truth), fall back to state.
+  if [ -f "$FORGE_ROOT/rtk/VERSION" ]; then
+    rtk_pinned="$(cat "$FORGE_ROOT/rtk/VERSION" 2>/dev/null || true)"
+  fi
+  [ -z "${rtk_pinned:-}" ] && rtk_pinned="$(_forge_state_query '.rtk.pinned_version // "?"')"
+
+  # Detected: live probe — state file is stale post rtk-hook migration.
+  rtk_detected="no detectado"
+  if command -v forge_rtk_detect >/dev/null 2>&1; then
+    local _det
+    _det="$(forge_rtk_detect)"
+    local _rtk_installed_nodepath=0
+    case "$_det" in
+      absent)    rtk_detected="no detectado" ;;
+      collision) rtk_detected="colisión (binario rtk no reconocido)" ;;
+      installed:*)
+        # On-disk at ~/.forge/bin but not on PATH — extract version for comparison.
+        local _st_ondisk_ver
+        _st_ondisk_ver="$(printf '%s\n' "$_det" | cut -d: -f2)"
+        rtk_detected="$_st_ondisk_ver"
+        _rtk_installed_nodepath=1
+        ;;
+      shadowed:*)
+        local _st_shadow_winner _st_shadow_ver _st_forge_ver
+        _st_shadow_winner="$(printf '%s\n' "$_det" | cut -d: -f2)"
+        _st_shadow_ver="$(printf '%s\n' "$_det" | cut -d: -f3)"
+        _st_forge_ver="$(printf '%s\n' "$_det" | cut -d: -f4)"
+        rtk_detected="sombra — ${_st_shadow_ver} en ${_st_shadow_winner} sombrea al de forge (${_st_forge_ver})"
+        ;;
+      *)         rtk_detected="$_det" ;;
+    esac
+  elif command -v rtk >/dev/null 2>&1; then
+    local _rtk_installed_nodepath=0
+    local _rtk_v_out _rtk_ver
+    _rtk_v_out="$(rtk --version 2>&1 || true)"
+    if printf '%s\n' "$_rtk_v_out" | grep -qE '^rtk[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+'; then
+      _rtk_ver="$(printf '%s\n' "$_rtk_v_out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+      rtk_detected="$_rtk_ver"
+    else
+      rtk_detected="colisión (binario rtk no reconocido)"
+    fi
+  else
+    local _rtk_installed_nodepath=0
+  fi
+
+  echo "    Pinned       : $rtk_pinned"
+  if [ "${_rtk_installed_nodepath:-0}" -eq 1 ]; then
+    echo "    Detectado    : $rtk_detected (instalado pero ~/.forge/bin no está en PATH)"
+    echo "    WARN: RTK instalado pero ~/.forge/bin no está en PATH → source ~/.zshrc o reinstala"
+  else
+    echo "    Detectado    : $rtk_detected"
+  fi
+  # Recipe for shadowed case
+  case "$rtk_detected" in
+    sombra\ —*)
+      echo "    WARN: RTK instalado vía Homebrew sombrea al de forge."
+      echo "    Para solucionar:"
+      echo "      1. brew uninstall rtk"
+      echo "      2. bash install.sh rtk install"
+      echo "      3. source ~/.zshrc (o abre un terminal nuevo)"
+      ;;
+  esac
+  # Warn if detected version is behind the pin
+  # Skip non-semver status strings; for installed:* the version part was already extracted.
+  if [ "$rtk_detected" != "no detectado" ] && [ "$rtk_detected" != "colisión (binario rtk no reconocido)" ] && case "$rtk_detected" in sombra\ —*) false ;; *) true ;; esac; then
+    local _rtk_cmp="eq"
+    if command -v forge_rtk_compare >/dev/null 2>&1; then
+      _rtk_cmp="$(forge_rtk_compare "$rtk_detected" "$rtk_pinned")"
+    elif [ "$rtk_detected" != "$rtk_pinned" ]; then
+      local _rtk_lower
+      _rtk_lower="$(printf '%s\n%s\n' "$rtk_detected" "$rtk_pinned" | sort -V | head -1)"
+      if [ "$_rtk_lower" = "$rtk_detected" ]; then _rtk_cmp="lt"; else _rtk_cmp="gt"; fi
+    fi
+    case "$_rtk_cmp" in
+      lt) echo "    WARN: RTK $rtk_detected desactualizado (pin $rtk_pinned) — bash install.sh rtk install" ;;
+      gt) echo "    WARN: RTK $rtk_detected > pin $rtk_pinned (versión no certificada)" ;;
+    esac
+  fi
+  echo ""
+}
+
 cmd_status() {
   # ---------------------------------------------------------------------------
   # cmd_status — readable status table; exit 0 if healthy, exit 1 if issues
-  # Component-scoped: reports only installed components (recorded in state).
-  # Falls back to full component list for pre-v3 state entries lacking components field.
-  # Read-only: never modifies anything.
+  # Target-aware: every target is diagnosed against its own contract.
+  #   claude   — component-scoped symlinks, settings.json, CLAUDE.md refs, RTK
+  #   opencode — overlay copies, config, declared plugins and global launcher
+  # Component-scoped (claude): reports only installed components (recorded in
+  # state). Falls back to full component list for pre-v3 state entries lacking
+  # components field.
+  # Read-only: never modifies anything, not even a legacy state file.
   # ---------------------------------------------------------------------------
   forge_banner
 
@@ -598,18 +1311,18 @@ cmd_status() {
     return 0
   fi
 
-  _forge_state_migrate
-
-  if ! jq empty "$FORGE_STATE_FILE" 2>/dev/null; then
+  # The diagnostic view normalizes legacy schemas in memory: unlike the
+  # on-disk migration, it never rewrites the state file.
+  if ! _FORGE_STATE_VIEW="$(_forge_state_view)"; then
     echo "[forge] ERROR: state file inválido (JSON corrupto): $FORGE_STATE_FILE" >&2
     return 1
   fi
 
   local version installed_at
-  version="$(jq -r '.version // "?"' "$FORGE_STATE_FILE")"
-  installed_at="$(jq -r '.installed_at // "?"' "$FORGE_STATE_FILE")"
+  version="$(_forge_state_query '.version // "?"')"
+  installed_at="$(_forge_state_query '.installed_at // "?"')"
   local updated_at
-  updated_at="$(jq -r '.updated_at // ""' "$FORGE_STATE_FILE")"
+  updated_at="$(_forge_state_query '.updated_at // ""')"
 
   echo ""
   echo "  forge — estado de instalación"
@@ -620,14 +1333,14 @@ cmd_status() {
 
   # Targets
   local targets_str
-  targets_str="$(jq -r '.targets // [] | join(", ")' "$FORGE_STATE_FILE")"
+  targets_str="$(_forge_state_query '.targets // [] | join(", ")')"
   echo "  Targets  : ${targets_str:-ninguno}"
   echo ""
 
   local any_fail=0
 
   local manifest_count
-  manifest_count="$(jq -r '.targets_manifest // [] | length' "$FORGE_STATE_FILE")"
+  manifest_count="$(_forge_state_query '.targets_manifest // [] | length')"
 
   if [ "$manifest_count" -eq 0 ]; then
     echo "  (sin targets registrados en targets_manifest)"
@@ -637,36 +1350,77 @@ cmd_status() {
   # Read rtk.tracked once — used by the RTK gate inside the per-target loop.
   # When activated via rtk.tracked (not rtk-hook), the RTK block prints at most once.
   local _rtk_tracked_global
-  _rtk_tracked_global="$(jq -r '.rtk.tracked // false' "$FORGE_STATE_FILE" 2>/dev/null || echo "false")"
-  local _rtk_tracked_printed=0
+  _rtk_tracked_global="$(_forge_state_query '.rtk.tracked // false')"
+  _FORGE_RTK_TRACKED_PRINTED=0
 
-  # --- Per-target, per-component status ---
+  # --- Per-target status (dispatch by target contract) ---
   local t=0
+  # shellcheck disable=SC2016  # jq filters are single-quoted on purpose: $i belongs to jq
   while [ "$t" -lt "$manifest_count" ]; do
     local tgt_name tgt_dir
-    tgt_name="$(jq -r --argjson i "$t" '.targets_manifest[$i].name // "?"' "$FORGE_STATE_FILE")"
-    tgt_dir="$(jq -r --argjson i "$t" '.targets_manifest[$i].dir // ""' "$FORGE_STATE_FILE")"
+    tgt_name="$(_forge_state_query --argjson i "$t" '.targets_manifest[$i].name // "?"')"
+    tgt_dir="$(_forge_state_query --argjson i "$t" '.targets_manifest[$i].dir // ""')"
 
     echo "  Target: $tgt_name ($tgt_dir)"
 
-    # Determine components to report. Fall back to full list if field is absent/empty.
-    local _comp_count
-    _comp_count="$(jq -r --argjson i "$t" '.targets_manifest[$i].components // [] | length' "$FORGE_STATE_FILE")"
+    case "$tgt_name" in
+      claude)
+        # The Claude contract (component-scoped symlinks, settings.json,
+        # CLAUDE.md refs and RTK) is evaluated inline below, unchanged.
+        ;;
+      opencode)
+        # The overlay location comes from the manifest (the source of truth):
+        # the config may live outside the overlay directory when
+        # OPENCODE_CONFIG points elsewhere.
+        local _oc_cfg _oc_cfg_recorded _oc_msg _oc_hint
+        _oc_cfg_recorded="$(_forge_state_query --argjson i "$t" '.targets_manifest[$i].config_file // empty')"
+        _oc_cfg="$_oc_cfg_recorded"
+        [ -n "$_oc_cfg" ] || _oc_cfg="$tgt_dir/opencode.jsonc"
+        echo "  OpenCode overlay ($tgt_dir):"
+        _forge_opencode_render status "$tgt_dir" "$_oc_cfg"
+        if [ "$_FORGE_OPENCODE_FAILURES" -gt 0 ]; then
+          any_fail=1
+        fi
+        # The environment never decides where to look, but a divergence is
+        # reported: it would make the launcher load a different config.
+        while IFS='|' read -r _oc_msg _oc_hint; do
+          [ -z "$_oc_msg" ] && continue
+          printf '    %-9s%s\n' "WARN" "$_oc_msg"
+          [ -n "$_oc_hint" ] && printf '      → %s\n' "$_oc_hint"
+        done < <(_forge_opencode_env_divergence "$tgt_dir" "$_oc_cfg_recorded")
+        # The overlay has no Claude components, so the RTK block can only be
+        # shown here for the global rtk.tracked case (at most once per run).
+        _forge_status_rtk_block "$tgt_name" "$tgt_dir" 0 "$_rtk_tracked_global"
+        echo ""
+        t=$((t + 1))
+        continue
+        ;;
+      *)
+        echo "  TARGET NO SOPORTADO: $tgt_name — el diagnóstico por target solo admite 'claude' y 'opencode'" >&2
+        any_fail=1
+        echo ""
+        t=$((t + 1))
+        continue
+        ;;
+    esac
+
+    # --- Claude target: component-scoped checks ---
+
+    # Determine components to report. The diagnostic view already applied the
+    # historical fallback for Claude; `components_fallback` tells us whether
+    # the warning has to be reproduced.
+    local _comp_fallback
+    _comp_fallback="$(_forge_state_query --argjson i "$t" '.targets_manifest[$i].components_fallback // false')"
 
     local _ci=0
     local _STATUS_COMP_COUNT=0
-    if [ "$_comp_count" -eq 0 ]; then
+    if [ "$_comp_fallback" = "true" ]; then
       echo "  WARN: no hay campo 'components' en state para $tgt_name — mostrando lista por defecto" >&2
-      while IFS= read -r _sc_comp; do
-        eval "_STATUS_COMP_${t}_${_STATUS_COMP_COUNT}=\$_sc_comp"
-        _STATUS_COMP_COUNT=$((_STATUS_COMP_COUNT + 1))
-      done < <(forge_components_default_list)
-    else
-      while IFS= read -r _sc_comp; do
-        eval "_STATUS_COMP_${t}_${_STATUS_COMP_COUNT}=\$_sc_comp"
-        _STATUS_COMP_COUNT=$((_STATUS_COMP_COUNT + 1))
-      done < <(jq -r --argjson i "$t" '.targets_manifest[$i].components[]' "$FORGE_STATE_FILE")
     fi
+    while IFS= read -r _sc_comp; do
+      eval "_STATUS_COMP_${t}_${_STATUS_COMP_COUNT}=\$_sc_comp"
+      _STATUS_COMP_COUNT=$((_STATUS_COMP_COUNT + 1))
+    done < <(_forge_state_query --argjson i "$t" '.targets_manifest[$i].components[]')
 
     local _comp_list_str=""
     local _cx=0
@@ -807,99 +1561,7 @@ cmd_status() {
       _ci=$((_ci + 1))
     done
 
-    # Determine whether to print the RTK block for this target iteration.
-    # When activated via rtk.tracked (not rtk-hook), print at most once per run.
-    local _print_rtk_block=0
-    if [ "$_has_rtk_hook" -eq 1 ]; then
-      _print_rtk_block=1
-    elif [ "$_rtk_tracked_global" = "true" ] && [ "$_rtk_tracked_printed" -eq 0 ]; then
-      _print_rtk_block=1
-    fi
-
-    if [ "$_print_rtk_block" -eq 1 ]; then
-      [ "$_has_rtk_hook" -eq 0 ] && _rtk_tracked_printed=1
-      echo "  RTK ($tgt_name):"
-      local rtk_pinned rtk_detected
-      # Pinned: prefer rtk/VERSION (single source of truth), fall back to state.
-      if [ -f "$FORGE_ROOT/rtk/VERSION" ]; then
-        rtk_pinned="$(cat "$FORGE_ROOT/rtk/VERSION" 2>/dev/null || true)"
-      fi
-      [ -z "${rtk_pinned:-}" ] && rtk_pinned="$(jq -r '.rtk.pinned_version // "?"' "$FORGE_STATE_FILE")"
-
-      # Detected: live probe — state file is stale post rtk-hook migration.
-      rtk_detected="no detectado"
-      if command -v forge_rtk_detect >/dev/null 2>&1; then
-        local _det
-        _det="$(forge_rtk_detect)"
-        local _rtk_installed_nodepath=0
-        case "$_det" in
-          absent)    rtk_detected="no detectado" ;;
-          collision) rtk_detected="colisión (binario rtk no reconocido)" ;;
-          installed:*)
-            # On-disk at ~/.forge/bin but not on PATH — extract version for comparison.
-            local _st_ondisk_ver
-            _st_ondisk_ver="$(printf '%s\n' "$_det" | cut -d: -f2)"
-            rtk_detected="$_st_ondisk_ver"
-            _rtk_installed_nodepath=1
-            ;;
-          shadowed:*)
-            local _st_shadow_winner _st_shadow_ver _st_forge_ver
-            _st_shadow_winner="$(printf '%s\n' "$_det" | cut -d: -f2)"
-            _st_shadow_ver="$(printf '%s\n' "$_det" | cut -d: -f3)"
-            _st_forge_ver="$(printf '%s\n' "$_det" | cut -d: -f4)"
-            rtk_detected="sombra — ${_st_shadow_ver} en ${_st_shadow_winner} sombrea al de forge (${_st_forge_ver})"
-            ;;
-          *)         rtk_detected="$_det" ;;
-        esac
-      elif command -v rtk >/dev/null 2>&1; then
-        local _rtk_installed_nodepath=0
-        local _rtk_v_out _rtk_ver
-        _rtk_v_out="$(rtk --version 2>&1 || true)"
-        if printf '%s\n' "$_rtk_v_out" | grep -qE '^rtk[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+'; then
-          _rtk_ver="$(printf '%s\n' "$_rtk_v_out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-          rtk_detected="$_rtk_ver"
-        else
-          rtk_detected="colisión (binario rtk no reconocido)"
-        fi
-      else
-        local _rtk_installed_nodepath=0
-      fi
-
-      echo "    Pinned       : $rtk_pinned"
-      if [ "${_rtk_installed_nodepath:-0}" -eq 1 ]; then
-        echo "    Detectado    : $rtk_detected (instalado pero ~/.forge/bin no está en PATH)"
-        echo "    WARN: RTK instalado pero ~/.forge/bin no está en PATH → source ~/.zshrc o reinstala"
-      else
-        echo "    Detectado    : $rtk_detected"
-      fi
-      # Recipe for shadowed case
-      case "$rtk_detected" in
-        sombra\ —*)
-          echo "    WARN: RTK instalado vía Homebrew sombrea al de forge."
-          echo "    Para solucionar:"
-          echo "      1. brew uninstall rtk"
-          echo "      2. bash install.sh rtk install"
-          echo "      3. source ~/.zshrc (o abre un terminal nuevo)"
-          ;;
-      esac
-      # Warn if detected version is behind the pin
-      # Skip non-semver status strings; for installed:* the version part was already extracted.
-      if [ "$rtk_detected" != "no detectado" ] && [ "$rtk_detected" != "colisión (binario rtk no reconocido)" ] && case "$rtk_detected" in sombra\ —*) false ;; *) true ;; esac; then
-        local _rtk_cmp="eq"
-        if command -v forge_rtk_compare >/dev/null 2>&1; then
-          _rtk_cmp="$(forge_rtk_compare "$rtk_detected" "$rtk_pinned")"
-        elif [ "$rtk_detected" != "$rtk_pinned" ]; then
-          local _rtk_lower
-          _rtk_lower="$(printf '%s\n%s\n' "$rtk_detected" "$rtk_pinned" | sort -V | head -1)"
-          if [ "$_rtk_lower" = "$rtk_detected" ]; then _rtk_cmp="lt"; else _rtk_cmp="gt"; fi
-        fi
-        case "$_rtk_cmp" in
-          lt) echo "    WARN: RTK $rtk_detected desactualizado (pin $rtk_pinned) — bash install.sh rtk install" ;;
-          gt) echo "    WARN: RTK $rtk_detected > pin $rtk_pinned (versión no certificada)" ;;
-        esac
-      fi
-      echo ""
-    fi
+    _forge_status_rtk_block "$tgt_name" "$tgt_dir" "$_has_rtk_hook" "$_rtk_tracked_global"
 
     t=$((t + 1))
   done
@@ -1006,6 +1668,9 @@ cmd_update() {
 
         if [ "$upd_tgt_name" = "opencode" ]; then
           forge_run_opencode_installer || return 1
+          # The overlay was just (re)deployed: the manifest must point at the
+          # directory that really holds it now.
+          _forge_state_sync_opencode_paths
           upd_t=$((upd_t + 1))
           continue
         fi
@@ -1603,7 +2268,7 @@ cmd_uninstall() {
     local tgt_dir
     case "$tgt_name" in
       claude)   tgt_dir="$HOME/.claude" ;;
-      opencode) tgt_dir="$FORGE_OPENCODE_DIR_DEFAULT" ;;
+      opencode) tgt_dir="$(_forge_state_opencode_dir)" ;;
       *)        tgt_dir="$HOME/.claude" ;;
     esac
     local sfile="$tgt_dir/settings.json"
@@ -1750,6 +2415,9 @@ cmd_repair() {
 
     if [ "$tgt_name" = "opencode" ]; then
       forge_run_opencode_installer || return 1
+      # The overlay was just (re)deployed: the manifest must point at the
+      # directory that really holds it now.
+      _forge_state_sync_opencode_paths
       t=$((t + 1))
       continue
     fi
@@ -1870,47 +2538,76 @@ cmd_doctor() {
   # 5. State file + per-target, per-component checks
   # Component-scoped: only checks components recorded in state for each target.
   # Falls back to full component list for pre-v3 state entries lacking components field.
+  # Initialized here so a missing or corrupt state file cannot leave them
+  # unbound (the RTK gate below reads them).
+  local _doc_rtk_hook_present=0
+  local _doc_rtk_tracked="false"
   if [ ! -f "$FORGE_STATE_FILE" ]; then
     _doc_warn "state file no encontrado ($FORGE_STATE_FILE) — no instalado"
-  elif ! jq empty "$FORGE_STATE_FILE" 2>/dev/null; then
+  elif ! _FORGE_STATE_VIEW="$(_forge_state_view)"; then
     _doc_fail "state file corrupto: $FORGE_STATE_FILE"
   else
-    _forge_state_migrate
     _doc_pass "state file válido"
 
     local _doc_manifest_count
-    _doc_manifest_count="$(jq -r '.targets_manifest // [] | length' "$FORGE_STATE_FILE")"
+    _doc_manifest_count="$(_forge_state_query '.targets_manifest // [] | length')"
 
-    local _doc_rtk_hook_present=0
-    local _doc_rtk_tracked
-    _doc_rtk_tracked="$(jq -r '.rtk.tracked // false' "$FORGE_STATE_FILE" 2>/dev/null || echo "false")"
+    _doc_rtk_tracked="$(_forge_state_query '.rtk.tracked // false')"
     local _dt=0
+    # shellcheck disable=SC2016  # jq filters are single-quoted on purpose: $i belongs to jq
     while [ "$_dt" -lt "$_doc_manifest_count" ]; do
       local _dtgt_name _dtgt_dir
-      _dtgt_name="$(jq -r --argjson i "$_dt" '.targets_manifest[$i].name // "?"' "$FORGE_STATE_FILE")"
-      _dtgt_dir="$(jq -r --argjson i "$_dt" '.targets_manifest[$i].dir // ""' "$FORGE_STATE_FILE")"
+      _dtgt_name="$(_forge_state_query --argjson i "$_dt" '.targets_manifest[$i].name // "?"')"
+      _dtgt_dir="$(_forge_state_query --argjson i "$_dt" '.targets_manifest[$i].dir // ""')"
 
       echo ""
       echo "  Target: $_dtgt_name ($_dtgt_dir)"
 
-      # Determine components to check. Fall back to full list if field is absent/empty.
-      local _doc_comp_count
-      _doc_comp_count="$(jq -r --argjson i "$_dt" '.targets_manifest[$i].components // [] | length' "$FORGE_STATE_FILE")"
+      case "$_dtgt_name" in
+        claude)
+          # The Claude contract (component-scoped symlinks, settings.json and
+          # CLAUDE.md refs) is evaluated inline below, unchanged.
+          ;;
+        opencode)
+          # Same contract as `status`: the manifest decides where to look and
+          # the environment only produces a warning when it contradicts it.
+          local _doc_cfg _doc_cfg_recorded _doc_msg _doc_hint
+          _doc_cfg_recorded="$(_forge_state_query --argjson i "$_dt" '.targets_manifest[$i].config_file // empty')"
+          _doc_cfg="$_doc_cfg_recorded"
+          [ -n "$_doc_cfg" ] || _doc_cfg="$_dtgt_dir/opencode.jsonc"
+          echo "  OpenCode overlay ($_dtgt_dir):"
+          _forge_opencode_render doctor "$_dtgt_dir" "$_doc_cfg"
+          fail_count=$((fail_count + _FORGE_OPENCODE_FAILURES))
+          while IFS='|' read -r _doc_msg _doc_hint; do
+            [ -z "$_doc_msg" ] && continue
+            _doc_warn "$_doc_msg"
+            [ -n "$_doc_hint" ] && echo "  HINT  $_doc_hint"
+          done < <(_forge_opencode_env_divergence "$_dtgt_dir" "$_doc_cfg_recorded")
+          _dt=$((_dt + 1))
+          continue
+          ;;
+        *)
+          _doc_fail "target no soportado: $_dtgt_name (el diagnóstico por target solo admite 'claude' y 'opencode')"
+          _dt=$((_dt + 1))
+          continue
+          ;;
+      esac
+
+      # Determine components to check. The diagnostic view already applied the
+      # historical fallback for Claude; `components_fallback` tells us whether
+      # the warning has to be reproduced.
+      local _doc_comp_fallback
+      _doc_comp_fallback="$(_forge_state_query --argjson i "$_dt" '.targets_manifest[$i].components_fallback // false')"
 
       local _doc_ci=0
       local _DOC_COMP_COUNT=0
-      if [ "$_doc_comp_count" -eq 0 ]; then
+      if [ "$_doc_comp_fallback" = "true" ]; then
         _doc_warn "no hay campo 'components' en state para $_dtgt_name — verificando lista por defecto"
-        while IFS= read -r _dsc_comp; do
-          eval "_DOC_COMP_${_dt}_${_DOC_COMP_COUNT}=\$_dsc_comp"
-          _DOC_COMP_COUNT=$((_DOC_COMP_COUNT + 1))
-        done < <(forge_components_default_list)
-      else
-        while IFS= read -r _dsc_comp; do
-          eval "_DOC_COMP_${_dt}_${_DOC_COMP_COUNT}=\$_dsc_comp"
-          _DOC_COMP_COUNT=$((_DOC_COMP_COUNT + 1))
-        done < <(jq -r --argjson i "$_dt" '.targets_manifest[$i].components[]' "$FORGE_STATE_FILE")
       fi
+      while IFS= read -r _dsc_comp; do
+        eval "_DOC_COMP_${_dt}_${_DOC_COMP_COUNT}=\$_dsc_comp"
+        _DOC_COMP_COUNT=$((_DOC_COMP_COUNT + 1))
+      done < <(_forge_state_query --argjson i "$_dt" '.targets_manifest[$i].components[]')
 
       # 5a. Symlinks per component
       echo "  Symlinks [$_dtgt_name]:"
@@ -2623,6 +3320,13 @@ cmd_install() {
     eval "manifest_symlinks_objects_json=\${_TARGET_MANIFEST_SYMLINKS_OBJECTS_${tgt_name}:-[]}"
     eval "manifest_dir=\${_TARGET_MANIFEST_DIR_${tgt_name}:-}"
     settings_merged_bool="true"
+    # The OpenCode overlay records the config file it really wrote: it may
+    # live outside the overlay directory (OPENCODE_CONFIG). The Claude
+    # target has no such field.
+    local manifest_config_file=""
+    if [ "$tgt_name" = "opencode" ]; then
+      manifest_config_file="$FORGE_OPENCODE_CONFIG"
+    fi
     local pre_forge_check="${tgt}/settings.json.pre-forge"
     if [ -f "$pre_forge_check" ]; then
       settings_backup_val="$pre_forge_check"
@@ -2681,21 +3385,25 @@ cmd_install() {
       manifest_entry="$(jq -n \
         --arg name "$tgt_name" \
         --arg dir "$manifest_dir" \
+        --arg config_file "$manifest_config_file" \
         --argjson symlinks "$unioned_symlinks_flat_json" \
         --argjson symlinks_objects "$unioned_symlinks_objects_json" \
         --argjson components "$target_components_json" \
         --argjson settings_merged "$settings_merged_bool" \
         --arg settings_backup "$settings_backup_val" \
-        '{name: $name, dir: $dir, symlinks: $symlinks, symlinks_objects: $symlinks_objects, "components": $components, settings_merged: $settings_merged, settings_backup: $settings_backup}')"
+        '{name: $name, dir: $dir, symlinks: $symlinks, symlinks_objects: $symlinks_objects, "components": $components, settings_merged: $settings_merged, settings_backup: $settings_backup}
+         + (if $config_file == "" then {} else {config_file: $config_file} end)')"
     else
       manifest_entry="$(jq -n \
         --arg name "$tgt_name" \
         --arg dir "$manifest_dir" \
+        --arg config_file "$manifest_config_file" \
         --argjson symlinks "$unioned_symlinks_flat_json" \
         --argjson symlinks_objects "$unioned_symlinks_objects_json" \
         --argjson components "$target_components_json" \
         --argjson settings_merged "$settings_merged_bool" \
-        '{name: $name, dir: $dir, symlinks: $symlinks, symlinks_objects: $symlinks_objects, "components": $components, settings_merged: $settings_merged, settings_backup: null}')"
+        '{name: $name, dir: $dir, symlinks: $symlinks, symlinks_objects: $symlinks_objects, "components": $components, settings_merged: $settings_merged, settings_backup: null}
+         + (if $config_file == "" then {} else {config_file: $config_file} end)')"
     fi
 
     [ "$m" -gt 0 ] && targets_manifest_json="$targets_manifest_json,"
