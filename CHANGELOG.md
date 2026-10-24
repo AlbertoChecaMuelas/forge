@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-10-24
+
 ### Changed
 - `status` y `doctor` son de solo lectura: ya no migran ni reescriben un state file legado
 
