@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-24
+
 ### Added
 - runbook de la migración a OpenCode 2 (`open-code/MIGRATION-V2.md` y `open-code/MIGRATION-V2.es.md`): backup, ensayo con `OPENCODE_DB` sobre una copia, cutover y rollback conjunto
 - installador y desinstalador del overlay V2, que instalan el build fijado `@opencode/cli@2.1.4` en un prefijo aislado de Forge (`~/.local/share/forge/opencode-v2`) y registran esa ruta en el manifest
