@@ -3,6 +3,11 @@ set -euo pipefail
 
 FORGE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Shared isolation helpers: the isolated environment, the fingerprint of the
+# real user files and the fake toolchain.
+# shellcheck source=tests/isolation.sh
+. "$FORGE_ROOT/tests/isolation.sh"
+
 FAIL=0
 PASS_COUNT=0
 TMP_TEST_HOME=""
@@ -10,36 +15,68 @@ TEST_TMP_ROOT="/tmp/opencode/opencode-install-integration.$$"
 PTY_OUT=""
 PTY_RC=0
 
+# Fingerprint of the real user files, taken BEFORE any test runs.
+#
+# The installer resolves the pinned OpenCode prefix from XDG_DATA_HOME /
+# FORGE_OPENCODE_BIN_DIR, so an unisolated run installs @opencode/cli@2.1.4
+# in the REAL ~/.local/share/forge/opencode-v2. The suite must leave the real
+# machine untouched: this snapshot is compared when the suite finishes.
+PROTECTED_SNAPSHOT="$(forge_protected_snapshot)"
+
 pass() { echo "  PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 fail() { echo "  FAIL  $1" >&2; FAIL=1; }
 
 cleanup() {
+  local rc=$?
+
   if [ -n "${TMP_TEST_HOME:-}" ]; then
     rm -rf "$TMP_TEST_HOME"
   fi
   if [ -n "${TEST_TMP_ROOT:-}" ]; then
     rm -rf "$TEST_TMP_ROOT"
   fi
+
+  # The leak guard: the suite must never create the real pinned prefix and
+  # must never modify the real user files.
+  if ! forge_assert_no_forge_prefix; then
+    rc=1
+  fi
+  if ! forge_assert_protected_unchanged "$PROTECTED_SNAPSHOT"; then
+    rc=1
+  fi
+
+  exit $rc
 }
 
 mkdir -p "$TEST_TMP_ROOT"
 trap cleanup EXIT
 
 # The production installer gives OPENCODE_CONFIG_DIR / OPENCODE_CONFIG
-# precedence over HOME. Always remove both so an inherited real-user config can
-# never be read or modified by this suite.
+# precedence over HOME, and it resolves the pinned OpenCode prefix from
+# XDG_DATA_HOME / FORGE_OPENCODE_BIN_DIR. All of them are neutralised here:
+# HOME, the XDG directories and the pinned prefix point inside the sandbox.
+#
+# The fake toolchain is always first in PATH: the suite must never run a
+# real `npm install` (that would download @opencode/cli@2.1.4) and must never
+# use the OpenCode binary installed in the machine.
 run_isolated() {
   local isolated_home="$1"
   shift
-  mkdir -p "$isolated_home/.config" "$isolated_home/.cache" \
-    "$isolated_home/.local/share" "$isolated_home/.local/state"
-  env -u OPENCODE_CONFIG_DIR -u OPENCODE_CONFIG \
-    HOME="$isolated_home" \
-    XDG_CONFIG_HOME="$isolated_home/.config" \
-    XDG_CACHE_HOME="$isolated_home/.cache" \
-    XDG_DATA_HOME="$isolated_home/.local/share" \
-    XDG_STATE_HOME="$isolated_home/.local/state" \
-    "$@"
+
+  forge_make_toolchain "$isolated_home/fakebin"
+
+  forge_isolated_env "$isolated_home" PATH="$isolated_home/fakebin:$PATH" "$@"
+}
+
+# run_isolated_bare <home> <command> [args...]
+# Same isolation, but WITHOUT the fake toolchain: the caller owns the PATH.
+# It is used by the cases that must fail because the OpenCode toolchain is
+# not available at all.
+run_isolated_bare() {
+  local isolated_home="$1"
+  shift
+
+  forge_isolated_env "$isolated_home" "$@"
 }
 
 # Copy the production overlay into a disposable repository. The installer
@@ -101,6 +138,16 @@ run_installer_with_pty() {
 # Independent JSONC reader used as the test oracle. It intentionally does not
 # import the production plugin-sync helper, so a parser regression cannot make
 # both the expectation and the observed installation agree.
+#
+# OpenCode 2 contract:
+#   * the declared plugins live in the `plugins` field (the V1 `plugin` field
+#     is gone) and every entry is a string or an object with a `package`,
+#   * a declared local plugin is a PACKAGE DIRECTORY, so the inventory is
+#     computed over package trees instead of over single files.
+#
+# The second argument is the overlay root (the directory that holds the
+# installed config). The plugin packages are expected under its
+# `plugin-packages/` directory.
 plugin_inventory() {
   python3 - "$1" "${2:-}" <<'PY'
 import json
@@ -157,42 +204,67 @@ def strip_jsonc(text):
 
 
 config_path = sys.argv[1]
-plugin_dir = sys.argv[2] or None
+overlay_root = sys.argv[2] or None
+
 with open(config_path, encoding="utf-8") as handle:
     config = json.loads(strip_jsonc(handle.read()))
 
-declared = config.get("plugin", [])
+declared = config.get("plugins", [])
 if isinstance(declared, str):
     declared = [declared]
-if not isinstance(declared, list) or not all(isinstance(item, str) for item in declared):
-    raise ValueError("'plugin' must be an array of strings")
+if not isinstance(declared, list):
+    raise ValueError("'plugins' must be an array of strings or objects")
+
+packages = []
+for entry in declared:
+    if isinstance(entry, str):
+        packages.append(entry)
+    elif isinstance(entry, dict) and isinstance(entry.get("package"), str):
+        packages.append(entry["package"])
+    else:
+        raise ValueError("'plugins' entries must be strings or objects with a 'package'")
 
 config_root = os.path.dirname(os.path.abspath(config_path))
-local = [entry for entry in declared if entry.startswith("./")]
+local = [entry for entry in packages if entry.startswith("./")]
+relative = [entry[2:] for entry in local]
+
 missing = []
 expected_plugin_files = set()
-for entry in local:
-    relative = entry[2:]
-    if not os.path.isfile(os.path.join(config_root, relative)):
-        missing.append(entry)
-    if relative.startswith("plugins/"):
-        expected_plugin_files.add(relative[len("plugins/"):])
+for rel in relative:
+    package_dir = os.path.join(config_root, rel)
+    if not os.path.isdir(package_dir):
+        missing.append(rel)
+        continue
+    for dirpath, _dirnames, filenames in os.walk(package_dir):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            expected_plugin_files.add(os.path.relpath(full, config_root))
 
+# The OpenCode 2 plugin packages live under `plugin-packages/`: every
+# directory below it is a package.
 actual_plugin_files = set()
-if plugin_dir and os.path.isdir(plugin_dir):
-    for root, _directories, files in os.walk(plugin_dir):
-        for name in files:
-            path = os.path.join(root, name)
-            if os.path.isfile(path) or os.path.islink(path):
-                actual_plugin_files.add(os.path.relpath(path, plugin_dir))
+actual_plugin_dirs = set()
+if overlay_root:
+    plugins_root = os.path.join(overlay_root, "plugin-packages")
+    if os.path.isdir(plugins_root):
+        for name in sorted(os.listdir(plugins_root)):
+            if os.path.isdir(os.path.join(plugins_root, name)):
+                actual_plugin_dirs.add(os.path.join("plugin-packages", name))
+        for dirpath, _dirnames, filenames in os.walk(plugins_root):
+            for name in filenames:
+                full = os.path.join(dirpath, name)
+                actual_plugin_files.add(os.path.relpath(full, overlay_root))
 
 print(json.dumps({
-    "declared": declared,
+    "declared": packages,
     "local": local,
     "missing": sorted(missing),
     "expected_plugin_files": sorted(expected_plugin_files),
     "actual_plugin_files": sorted(actual_plugin_files),
-    "orphans": sorted(actual_plugin_files - expected_plugin_files),
+    "expected_plugin_dirs": sorted(relative),
+    "actual_plugin_dirs": sorted(actual_plugin_dirs),
+    "orphans": sorted(actual_plugin_dirs - set(relative)),
+    "orphan_files": sorted(actual_plugin_files - expected_plugin_files),
 }, sort_keys=True))
 PY
 }
@@ -238,12 +310,13 @@ test_isolated_install_and_launcher() {
   tmp_home="$(mktemp -d "$TEST_TMP_ROOT/install.XXXXXX")"
   TMP_TEST_HOME="$tmp_home"
 
-  local fixture_repo installer uninstaller installed_config plugins_dir
+  local fixture_repo installer uninstaller installed_config overlay_root plugin_packages_dir
   fixture_repo="$(create_repo_fixture "$tmp_home/repo")"
   installer="$fixture_repo/open-code/install-opencode.sh"
   uninstaller="$fixture_repo/open-code/uninstall-opencode.sh"
   installed_config="$tmp_home/.config/opencode-forge/opencode.jsonc"
-  plugins_dir="$tmp_home/.config/opencode-forge/plugins"
+  overlay_root="$tmp_home/.config/opencode-forge"
+  plugin_packages_dir="$overlay_root/plugin-packages"
 
   run_isolated "$tmp_home" OPENAI_API_KEY=test-openai-key bash "$installer" >/dev/null 2>&1
 
@@ -273,11 +346,13 @@ test_isolated_install_and_launcher() {
   done
 
   # Compare the semantic plugin field and both sides of the disk/config
-  # relationship. This is the assertion that the old installer missed: it
-  # checked forge-guard.js only, allowing forge-task-observer.js to vanish.
+  # relationship. OpenCode 2 declares the plugins in `plugins` and a declared
+  # local plugin is a PACKAGE DIRECTORY, so the inventory is computed over
+  # package trees: a package that vanishes (or an extra one that appears)
+  # breaks the overlay silently.
   local source_inventory installed_inventory
   if source_inventory="$(plugin_inventory "$FORGE_ROOT/open-code/opencode.jsonc")" \
-    && installed_inventory="$(plugin_inventory "$installed_config" "$plugins_dir")"; then
+    && installed_inventory="$(plugin_inventory "$installed_config" "$overlay_root")"; then
     local source_declared installed_declared missing_count orphan_count expected_count actual_count
     source_declared="$(printf '%s' "$source_inventory" | jq -c '.declared')"
     installed_declared="$(printf '%s' "$installed_inventory" | jq -c '.declared')"
@@ -287,9 +362,9 @@ test_isolated_install_and_launcher() {
     actual_count="$(printf '%s' "$installed_inventory" | jq -r '.actual_plugin_files | length')"
 
     if [ "$source_declared" = "$installed_declared" ]; then
-      pass "installed config plugin field matches repository opencode.jsonc"
+      pass "installed config plugins field matches repository opencode.jsonc"
     else
-      fail "installed config plugin field diverges from repository opencode.jsonc (repo=$source_declared installed=$installed_declared)"
+      fail "installed config plugins field diverges from repository opencode.jsonc (repo=$source_declared installed=$installed_declared)"
     fi
 
     if [ "$missing_count" -eq 0 ]; then
@@ -299,22 +374,52 @@ test_isolated_install_and_launcher() {
     fi
 
     if [ "$orphan_count" -eq 0 ]; then
-      pass "every plugin present on disk is declared by installed config"
+      pass "every plugin package present on disk is declared by installed config"
     else
-      fail "installed plugins directory contains orphan plugins: $(printf '%s' "$installed_inventory" | jq -r '.orphans | join(", ")')"
+      fail "installed plugin packages contain orphan packages: $(printf '%s' "$installed_inventory" | jq -r '.orphans | join(", ")')"
     fi
 
     if [ "$missing_count" -eq 0 ] && [ "$orphan_count" -eq 0 ] \
       && [ "$expected_count" -eq "$actual_count" ]; then
-      pass "installed plugins directory contains exactly the declared plugins (${actual_count} files)"
+      pass "installed plugin packages contain exactly the declared plugins (${actual_count} files)"
     else
-      fail "installed plugins directory is not an exact match (expected=$expected_count actual=$actual_count missing=$missing_count orphans=$orphan_count)"
+      fail "installed plugin packages are not an exact match (expected=$expected_count actual=$actual_count missing=$missing_count orphans=$orphan_count)"
     fi
 
-    if [ -f "$plugins_dir/forge-task-observer.js" ]; then
-      pass "forge-task-observer.js is installed alongside forge-guard.js"
+    # The installed package must be a byte-identical copy of the source tree.
+    local source_files installed_files
+    source_files="$(printf '%s' "$source_inventory" | jq -c '.expected_plugin_files')"
+    installed_files="$(printf '%s' "$installed_inventory" | jq -c '.actual_plugin_files')"
+    if [ "$source_files" = "$installed_files" ]; then
+      pass "installed plugin package tree matches the repository source tree"
     else
-      fail "forge-task-observer.js is missing from installed plugins directory"
+      fail "installed plugin package tree diverges from the source (source=$source_files installed=$installed_files)"
+    fi
+
+    # The OpenCode 2 layout: a package DIRECTORY, never a single .js file.
+    if [ -f "$plugin_packages_dir/forge-guard/index.js" ] \
+      && [ -f "$plugin_packages_dir/forge-guard/package.json" ] \
+      && [ ! -e "$plugin_packages_dir/forge-guard.js" ]; then
+      pass "forge-guard is installed as an OpenCode 2 plugin package directory"
+    else
+      fail "forge-guard is not installed as an OpenCode 2 plugin package directory"
+    fi
+
+    # The removed V1 observer must not be declared: the V1 layout was a `.js`
+    # file, the V2 layout is a package directory.
+    local declared_js_count
+    declared_js_count="$(printf '%s' "$installed_inventory" | jq -r '[.declared[] | select(endswith(".js"))] | length')"
+    if [ "$declared_js_count" -eq 0 ]; then
+      pass "the installed config declares no OpenCode 1 plugin file (the observer was removed)"
+    else
+      fail "the installed config still declares OpenCode 1 plugin files"
+    fi
+
+    # The OpenCode 1 leftovers must not survive the migration.
+    if [ ! -e "$overlay_root/plugins" ]; then
+      pass "the overlay contains no OpenCode 1 plugins directory"
+    else
+      fail "the overlay still contains an OpenCode 1 plugins directory: $(find "$overlay_root/plugins" -mindepth 1 2>/dev/null | tr '\n' ' ')"
     fi
   else
     fail "could not inspect installed plugin declaration/inventory"
@@ -328,12 +433,24 @@ test_isolated_install_and_launcher() {
 
   run_isolated "$tmp_home" "$tmp_home/.local/bin/forge-opencode" debug config > "$tmp_home/debug-config.out"
 
-  if grep -q 'opencode-forge/plugins/forge-guard.js' "$tmp_home/debug-config.out" \
-    && grep -q 'opencode-forge/plugins/forge-task-observer.js' "$tmp_home/debug-config.out" \
+  # The launcher must resolve the isolated overlay and the OpenCode 2 plugin
+  # package. The OpenCode 1 plugin files must not appear anywhere.
+  if grep -qF "OPENCODE_CONFIG_DIR=$overlay_root" "$tmp_home/debug-config.out" \
+    && grep -qF '"./plugin-packages/forge-guard"' "$tmp_home/debug-config.out" \
     && grep -q '"default_agent": "orchestrator"' "$tmp_home/debug-config.out"; then
-    pass "launcher resolves through symlink and loads isolated config with both plugins"
+    pass "launcher resolves through symlink and loads the isolated config with the V2 plugin package"
   else
-    fail "launcher did not load isolated config through symlink with both plugins"
+    fail "launcher did not load the isolated config with the V2 plugin package"
+  fi
+
+  # The OpenCode 1 observer plugin must not come back: OpenCode 2 propagates
+  # the failure of a subagent call to the parent session on its own, so no
+  # parallel observer exists anymore. The V1 layout was a `.js` file under
+  # `plugins/`; the V2 layout is a package directory under `plugin-packages/`.
+  if grep -qF 'plugins/forge-' "$tmp_home/debug-config.out"; then
+    fail "the installed config still declares an OpenCode 1 plugin file"
+  else
+    pass "the installed config does not declare any OpenCode 1 plugin file"
   fi
 
   mkdir -p "$tmp_home/fakebin"
@@ -410,19 +527,26 @@ EOF
   fi
 
   local plugin_leftovers=""
-  if [ -d "$plugins_dir" ]; then
-    plugin_leftovers="$(find "$plugins_dir" -mindepth 1 -print 2>/dev/null)"
+  if [ -d "$plugin_packages_dir" ]; then
+    plugin_leftovers="$(find "$plugin_packages_dir" -mindepth 1 -print 2>/dev/null)"
   fi
   if [ -z "$plugin_leftovers" ]; then
-    pass "uninstall leaves no Forge plugin in the plugins directory"
+    pass "uninstall removes the installed plugin package tree"
   else
     fail "uninstall left plugin entries behind: $plugin_leftovers"
   fi
 
-  if [ ! -e "$plugins_dir/forge-task-observer.js" ]; then
-    pass "uninstall does not leave forge-task-observer.js orphaned"
+  if [ ! -e "$overlay_root/plugins" ]; then
+    pass "uninstall does not leave an OpenCode 1 plugins directory behind"
   else
-    fail "uninstall left forge-task-observer.js orphaned"
+    fail "uninstall left an OpenCode 1 plugins directory behind"
+  fi
+
+  # The pinned OpenCode build is Forge owned: uninstall removes its prefix.
+  if [ ! -e "$tmp_home/.local/share/forge/opencode-v2" ]; then
+    pass "uninstall removes the pinned OpenCode prefix"
+  else
+    fail "uninstall left the pinned OpenCode prefix behind"
   fi
 
   if [ ! -d "$tmp_home/.config/opencode-forge/agents" ]; then
@@ -454,12 +578,15 @@ test_failed_install_does_not_persist_state() {
   root_installer="$fixture_repo/install.sh"
 
   local exit_code=0
-  run_isolated "$tmp_home" PATH="/usr/bin:/bin" bash "$root_installer" install --target=opencode >/dev/null 2>&1 || exit_code=$?
+  # The bare runner does not provide the fake toolchain: the OpenCode
+  # toolchain (npm included) is not reachable, so the install must fail
+  # without touching the machine.
+  run_isolated_bare "$tmp_home" PATH="/usr/bin:/bin" bash "$root_installer" install --target=opencode >/dev/null 2>&1 || exit_code=$?
 
   if [ "$exit_code" -ne 0 ]; then
-    pass "install --target=opencode fails cleanly when opencode is unavailable"
+    pass "install --target=opencode fails cleanly when the OpenCode toolchain is unavailable"
   else
-    fail "install --target=opencode unexpectedly succeeded without opencode"
+    fail "install --target=opencode unexpectedly succeeded without the OpenCode toolchain"
   fi
 
   if [ ! -e "$tmp_home/.forge-state.json" ]; then
@@ -485,12 +612,12 @@ test_both_target_opencode_failure_leaves_claude_installed() {
   root_installer="$fixture_repo/install.sh"
 
   local exit_code=0
-  run_isolated "$tmp_home" PATH="/usr/bin:/bin" bash "$root_installer" install --target=both >/dev/null 2>&1 || exit_code=$?
+  run_isolated_bare "$tmp_home" PATH="/usr/bin:/bin" bash "$root_installer" install --target=both >/dev/null 2>&1 || exit_code=$?
 
   if [ "$exit_code" -ne 0 ]; then
-    pass "install --target=both fails non-zero when opencode is unavailable"
+    pass "install --target=both fails non-zero when the OpenCode toolchain is unavailable"
   else
-    fail "install --target=both unexpectedly succeeded without opencode"
+    fail "install --target=both unexpectedly succeeded without the OpenCode toolchain"
   fi
 
   # The claude target must be installed even though opencode failed
@@ -748,9 +875,9 @@ test_missing_plugin_source_aborts_install() {
   installed_config="$tmp_home/.config/opencode-forge/opencode.jsonc"
 
   # Simulate a broken/incomplete source overlay without touching the checkout:
-  # the config still declares forge-task-observer.js, but its source file does
-  # not exist.
-  rm -f "$fixture_repo/open-code/plugins/forge-task-observer.js"
+  # the config still declares the forge-guard package, but its source
+  # directory does not exist.
+  rm -rf "$fixture_repo/open-code/plugin-packages/forge-guard"
 
   mkdir -p "$tmp_home/fakebin"
   cat > "$tmp_home/fakebin/opencode" <<'EOF'
@@ -770,22 +897,22 @@ EOF
   fi
 
   if [ "$exit_code" -eq 1 ]; then
-    pass "installer aborts with exit 1 when a declared plugin has no source file"
+    pass "installer aborts with exit 1 when a declared plugin has no source package"
   else
     fail "installer exit code was $exit_code (expected 1 for a missing plugin source)"
   fi
 
-  if grep -q 'has no source file in the overlay' "$tmp_home/install.out"; then
-    pass "installer reports the missing declared plugin source"
+  if grep -q 'has no source package in the overlay' "$tmp_home/install.out"; then
+    pass "installer reports the missing declared plugin package"
   else
-    fail "installer did not report the missing declared plugin source"
+    fail "installer did not report the missing declared plugin package"
   fi
 
   if [ ! -e "$installed_config" ]; then
     pass "failed install leaves no installed config referencing the absent plugin"
   else
     local installed_inventory
-    if installed_inventory="$(plugin_inventory "$installed_config" "$tmp_home/.config/opencode-forge/plugins")" \
+    if installed_inventory="$(plugin_inventory "$installed_config" "$tmp_home/.config/opencode-forge")" \
       && [ "$(printf '%s' "$installed_inventory" | jq -r '.missing | length')" -eq 0 ]; then
       pass "failed install leaves no installed config referencing the absent plugin"
     else
@@ -847,10 +974,9 @@ prepare_overlay_sandbox() {
   mkdir -p "$SD_HOME"
   create_repo_fixture "$SD_REPO" >/dev/null
 
-  # The overlay installer only requires an `opencode` binary in PATH.
-  mkdir -p "$SD_HOME/fakebin"
-  printf '#!/usr/bin/env sh\nexit 0\n' > "$SD_HOME/fakebin/opencode"
-  chmod +x "$SD_HOME/fakebin/opencode"
+  # The overlay installer needs a toolchain: the fake one keeps the suite
+  # offline and prevents any real installation.
+  create_fake_opencode "$SD_HOME"
 
   if ! run_isolated "$SD_HOME" PATH="$SD_HOME/fakebin:$PATH" OPENAI_API_KEY=test-openai-key \
     bash "$SD_REPO/install.sh" install --target=opencode \
@@ -908,7 +1034,7 @@ apply_opencode_break() {
 
   case "$case_name" in
     plugin_deleted)
-      rm -f "$SD_OVERLAY/plugins/forge-guard.js"
+      rm -rf "$SD_OVERLAY/plugin-packages/forge-guard"
       ;;
     agent_deleted)
       rm -f "$SD_OVERLAY/agents/senior.md"
@@ -917,7 +1043,7 @@ apply_opencode_break() {
       rm -f "$SD_OVERLAY/opencode.jsonc"
       ;;
     config_corrupt)
-      printf '{\n  "plugin": [ "./plugins/forge-guard.js",\n}\n' > "$SD_OVERLAY/opencode.jsonc"
+      printf '{\n  "plugins": [ "./plugin-packages/forge-guard",\n}\n' > "$SD_OVERLAY/opencode.jsonc"
       ;;
     agent_content_diff)
       printf 'contenido que diverge del origen\n' > "$SD_OVERLAY/agents/tech.md"
@@ -954,7 +1080,7 @@ opencode_break_expectations() {
   case "$case_name" in
     plugin_deleted)
       EXPECT_TOKEN="MISSING"
-      EXPECT_NEEDLE="plugins/forge-guard.js"
+      EXPECT_NEEDLE="plugin-packages/forge-guard"
       ;;
     agent_deleted)
       EXPECT_TOKEN="MISSING"
@@ -978,7 +1104,10 @@ opencode_break_expectations() {
       ;;
     launcher_repointed)
       EXPECT_TOKEN="MISMATCH"
-      EXPECT_NEEDLE="forge-opencode"
+      # The V2 launcher check reports three records (the mismatch plus the
+      # two contract checks), so the needle must identify the BROKEN
+      # artefact and not the launcher family.
+      EXPECT_NEEDLE="forge-opencode.sh.renamed"
       ;;
     unexpected_file)
       EXPECT_TOKEN="UNEXPECTED"
@@ -1081,12 +1210,13 @@ manifest_opencode_value() {
     "$state_file" 2>/dev/null || true
 }
 
+# The fake toolchain: a fake npm (that materialises the pinned build instead
+# of downloading it) and a fake OpenCode CLI. The suite never installs
+# anything in the machine.
 create_fake_opencode() {
   local home="$1"
 
-  mkdir -p "$home/fakebin"
-  printf '#!/usr/bin/env sh\nexit 0\n' > "$home/fakebin/opencode"
-  chmod +x "$home/fakebin/opencode"
+  forge_make_toolchain "$home/fakebin"
 }
 
 install_opencode_fixture() {
@@ -1462,10 +1592,10 @@ test_manifest_records_external_opencode_config() {
   assert_equal "manifest config_file registra la config externa real" \
     "$external_config" "$(manifest_opencode_value "$state" config_file)"
 
-  if [ -f "$external_config" ] && [ -f "$external_root/plugins/forge-guard.js" ]; then
-    pass "config y plugins se despliegan junto a OPENCODE_CONFIG"
+  if [ -f "$external_config" ] && [ -f "$external_root/plugin-packages/forge-guard/index.js" ]; then
+    pass "config y el paquete de plugins se despliegan junto a OPENCODE_CONFIG"
   else
-    fail "config/plugins no se desplegaron junto a OPENCODE_CONFIG"
+    fail "config/plugin package no se desplegaron junto a OPENCODE_CONFIG"
   fi
 
   if [ -f "$default_dir/agents/orchestrator.md" ] \
@@ -1492,11 +1622,11 @@ test_manifest_records_external_opencode_config() {
     fail "status no validó la config externa"
   fi
 
-  if grep -qF 'forge-guard.js: declarado por opencode.jsonc y presente en disco' \
+  if grep -qF 'plugin-packages/forge-guard: declarado por opencode.jsonc y presente en disco' \
     "$sandbox/status.out"; then
-    pass "status valida los plugins junto a la config externa"
+    pass "status valida el paquete de plugins junto a la config externa"
   else
-    fail "status no validó los plugins de la config externa"
+    fail "status no validó el paquete de plugins de la config externa"
   fi
 
   TMP_TEST_HOME=""
@@ -1717,10 +1847,29 @@ test_uninstall_removes_registered_overlay() {
     bash "$fixture_repo/install.sh" uninstall > "$sandbox/uninstall.out" 2>&1 || uninstall_rc=$?
   assert_equal "uninstall con entorno divergente sale 0" "0" "$uninstall_rc"
 
+  # Contract: the uninstaller removes EVERY Forge artefact of the overlay.
+  # The OpenCode 2 plugin is a package DIRECTORY, so the whole
+  # plugin-packages/forge-guard tree must be gone.
+  local overlay_leftovers=""
+  if [ -d "$alt_dir" ]; then
+    overlay_leftovers="$(find "$alt_dir" -mindepth 1 2>/dev/null)"
+  fi
+  if [ -z "$overlay_leftovers" ]; then
+    pass "uninstall no deja ningun artefacto de Forge en el overlay"
+  else
+    fail "uninstall dejo artefactos de Forge en el overlay: $(printf '%s' "$overlay_leftovers" | tr '\n' ' ')"
+  fi
+
+  if [ ! -e "$alt_dir/plugin-packages/forge-guard" ]; then
+    pass "uninstall borra el arbol del paquete de plugins V2"
+  else
+    fail "uninstall dejo el arbol del paquete de plugins V2"
+  fi
+
   if [ ! -e "$alt_dir" ]; then
     pass "uninstall borra el overlay registrado"
   else
-    fail "uninstall no borró el overlay registrado ($alt_dir)"
+    fail "uninstall no borró el overlay registrado ($alt_dir): quedan $(find "$alt_dir" -mindepth 1 2>/dev/null | tr '\n' ' ')"
   fi
 
   if [ -f "$other_dir/marker.txt" ] && [ -f "$other_dir/opencode.jsonc" ]; then
@@ -1733,6 +1882,124 @@ test_uninstall_removes_registered_overlay() {
     pass "uninstall borra el state file"
   else
     fail "uninstall no borró el state file"
+  fi
+
+  TMP_TEST_HOME=""
+  rm -rf "$sandbox"
+}
+
+test_launcher_enforces_the_v2_isolation() {
+  echo ""
+  echo "--- test_launcher_enforces_the_v2_isolation"
+
+  local sandbox home fixture_repo launcher install_rc=0 launch_rc=0
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/paths-launcher-v2.XXXXXX")"
+  home="$sandbox/home"
+  TMP_TEST_HOME="$home"
+  mkdir -p "$home"
+  fixture_repo="$(create_repo_fixture "$sandbox/repo")"
+  create_fake_opencode "$home"
+
+  install_opencode_fixture "$home" "$fixture_repo" > "$sandbox/install.out" 2>&1 || install_rc=$?
+  assert_equal "install de referencia para el launcher V2 termina correctamente" "0" "$install_rc"
+
+  if [ "$install_rc" -ne 0 ]; then
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+
+  launcher="$home/.local/bin/forge-opencode"
+
+  # OpenCode 2 shares a background server by default: the launcher must
+  # always request a private one.
+  run_isolated "$home" "$launcher" models > "$sandbox/launcher-models.out" 2>&1 || launch_rc=$?
+  assert_equal "launcher con subcomando sale 0" "0" "$launch_rc"
+  assert_contains "launcher pasa --standalone al CLI" \
+    "ARGV=models --standalone" "$sandbox/launcher-models.out"
+
+  launch_rc=0
+  run_isolated "$home" "$launcher" > "$sandbox/launcher-bare.out" 2>&1 || launch_rc=$?
+  assert_equal "launcher sin subcomando sale 0" "0" "$launch_rc"
+  assert_contains "launcher sin subcomando pasa --standalone primero" \
+    "ARGV=--standalone" "$sandbox/launcher-bare.out"
+
+  # The leaf subcommands do not offer --standalone: they run inside the CLI
+  # process and never attach to the shared server.
+  run_isolated "$home" "$launcher" debug config > "$sandbox/launcher-debug.out" 2>&1 || launch_rc=$?
+  assert_contains "launcher no pasa --standalone a los subcomandos hoja" \
+    "ARGV=debug config" "$sandbox/launcher-debug.out"
+
+  # Attaching to a shared server is exactly what the isolation forbids.
+  launch_rc=0
+  run_isolated "$home" "$launcher" --server http://127.0.0.1:1 models \
+    > "$sandbox/launcher-server.out" 2>&1 || launch_rc=$?
+  assert_equal "launcher rechaza --server con codigo 2" "2" "$launch_rc"
+  assert_contains "launcher explica por que rechaza --server" \
+    "--server no se admite" "$sandbox/launcher-server.out"
+
+  launch_rc=0
+  run_isolated "$home" "$launcher" --server=http://127.0.0.1:1 models \
+    > "$sandbox/launcher-server-eq.out" 2>&1 || launch_rc=$?
+  assert_equal "launcher rechaza --server=<url> con codigo 2" "2" "$launch_rc"
+  assert_contains "launcher explica por que rechaza --server=<url>" \
+    "--server no se admite" "$sandbox/launcher-server-eq.out"
+
+  if grep -q 'ARGV=' "$sandbox/launcher-server.out" "$sandbox/launcher-server-eq.out"; then
+    fail "el launcher ejecutó el binario de OpenCode pese a rechazar --server"
+  else
+    pass "el launcher no ejecuta el binario de OpenCode cuando se rechaza --server"
+  fi
+
+  TMP_TEST_HOME=""
+  rm -rf "$sandbox"
+}
+
+test_pinned_binary_lives_in_the_isolated_prefix() {
+  echo ""
+  echo "--- test_pinned_binary_lives_in_the_isolated_prefix"
+
+  local sandbox home fixture_repo state install_rc=0
+  local expected_prefix expected_binary recorded_binary
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/paths-pinned.XXXXXX")"
+  home="$sandbox/home"
+  TMP_TEST_HOME="$home"
+  mkdir -p "$home"
+  fixture_repo="$(create_repo_fixture "$sandbox/repo")"
+  create_fake_opencode "$home"
+  state="$home/.forge-state.json"
+
+  install_opencode_fixture "$home" "$fixture_repo" > "$sandbox/install.out" 2>&1 || install_rc=$?
+  assert_equal "install de referencia para el binario pinado termina correctamente" "0" "$install_rc"
+
+  if [ "$install_rc" -ne 0 ]; then
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+
+  expected_prefix="$home/.local/share/forge/opencode-v2"
+  expected_binary="$expected_prefix/node_modules/.bin/opencode"
+  recorded_binary="$(manifest_opencode_value "$state" binary)"
+
+  assert_equal "el manifest registra la ruta del binario pinado aislado" \
+    "$expected_binary" "$recorded_binary"
+
+  if [ -x "$expected_binary" ]; then
+    pass "el binario pinado se instala en el prefijo aislado de Forge"
+  else
+    fail "el binario pinado no se instaló en el prefijo aislado ($expected_binary)"
+  fi
+
+  local reported_version
+  reported_version="$("$expected_binary" --version 2>/dev/null | tr -d ' \n' || true)"
+  assert_equal "el binario pinado reporta la version fijada" \
+    "opencodev2.1.4" "$reported_version"
+
+  if [ ! -e "$home/.local/share/forge/opencode-v2/node_modules/@opencode" ]; then
+    pass "el prefijo pinado no se instala fuera del sandbox"
+  else
+    fail "el prefijo pinado se instaló fuera del sandbox"
   fi
 
   TMP_TEST_HOME=""
@@ -1919,6 +2186,8 @@ test_manifest_records_external_opencode_config
 test_status_and_doctor_warn_on_route_divergence
 test_status_and_doctor_do_not_warn_without_route_divergence
 test_launcher_uses_manifest_paths
+test_launcher_enforces_the_v2_isolation
+test_pinned_binary_lives_in_the_isolated_prefix
 test_uninstall_removes_registered_overlay
 test_manifest_records_opencode_paths_for_both_target
 test_legacy_manifest_without_config_file
