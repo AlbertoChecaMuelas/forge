@@ -116,6 +116,20 @@ siempre con `--standalone`, y rechaza `--server` / `--server=<url>`. Forge no
 usa el OpenCode del `PATH` (el que instala Omarchy) ni toca
 `~/.local/share/omarchy/`.
 
+La desinstalación de OpenCode usa exclusivamente las rutas registradas en el
+state (`dir`, `config_file` y `binary`):
+
+```bash
+bash install.sh uninstall
+```
+
+Sin state file, el comando es un no-op informado: sale 0, no inspecciona ni
+modifica ninguna ruta y no reintenta ni deduce una desinstalación anterior. Un
+state legacy sin `binary` o con `binary` malformado falla cerrado, no borra
+ningún prefijo binario y conserva el state para un reintento seguro. Los
+ficheros del usuario que sobrevivan en la overlay se preservan y se listan en
+el resumen, que no dice `Todo OK` mientras queden restos.
+
 Runbook de la migración a OpenCode 2 (backup, ensayo, cutover y rollback):
 [`open-code/MIGRATION-V2.es.md`](open-code/MIGRATION-V2.es.md).
 

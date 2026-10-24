@@ -1027,6 +1027,24 @@ snapshot_tree() {
   )
 }
 
+# make_env_sentinel <dir> <label>
+# Creates a directory that LOOKS like something the ambient environment could
+# point at (an OpenCode overlay or a pinned binary prefix) and fills it with
+# sentinel files.
+#
+# The uninstaller must never touch these paths: the state file is the only
+# authority, so a divergent OPENCODE_CONFIG_DIR / OPENCODE_CONFIG /
+# FORGE_OPENCODE_BIN_DIR must be ignored, not honoured.
+make_env_sentinel() {
+  local dir="$1"
+  local label="$2"
+
+  mkdir -p "$dir/node_modules/.bin"
+  printf '%s\n' "$label" > "$dir/marker.txt"
+  printf '{}\n' > "$dir/opencode.jsonc"
+  printf '#!/usr/bin/env sh\n' > "$dir/node_modules/.bin/opencode"
+}
+
 # apply_opencode_break <case_name>
 # Breaks exactly one artifact of the healthy overlay.
 apply_opencode_break() {
@@ -1818,7 +1836,8 @@ test_uninstall_removes_registered_overlay() {
   echo ""
   echo "--- test_uninstall_removes_registered_overlay"
 
-  local sandbox home fixture_repo alt_dir other_dir uninstall_rc=0
+  local sandbox home fixture_repo alt_dir other_dir other_bin_dir uninstall_rc=0
+  local other_bin_before registered_prefix
   sandbox="$(mktemp -d "$TEST_TMP_ROOT/paths-uninstall.XXXXXX")"
   home="$sandbox/home"
   TMP_TEST_HOME="$home"
@@ -1827,6 +1846,8 @@ test_uninstall_removes_registered_overlay() {
   create_fake_opencode "$home"
   alt_dir="$sandbox/registered-overlay"
   other_dir="$sandbox/environment-overlay"
+  other_bin_dir="$sandbox/environment-binary-prefix"
+  registered_prefix="$home/.local/share/forge/opencode-v2"
 
   install_opencode_fixture "$home" "$fixture_repo" OPENCODE_CONFIG_DIR="$alt_dir" \
     > "$sandbox/install.out" 2>&1 || uninstall_rc=$?
@@ -1842,8 +1863,14 @@ test_uninstall_removes_registered_overlay() {
   printf 'do-not-delete\n' > "$other_dir/marker.txt"
   printf '{}\n' > "$other_dir/opencode.jsonc"
 
+  # The divergent binary prefix (B) holds a real OpenCode-shaped layout and a
+  # marker: it must survive the uninstall untouched, byte a byte.
+  make_env_sentinel "$other_bin_dir" "divergent-binary-prefix"
+  other_bin_before="$(snapshot_tree "$other_bin_dir")"
+
   uninstall_rc=0
   run_isolated "$home" OPENCODE_CONFIG_DIR="$other_dir" OPENCODE_CONFIG="$other_dir/opencode.jsonc" \
+    FORGE_OPENCODE_BIN_DIR="$other_bin_dir" \
     bash "$fixture_repo/install.sh" uninstall > "$sandbox/uninstall.out" 2>&1 || uninstall_rc=$?
   assert_equal "uninstall con entorno divergente sale 0" "0" "$uninstall_rc"
 
@@ -1872,6 +1899,40 @@ test_uninstall_removes_registered_overlay() {
     fail "uninstall no borró el overlay registrado ($alt_dir): quedan $(find "$alt_dir" -mindepth 1 2>/dev/null | tr '\n' ' ')"
   fi
 
+  if [ ! -e "$alt_dir/opencode.jsonc" ]; then
+    pass "uninstall borra el config file registrado"
+  else
+    fail "uninstall no borró el config file registrado ($alt_dir/opencode.jsonc)"
+  fi
+
+  # The state, not the environment, decides which binary prefix is removed.
+  if [ ! -e "$registered_prefix" ]; then
+    pass "uninstall borra el prefijo binario registrado"
+  else
+    fail "uninstall no borró el prefijo binario registrado ($registered_prefix)"
+  fi
+
+  if [ ! -e "$registered_prefix/node_modules/.bin/opencode" ]; then
+    pass "uninstall borra el binario pinado registrado"
+  else
+    fail "uninstall no borró el binario pinado registrado"
+  fi
+
+  assert_equal "uninstall no toca el prefijo binario divergente del entorno" \
+    "$other_bin_before" "$(snapshot_tree "$other_bin_dir")"
+
+  if [ -f "$other_bin_dir/marker.txt" ]; then
+    pass "uninstall conserva el marcador del prefijo binario divergente"
+  else
+    fail "uninstall borró el marcador del prefijo binario divergente"
+  fi
+
+  if [ -e "$other_bin_dir/node_modules/.bin/opencode" ]; then
+    pass "uninstall conserva el binario del prefijo divergente"
+  else
+    fail "uninstall borró el binario del prefijo divergente"
+  fi
+
   if [ -f "$other_dir/marker.txt" ] && [ -f "$other_dir/opencode.jsonc" ]; then
     pass "uninstall no toca el overlay señalado por el entorno"
   else
@@ -1882,6 +1943,384 @@ test_uninstall_removes_registered_overlay() {
     pass "uninstall borra el state file"
   else
     fail "uninstall no borró el state file"
+  fi
+
+  TMP_TEST_HOME=""
+  rm -rf "$sandbox"
+}
+
+# ---------------------------------------------------------------------------
+# Uninstall: the state file is the only source of truth.
+#
+# The uninstall used to resolve the binary prefix from the ENVIRONMENT
+# (FORGE_OPENCODE_BIN_DIR) and `rm -rf` it: with a divergent variable it
+# deleted an unrelated directory (with the user's content) and left the real
+# binary installed. These cases pin the state-authoritative contract:
+#
+#   * the recorded `dir`, `config_file` and `binary` are the only paths that
+#     may be touched, whatever the environment says;
+#   * an incomplete or malformed record fails closed: nothing is removed and
+#     the state survives for a safe retry;
+#   * without a valid state the uninstall is an informed no-op.
+# ---------------------------------------------------------------------------
+
+test_second_uninstall_without_state_is_informed_noop() {
+  echo ""
+  echo "--- test_second_uninstall_without_state_is_informed_noop"
+
+  local sandbox home fixture_repo state alt_dir env_dir env_bin
+  local install_rc=0 first_rc=0 second_rc=0
+  local env_dir_before env_bin_before
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/uninstall-second.XXXXXX")"
+  home="$sandbox/home"
+  TMP_TEST_HOME="$home"
+  mkdir -p "$home"
+  fixture_repo="$(create_repo_fixture "$sandbox/repo")"
+  create_fake_opencode "$home"
+  alt_dir="$sandbox/registered-overlay"
+  state="$home/.forge-state.json"
+  env_dir="$sandbox/environment-overlay"
+  env_bin="$sandbox/environment-binary-prefix"
+
+  install_opencode_fixture "$home" "$fixture_repo" OPENCODE_CONFIG_DIR="$alt_dir" \
+    > "$sandbox/install.out" 2>&1 || install_rc=$?
+  assert_equal "install de referencia para la segunda desinstalación termina correctamente" "0" "$install_rc"
+
+  if [ "$install_rc" -ne 0 ]; then
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+
+  first_rc=0
+  run_isolated "$home" bash "$fixture_repo/install.sh" uninstall \
+    > "$sandbox/uninstall-first.out" 2>&1 || first_rc=$?
+  assert_equal "la primera desinstalación sale 0" "0" "$first_rc"
+
+  if [ ! -f "$state" ]; then
+    pass "la primera desinstalación borra el state file"
+  else
+    fail "la primera desinstalación no borró el state file"
+  fi
+
+  # Sentinels: the environment points at paths that do NOT belong to Forge.
+  # A second uninstall has nothing to do, so it must not even look at them.
+  make_env_sentinel "$env_dir" "environment-overlay"
+  make_env_sentinel "$env_bin" "environment-binary-prefix"
+  env_dir_before="$(snapshot_tree "$env_dir")"
+  env_bin_before="$(snapshot_tree "$env_bin")"
+
+  second_rc=0
+  run_isolated "$home" OPENCODE_CONFIG_DIR="$env_dir" OPENCODE_CONFIG="$env_dir/opencode.jsonc" \
+    FORGE_OPENCODE_BIN_DIR="$env_bin" \
+    bash "$fixture_repo/install.sh" uninstall > "$sandbox/uninstall-second.out" 2>&1 || second_rc=$?
+
+  assert_equal "la segunda desinstalación (sin state) sale 0" "0" "$second_rc"
+  assert_contains "la segunda desinstalación informa de que no hay state" \
+    "nada que desinstalar (state file no encontrado)" "$sandbox/uninstall-second.out"
+  assert_contains "la segunda desinstalación declara que no inspeccionó ninguna ruta" \
+    "no se ha inspeccionado ni modificado ninguna ruta" "$sandbox/uninstall-second.out"
+
+  # The sentinels must be intact byte a byte: nothing was inspected, nothing
+  # was created, nothing was removed.
+  assert_equal "la segunda desinstalación no toca el overlay del entorno" \
+    "$env_dir_before" "$(snapshot_tree "$env_dir")"
+  assert_equal "la segunda desinstalación no toca el prefijo binario del entorno" \
+    "$env_bin_before" "$(snapshot_tree "$env_bin")"
+
+  if [ -f "$env_dir/marker.txt" ] && [ -f "$env_bin/marker.txt" ]; then
+    pass "la segunda desinstalación conserva los marcadores ambientales"
+  else
+    fail "la segunda desinstalación borró los marcadores ambientales"
+  fi
+
+  TMP_TEST_HOME=""
+  rm -rf "$sandbox"
+}
+
+test_uninstall_with_user_residue_does_not_report_todo_ok() {
+  echo ""
+  echo "--- test_uninstall_with_user_residue_does_not_report_todo_ok"
+
+  local sandbox home fixture_repo alt_dir residue uninstall_rc=0
+  local residue_sha_before residue_sha_after
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/uninstall-residue.XXXXXX")"
+  home="$sandbox/home"
+  TMP_TEST_HOME="$home"
+  mkdir -p "$home"
+  fixture_repo="$(create_repo_fixture "$sandbox/repo")"
+  create_fake_opencode "$home"
+  alt_dir="$sandbox/registered-overlay"
+
+  install_opencode_fixture "$home" "$fixture_repo" OPENCODE_CONFIG_DIR="$alt_dir" \
+    > "$sandbox/install.out" 2>&1 || uninstall_rc=$?
+  assert_equal "install de referencia para los restos del usuario termina correctamente" "0" "$uninstall_rc"
+
+  if [ "$uninstall_rc" -ne 0 ]; then
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+
+  # Files the user put in the overlay: Forge does not own them and must not
+  # delete them.
+  printf 'notas del usuario\n' > "$alt_dir/notas-del-usuario.md"
+  mkdir -p "$alt_dir/agents"
+  printf 'agente del usuario\n' > "$alt_dir/agents/mi-agente.md"
+  residue="$alt_dir/notas-del-usuario.md"
+  residue_sha_before="$(sha256sum "$residue" | cut -d' ' -f1 || true)"
+
+  uninstall_rc=0
+  run_isolated "$home" bash "$fixture_repo/install.sh" uninstall \
+    > "$sandbox/uninstall.out" 2>&1 || uninstall_rc=$?
+  assert_equal "uninstall con restos del usuario sale 0" "0" "$uninstall_rc"
+
+  if [ -f "$residue" ] && [ -f "$alt_dir/agents/mi-agente.md" ]; then
+    pass "uninstall preserva los ficheros del usuario"
+  else
+    fail "uninstall borró ficheros del usuario"
+  fi
+
+  residue_sha_after="$(sha256sum "$residue" | cut -d' ' -f1 || true)"
+  assert_equal "uninstall no modifica el contenido del fichero del usuario" \
+    "$residue_sha_before" "$residue_sha_after"
+
+  assert_contains "el resumen avisa de los ficheros del usuario conservados" \
+    "OpenCode conserva ficheros del usuario" "$sandbox/uninstall.out"
+  assert_contains "el resumen lista las notas del usuario conservadas" \
+    "notas-del-usuario.md" "$sandbox/uninstall.out"
+  assert_contains "el resumen lista el agente del usuario conservado" \
+    "mi-agente.md" "$sandbox/uninstall.out"
+  assert_not_contains "el resumen no dice 'Todo OK' con restos del usuario" \
+    "Todo OK" "$sandbox/uninstall.out"
+
+  TMP_TEST_HOME=""
+  rm -rf "$sandbox"
+}
+
+test_uninstall_without_binary_in_state_fails_closed() {
+  echo ""
+  echo "--- test_uninstall_without_binary_in_state_fails_closed"
+
+  local sandbox home fixture_repo state alt_dir env_bin install_rc=0 uninstall_rc=0
+  local state_sha_before state_sha_after
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/uninstall-no-binary.XXXXXX")"
+  home="$sandbox/home"
+  TMP_TEST_HOME="$home"
+  mkdir -p "$home"
+  fixture_repo="$(create_repo_fixture "$sandbox/repo")"
+  create_fake_opencode "$home"
+  alt_dir="$sandbox/registered-overlay"
+  state="$home/.forge-state.json"
+  env_bin="$sandbox/environment-binary-prefix"
+
+  install_opencode_fixture "$home" "$fixture_repo" OPENCODE_CONFIG_DIR="$alt_dir" \
+    > "$sandbox/install.out" 2>&1 || install_rc=$?
+  assert_equal "install de referencia sin 'binary' termina correctamente" "0" "$install_rc"
+
+  if [ "$install_rc" -ne 0 ]; then
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+
+  # A legacy state without the 'binary' field cannot be migrated reliably:
+  # guessing its prefix could delete an unrelated installation.
+  jq '(.targets_manifest[] | select(.name == "opencode")) |= del(.binary)' \
+    "$state" > "$sandbox/state.no-binary.json"
+  mv "$sandbox/state.no-binary.json" "$state"
+  assert_equal "el manifest sin 'binary' no registra el campo binary" "" \
+    "$(manifest_opencode_value "$state" binary)"
+
+  make_env_sentinel "$env_bin" "environment-binary-prefix"
+  state_sha_before="$(sha256sum "$state" | cut -d' ' -f1 || true)"
+
+  uninstall_rc=0
+  run_isolated "$home" FORGE_OPENCODE_BIN_DIR="$env_bin" \
+    bash "$fixture_repo/install.sh" uninstall > "$sandbox/uninstall.out" 2>&1 || uninstall_rc=$?
+
+  assert_equal "uninstall con state sin 'binary' falla cerrado con exit 1" "1" "$uninstall_rc"
+  assert_contains "el diagnóstico explica que falta el campo 'binary'" \
+    "no registra el campo 'binary'" "$sandbox/uninstall.out"
+  assert_contains "el diagnóstico recuerda que el state se conserva" \
+    "el state se conserva para un reintento seguro" "$sandbox/uninstall.out"
+
+  if [ -x "$home/.local/share/forge/opencode-v2/node_modules/.bin/opencode" ]; then
+    pass "uninstall fail-closed no borra el prefijo binario registrado"
+  else
+    fail "uninstall fail-closed borró el prefijo binario registrado"
+  fi
+
+  if [ -f "$alt_dir/opencode.jsonc" ] && [ -f "$alt_dir/agents/senior.md" ]; then
+    pass "uninstall fail-closed no borra el overlay registrado"
+  else
+    fail "uninstall fail-closed borró el overlay registrado"
+  fi
+
+  if [ -f "$env_bin/marker.txt" ]; then
+    pass "uninstall fail-closed no recurre al prefijo binario del entorno"
+  else
+    fail "uninstall fail-closed recurró al prefijo binario del entorno"
+  fi
+
+  if [ -f "$state" ]; then
+    pass "uninstall fail-closed conserva el state file"
+  else
+    fail "uninstall fail-closed borró el state file"
+  fi
+
+  state_sha_after="$(sha256sum "$state" | cut -d' ' -f1 || true)"
+  assert_equal "uninstall fail-closed no reescribe el state file" \
+    "$state_sha_before" "$state_sha_after"
+
+  TMP_TEST_HOME=""
+  rm -rf "$sandbox"
+}
+
+test_uninstall_with_malformed_binary_fails_closed() {
+  echo ""
+  echo "--- test_uninstall_with_malformed_binary_fails_closed"
+
+  local sandbox home fixture_repo state alt_dir env_bin install_rc=0 uninstall_rc=0
+  local state_sha_before state_sha_after bad_binary expected_message variant=0
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/uninstall-bad-binary.XXXXXX")"
+  home="$sandbox/home"
+  TMP_TEST_HOME="$home"
+  mkdir -p "$home"
+  fixture_repo="$(create_repo_fixture "$sandbox/repo")"
+  create_fake_opencode "$home"
+  alt_dir="$sandbox/registered-overlay"
+  state="$home/.forge-state.json"
+  env_bin="$sandbox/environment-binary-prefix"
+
+  install_opencode_fixture "$home" "$fixture_repo" OPENCODE_CONFIG_DIR="$alt_dir" \
+    > "$sandbox/install.out" 2>&1 || install_rc=$?
+  assert_equal "install de referencia con 'binary' malformado termina correctamente" "0" "$install_rc"
+
+  if [ "$install_rc" -ne 0 ]; then
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+
+  make_env_sentinel "$env_bin" "environment-binary-prefix"
+
+  # Every malformed value fails closed: nothing is removed and the state
+  # survives. The value is never taken from the environment.
+  while IFS='|' read -r bad_binary expected_message; do
+    [ -n "$bad_binary" ] || continue
+    variant=$(( variant + 1 ))
+
+    jq --arg binary "$bad_binary" \
+      '(.targets_manifest[] | select(.name == "opencode")).binary = $binary' \
+      "$state" > "$sandbox/state.bad-binary.json"
+    mv "$sandbox/state.bad-binary.json" "$state"
+    state_sha_before="$(sha256sum "$state" | cut -d' ' -f1 || true)"
+
+    uninstall_rc=0
+    run_isolated "$home" FORGE_OPENCODE_BIN_DIR="$env_bin" \
+      bash "$fixture_repo/install.sh" uninstall \
+      > "$sandbox/uninstall-$variant.out" 2>&1 || uninstall_rc=$?
+
+    assert_equal "uninstall con 'binary' malformado ($bad_binary) falla cerrado con exit 1" \
+      "1" "$uninstall_rc"
+    assert_contains "el diagnóstico explica el 'binary' malformado ($bad_binary)" \
+      "$expected_message" "$sandbox/uninstall-$variant.out"
+    assert_contains "el diagnóstico recuerda que el state se conserva ($bad_binary)" \
+      "el state se conserva para un reintento seguro" "$sandbox/uninstall-$variant.out"
+
+    if [ -x "$home/.local/share/forge/opencode-v2/node_modules/.bin/opencode" ]; then
+      pass "uninstall fail-closed no borra el prefijo binario registrado ($bad_binary)"
+    else
+      fail "uninstall fail-closed borró el prefijo binario registrado ($bad_binary)"
+    fi
+
+    if [ -f "$alt_dir/opencode.jsonc" ] && [ -f "$alt_dir/agents/senior.md" ]; then
+      pass "uninstall fail-closed no borra el overlay registrado ($bad_binary)"
+    else
+      fail "uninstall fail-closed borró el overlay registrado ($bad_binary)"
+    fi
+
+    if [ -f "$env_bin/marker.txt" ]; then
+      pass "uninstall fail-closed no recurre al prefijo binario del entorno ($bad_binary)"
+    else
+      fail "uninstall fail-closed recurró al prefijo binario del entorno ($bad_binary)"
+    fi
+
+    if [ -f "$state" ]; then
+      pass "uninstall fail-closed conserva el state file ($bad_binary)"
+    else
+      fail "uninstall fail-closed borró el state file ($bad_binary)"
+    fi
+
+    state_sha_after="$(sha256sum "$state" | cut -d' ' -f1 || true)"
+    assert_equal "uninstall fail-closed no reescribe el state file ($bad_binary)" \
+      "$state_sha_before" "$state_sha_after"
+  done <<EOF
+/opt/opencode/bin/opencode|no termina en /node_modules/.bin/opencode
+relative/node_modules/.bin/opencode|no es una ruta absoluta
+/node_modules/.bin/opencode|no permite obtener un prefijo binario seguro
+EOF
+
+  TMP_TEST_HOME=""
+  rm -rf "$sandbox"
+}
+
+test_uninstall_failure_preserves_state() {
+  echo ""
+  echo "--- test_uninstall_failure_preserves_state"
+
+  local sandbox home fixture_repo state alt_dir install_rc=0 uninstall_rc=0
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/uninstall-failure.XXXXXX")"
+  home="$sandbox/home"
+  TMP_TEST_HOME="$home"
+  mkdir -p "$home"
+  fixture_repo="$(create_repo_fixture "$sandbox/repo")"
+  create_fake_opencode "$home"
+  alt_dir="$sandbox/registered-overlay"
+  state="$home/.forge-state.json"
+
+  install_opencode_fixture "$home" "$fixture_repo" OPENCODE_CONFIG_DIR="$alt_dir" \
+    > "$sandbox/install.out" 2>&1 || install_rc=$?
+  assert_equal "install de referencia para el fallo del desinstalador termina correctamente" "0" "$install_rc"
+
+  if [ "$install_rc" -ne 0 ]; then
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+
+  # A real failure of the uninstaller: the disposable checkout gets a
+  # uninstaller that always fails.
+  cat > "$fixture_repo/open-code/uninstall-opencode.sh" <<'STUB_EOF'
+#!/usr/bin/env bash
+echo "[forge-opencode] ERROR: fallo simulado del desinstalador" >&2
+exit 7
+STUB_EOF
+
+  uninstall_rc=0
+  run_isolated "$home" bash "$fixture_repo/install.sh" uninstall \
+    > "$sandbox/uninstall.out" 2>&1 || uninstall_rc=$?
+
+  if [ "$uninstall_rc" -ne 0 ]; then
+    pass "uninstall propaga el fallo del desinstalador con exit distinto de cero ($uninstall_rc)"
+  else
+    fail "uninstall enmascaró el fallo del desinstalador (exit 0)"
+  fi
+
+  assert_contains "el diagnóstico explica que el desinstalador falló" \
+    "el desinstalador de OpenCode falló" "$sandbox/uninstall.out"
+
+  if [ -f "$state" ]; then
+    pass "uninstall fallido conserva el state file para un reintento seguro"
+  else
+    fail "uninstall fallido borró el state file"
+  fi
+
+  if [ -f "$alt_dir/opencode.jsonc" ]; then
+    pass "uninstall fallido conserva el overlay registrado"
+  else
+    fail "uninstall fallido borró el overlay registrado"
   fi
 
   TMP_TEST_HOME=""
@@ -2035,6 +2474,9 @@ test_manifest_records_opencode_paths_for_both_target() {
     "$alt_dir" "$(manifest_opencode_value "$state" dir)"
   assert_equal "manifest opencode de target=both registra config_file" \
     "$alt_dir/opencode.jsonc" "$(manifest_opencode_value "$state" config_file)"
+  assert_equal "manifest opencode de target=both registra el binario pinado" \
+    "$home/.local/share/forge/opencode-v2/node_modules/.bin/opencode" \
+    "$(manifest_opencode_value "$state" binary)"
   assert_equal "target=both conserva state_schema 3" "3" "$(jq -r '.state_schema' "$state")"
 
   TMP_TEST_HOME=""
@@ -2072,7 +2514,7 @@ test_legacy_manifest_without_config_file() {
 
   assert_equal "el manifest legacy no contiene config_file" "" \
     "$(manifest_opencode_value "$state" config_file)"
-  state_sha_before="$(sha256sum "$state" | cut -d' ' -f1)"
+  state_sha_before="$(sha256sum "$state" | cut -d' ' -f1 || true)"
   state_mtime_before="$(stat -c '%y' "$state")"
 
   run_isolated "$home" OPENCODE_CONFIG="$other_config" \
@@ -2088,7 +2530,7 @@ test_legacy_manifest_without_config_file() {
     fail "status no validó el fallback <dir>/opencode.jsonc"
   fi
 
-  state_sha_after="$(sha256sum "$state" | cut -d' ' -f1)"
+  state_sha_after="$(sha256sum "$state" | cut -d' ' -f1 || true)"
   state_mtime_after="$(stat -c '%y' "$state")"
   assert_equal "status legacy no reescribe el state file" \
     "$state_sha_before" "$state_sha_after"
@@ -2189,6 +2631,11 @@ test_launcher_uses_manifest_paths
 test_launcher_enforces_the_v2_isolation
 test_pinned_binary_lives_in_the_isolated_prefix
 test_uninstall_removes_registered_overlay
+test_second_uninstall_without_state_is_informed_noop
+test_uninstall_with_user_residue_does_not_report_todo_ok
+test_uninstall_without_binary_in_state_fails_closed
+test_uninstall_with_malformed_binary_fails_closed
+test_uninstall_failure_preserves_state
 test_manifest_records_opencode_paths_for_both_target
 test_legacy_manifest_without_config_file
 test_update_and_repair_sync_opencode_paths

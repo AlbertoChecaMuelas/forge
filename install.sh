@@ -39,6 +39,7 @@ FORGE_OPENCODE_VERSION="2.1.4"
 FORGE_OPENCODE_PACKAGE="@opencode/cli@2.1.4"
 FORGE_OPENCODE_BIN_DIR="${FORGE_OPENCODE_BIN_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/forge/opencode-v2}"
 FORGE_OPENCODE_BIN="$FORGE_OPENCODE_BIN_DIR/node_modules/.bin/opencode"
+FORGE_OPENCODE_BINARY_SUFFIX="/node_modules/.bin/opencode"
 # OpenCode 1 leftovers that must not survive in the overlay: in OpenCode 1 the
 # Forge plugins were `.js` files inside the overlay `plugins/` folder, while
 # OpenCode 2 uses package directories under `plugin-packages/`.
@@ -56,8 +57,8 @@ forge_warn() {
   local hint="${2:-}"
   echo "[forge] WARN: $msg" >&2
   [ -n "$hint" ] && echo "[forge]   → $hint" >&2
-  eval "_FORGE_WARN_MSG_${_FORGE_WARN_COUNT}=\$msg"
-  eval "_FORGE_WARN_HINT_${_FORGE_WARN_COUNT}=\$hint"
+  printf -v "_FORGE_WARN_MSG_${_FORGE_WARN_COUNT}" '%s' "$msg"
+  printf -v "_FORGE_WARN_HINT_${_FORGE_WARN_COUNT}" '%s' "$hint"
   _FORGE_WARN_COUNT=$(( _FORGE_WARN_COUNT + 1 ))
 }
 
@@ -66,8 +67,8 @@ forge_err() {
   local hint="${2:-}"
   echo "[forge] ERROR: $msg" >&2
   [ -n "$hint" ] && echo "[forge]   → $hint" >&2
-  eval "_FORGE_ERR_MSG_${_FORGE_ERR_COUNT}=\$msg"
-  eval "_FORGE_ERR_HINT_${_FORGE_ERR_COUNT}=\$hint"
+  printf -v "_FORGE_ERR_MSG_${_FORGE_ERR_COUNT}" '%s' "$msg"
+  printf -v "_FORGE_ERR_HINT_${_FORGE_ERR_COUNT}" '%s' "$hint"
   _FORGE_ERR_COUNT=$(( _FORGE_ERR_COUNT + 1 ))
 }
 
@@ -345,6 +346,92 @@ forge_state_has_opencode_target() {
 }
 
 # ---------------------------------------------------------------------------
+# Strict OpenCode uninstall record
+#
+# A full uninstall must not infer an OpenCode path from the environment. The
+# manifest is the only authority: read and validate all three recorded paths
+# before removing anything. The globals below are populated only when the
+# record is complete and safe.
+#
+# The binary layout is deliberately strict. A legacy state without `binary`
+# cannot be migrated reliably: guessing its prefix could delete an unrelated
+# installation. Such a state therefore fails closed and is kept for a safe
+# retry.
+# ---------------------------------------------------------------------------
+_forge_state_opencode_uninstall_record() {
+  local _dir _config _binary _prefix
+
+  _dir="$(jq -r '[.targets_manifest[]? | select(.name == "opencode")][0] | (.dir // empty)' \
+    "$FORGE_STATE_FILE" 2>/dev/null || true)"
+  _config="$(jq -r '[.targets_manifest[]? | select(.name == "opencode")][0] | (.config_file // empty)' \
+    "$FORGE_STATE_FILE" 2>/dev/null || true)"
+  _binary="$(jq -r '[.targets_manifest[]? | select(.name == "opencode")][0] | (.binary // empty)' \
+    "$FORGE_STATE_FILE" 2>/dev/null || true)"
+
+  if [ -z "$_dir" ]; then
+    echo "[forge] ERROR: el state de OpenCode no registra el campo 'dir'" >&2
+    echo "[forge]   → no se ha borrado ninguna ruta; el state se conserva para un reintento seguro" >&2
+    return 1
+  fi
+  case "$_dir" in
+    /*) ;;
+    *)
+      echo "[forge] ERROR: el campo 'dir' registrado no es una ruta absoluta: $_dir" >&2
+      echo "[forge]   → no se ha borrado ninguna ruta; el state se conserva para un reintento seguro" >&2
+      return 1
+      ;;
+  esac
+
+  if [ -z "$_config" ]; then
+    echo "[forge] ERROR: el state de OpenCode no registra el campo 'config_file'" >&2
+    echo "[forge]   → no se ha borrado ninguna ruta; el state se conserva para un reintento seguro" >&2
+    return 1
+  fi
+  case "$_config" in
+    /*) ;;
+    *)
+      echo "[forge] ERROR: el campo 'config_file' registrado no es una ruta absoluta: $_config" >&2
+      echo "[forge]   → no se ha borrado ninguna ruta; el state se conserva para un reintento seguro" >&2
+      return 1
+      ;;
+  esac
+
+  if [ -z "$_binary" ]; then
+    echo "[forge] ERROR: el state de OpenCode no registra el campo 'binary'; no se puede determinar con seguridad el prefijo del binario pinado" >&2
+    echo "[forge]   → no se ha borrado ninguna ruta; el state se conserva para un reintento seguro" >&2
+    return 1
+  fi
+  case "$_binary" in
+    /*) ;;
+    *)
+      echo "[forge] ERROR: el campo 'binary' registrado no es una ruta absoluta: $_binary" >&2
+      echo "[forge]   → no se ha borrado ninguna ruta; el state se conserva para un reintento seguro" >&2
+      return 1
+      ;;
+  esac
+  case "$_binary" in
+    *"$FORGE_OPENCODE_BINARY_SUFFIX") ;;
+    *)
+      echo "[forge] ERROR: el campo 'binary' registrado no termina en $FORGE_OPENCODE_BINARY_SUFFIX: $_binary" >&2
+      echo "[forge]   → no se ha borrado ninguna ruta; el state se conserva para un reintento seguro" >&2
+      return 1
+      ;;
+  esac
+
+  _prefix="${_binary%"$FORGE_OPENCODE_BINARY_SUFFIX"}"
+  if [ -z "$_prefix" ] || [ "$_prefix" = "/" ]; then
+    echo "[forge] ERROR: el campo 'binary' registrado no permite obtener un prefijo binario seguro: $_binary" >&2
+    echo "[forge]   → no se ha borrado ninguna ruta; el state se conserva para un reintento seguro" >&2
+    return 1
+  fi
+
+  FORGE_OPENCODE_UNINSTALL_DIR="$_dir"
+  FORGE_OPENCODE_UNINSTALL_CONFIG="$_config"
+  FORGE_OPENCODE_UNINSTALL_BIN_PREFIX="$_prefix"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Recorded OpenCode overlay paths (the manifest is the source of truth)
 # ---------------------------------------------------------------------------
 # The state file records where the overlay installer really deployed the
@@ -430,18 +517,72 @@ forge_run_opencode_installer() {
 }
 
 forge_run_opencode_uninstaller() {
-  if [ ! -f "$FORGE_OPENCODE_UNINSTALLER" ]; then
-    echo "[forge] WARN: OpenCode uninstall script missing: $FORGE_OPENCODE_UNINSTALLER" >&2
-    echo "[forge]   → elimina manualmente ~/.config/opencode-forge y ~/.local/bin/forge-opencode si existen" >&2
-    return 0
+  local _dir="${1:-}"
+  local _config="${2:-}"
+  local _bin_prefix="${3:-}"
+  local _status_file _rc=0
+  local _residue_dir="" _residue_files="" _line _value
+
+  if [ -z "$_dir" ] || [ -z "$_config" ] || [ -z "$_bin_prefix" ]; then
+    echo "[forge] ERROR: faltan rutas registradas para el desinstalador de OpenCode" >&2
+    return 1
   fi
 
-  # The uninstaller resolves its paths from the environment, so the recorded
-  # location is exported for it: uninstalling must remove what was installed,
-  # not what an ambient variable happens to point at right now.
-  OPENCODE_CONFIG_DIR="$(_forge_state_opencode_dir)" \
-  OPENCODE_CONFIG="$(_forge_state_opencode_config)" \
-    bash "$FORGE_OPENCODE_UNINSTALLER"
+  if [ ! -f "$FORGE_OPENCODE_UNINSTALLER" ]; then
+    echo "[forge] ERROR: OpenCode uninstall script missing: $FORGE_OPENCODE_UNINSTALLER" >&2
+    echo "[forge]   → el state se conserva para permitir un reintento seguro" >&2
+    return 1
+  fi
+
+  _status_file="$(mktemp)"
+
+  # Every path is passed explicitly. The child must never inherit a divergent
+  # OPENCODE_CONFIG_DIR, OPENCODE_CONFIG or FORGE_OPENCODE_BIN_DIR from the
+  # ambient environment: the manifest values are the only authority.
+  env -u OPENCODE_CONFIG_DIR -u OPENCODE_CONFIG -u FORGE_OPENCODE_BIN_DIR \
+    bash "$FORGE_OPENCODE_UNINSTALLER" \
+      --config-dir "$_dir" \
+      --config-file "$_config" \
+      --bin-dir "$_bin_prefix" \
+      --status-file "$_status_file" || _rc=$?
+
+  if [ -s "$_status_file" ]; then
+    while IFS= read -r _line; do
+      case "$_line" in
+        dir=*)
+          _residue_dir="${_line#dir=}"
+          ;;
+        file=*)
+          _value="${_line#file=}"
+          if [ -n "$_residue_files" ]; then
+            _residue_files="${_residue_files}, ${_value}"
+          else
+            _residue_files="$_value"
+          fi
+          ;;
+      esac
+    done < "$_status_file"
+  fi
+  rm -f "$_status_file"
+
+  if [ "$_rc" -ne 0 ]; then
+    echo "[forge] ERROR: el desinstalador de OpenCode falló; el state se conserva para un reintento seguro" >&2
+    return "$_rc"
+  fi
+
+  if [ -n "$_residue_dir" ]; then
+    if [ -n "$_residue_files" ]; then
+      forge_warn \
+        "OpenCode conserva ficheros del usuario en ${_residue_dir/#$HOME/\~}" \
+        "Forge no los borra; quedan: ${_residue_files}"
+    else
+      forge_warn \
+        "OpenCode conserva ficheros del usuario en ${_residue_dir/#$HOME/\~}" \
+        "Forge no borra ficheros ajenos; revisa ese directorio manualmente"
+    fi
+  fi
+
+  return 0
 }
 
 forge_drop_target_from_state() {
@@ -2104,7 +2245,7 @@ cmd_uninstall() {
   done
 
   if [ ! -f "$FORGE_STATE_FILE" ]; then
-    echo "[forge] nada que desinstalar (state file no encontrado)"
+    echo "[forge] nada que desinstalar (state file no encontrado); no se ha inspeccionado ni modificado ninguna ruta"
     return 0
   fi
 
@@ -2301,6 +2442,22 @@ cmd_uninstall() {
     return 0
   fi
 
+  # ---------------------------------------------------------------------------
+  # Full uninstall: capture and validate the complete OpenCode record BEFORE
+  # removing anything. If the record is incomplete or malformed, fail closed:
+  # no path is touched and the state remains available for a safe retry.
+  # ---------------------------------------------------------------------------
+  local _fu_opencode_dir="" _fu_opencode_config=""
+  local _fu_opencode_bin_prefix=""
+  if forge_state_has_opencode_target; then
+    if ! _forge_state_opencode_uninstall_record; then
+      return 1
+    fi
+    _fu_opencode_dir="$FORGE_OPENCODE_UNINSTALL_DIR"
+    _fu_opencode_config="$FORGE_OPENCODE_UNINSTALL_CONFIG"
+    _fu_opencode_bin_prefix="$FORGE_OPENCODE_UNINSTALL_BIN_PREFIX"
+  fi
+
   # --- Remove symlinks ---
   # State stores dests relative to each target dir (install joins
   # "$tgt_dir/$dest_rel" at link time), so resolve them per target here.
@@ -2370,8 +2527,11 @@ cmd_uninstall() {
     echo "[rtk] RTK pineado eliminado (usa --keep-rtk para conservarlo)"
   fi
 
-  if forge_state_has_opencode_target; then
-    forge_run_opencode_uninstaller
+  if [ -n "$_fu_opencode_dir" ]; then
+    forge_run_opencode_uninstaller \
+      "$_fu_opencode_dir" \
+      "$_fu_opencode_config" \
+      "$_fu_opencode_bin_prefix" || return 1
   fi
 
   # --- Restore settings ---
@@ -3435,12 +3595,14 @@ cmd_install() {
     eval "manifest_symlinks_objects_json=\${_TARGET_MANIFEST_SYMLINKS_OBJECTS_${tgt_name}:-[]}"
     eval "manifest_dir=\${_TARGET_MANIFEST_DIR_${tgt_name}:-}"
     settings_merged_bool="true"
-    # The OpenCode overlay records the config file it really wrote: it may
-    # live outside the overlay directory (OPENCODE_CONFIG). The Claude
-    # target has no such field.
-    local manifest_config_file=""
+    # The OpenCode overlay records the config file and pinned binary it
+    # really installed: the config may live outside the overlay directory
+    # (OPENCODE_CONFIG), and the binary prefix is the one the overlay
+    # installer inherited. The Claude target has neither field.
+    local manifest_config_file="" manifest_binary=""
     if [ "$tgt_name" = "opencode" ]; then
       manifest_config_file="$FORGE_OPENCODE_CONFIG"
+      manifest_binary="$FORGE_OPENCODE_BIN"
     fi
     local pre_forge_check="${tgt}/settings.json.pre-forge"
     if [ -f "$pre_forge_check" ]; then
@@ -3501,24 +3663,28 @@ cmd_install() {
         --arg name "$tgt_name" \
         --arg dir "$manifest_dir" \
         --arg config_file "$manifest_config_file" \
+        --arg binary "$manifest_binary" \
         --argjson symlinks "$unioned_symlinks_flat_json" \
         --argjson symlinks_objects "$unioned_symlinks_objects_json" \
         --argjson components "$target_components_json" \
-        --argjson settings_merged "$settings_merged_bool" \
+        --arg settings_merged "$settings_merged_bool" \
         --arg settings_backup "$settings_backup_val" \
         '{name: $name, dir: $dir, symlinks: $symlinks, symlinks_objects: $symlinks_objects, "components": $components, settings_merged: $settings_merged, settings_backup: $settings_backup}
-         + (if $config_file == "" then {} else {config_file: $config_file} end)')"
+         + (if $config_file == "" then {} else {config_file: $config_file} end)
+         + (if $binary == "" then {} else {binary: $binary} end)')"
     else
       manifest_entry="$(jq -n \
         --arg name "$tgt_name" \
         --arg dir "$manifest_dir" \
         --arg config_file "$manifest_config_file" \
+        --arg binary "$manifest_binary" \
         --argjson symlinks "$unioned_symlinks_flat_json" \
         --argjson symlinks_objects "$unioned_symlinks_objects_json" \
         --argjson components "$target_components_json" \
-        --argjson settings_merged "$settings_merged_bool" \
+        --arg settings_merged "$settings_merged_bool" \
         '{name: $name, dir: $dir, symlinks: $symlinks, symlinks_objects: $symlinks_objects, "components": $components, settings_merged: $settings_merged, settings_backup: null}
-         + (if $config_file == "" then {} else {config_file: $config_file} end)')"
+         + (if $config_file == "" then {} else {config_file: $config_file} end)
+         + (if $binary == "" then {} else {binary: $binary} end)')"
     fi
 
     [ "$m" -gt 0 ] && targets_manifest_json="$targets_manifest_json,"

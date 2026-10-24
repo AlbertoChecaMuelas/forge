@@ -191,6 +191,8 @@ bash install.sh uninstall                 # core/statusline symlinks, settings d
 bash install.sh uninstall
 ```
 
+For an OpenCode installation, a full uninstall is **state-authoritative**: before removing anything it reads and validates the recorded `dir`, `config_file` and `binary`, derives the pinned-binary prefix only from that recorded `binary`, and ignores divergent `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG` and `FORGE_OPENCODE_BIN_DIR` values. Without a state file the command is an informed no-op (exit 0): it does not inspect or modify any path, and it does not reconstruct or retry a previous uninstall. A legacy state without `binary`, or one with a malformed `binary`, fails closed: no binary prefix is removed, the diagnostic is explicit, and the state is retained for a safe retry. User files left in the overlay are preserved and listed in the final summary; that summary does not claim `Todo OK` while those files remain.
+
 Flags accepted by `install.sh uninstall`:
 
 | Flag | Description |
@@ -387,7 +389,7 @@ Forge supports [OpenCode](https://opencode.ai) from the same repository. OpenCod
 | `bash install.sh install --target=opencode` | Installs only the isolated OpenCode overlay. |
 | `bash install.sh install --target=both` | Installs the Claude Code target and then the OpenCode overlay. |
 | `bash open-code/install-opencode.sh` | Re-installs only the OpenCode overlay. |
-| `bash open-code/uninstall-opencode.sh` | Removes only the OpenCode overlay. |
+| `bash open-code/uninstall-opencode.sh --config-dir <dir> --config-file <file> --bin-dir <prefix>` | Low-level helper: removes only the explicitly supplied OpenCode paths. Use `bash install.sh uninstall` to use the paths recorded in state. |
 
 **What the installer does**:
 
