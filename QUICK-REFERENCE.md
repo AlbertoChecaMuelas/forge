@@ -104,11 +104,20 @@ Componentes válidos para `--only=` (cualquier combinación separada por comas):
 
 ## OpenCode
 
-Instalar o actualizar OpenCode en el entorno local:
+Instalar o actualizar OpenCode en el entorno local (instala el binario fijado
+`@opencode/cli@2.1.4` en el prefijo aislado de Forge y la overlay):
 
 ```bash
 bash open-code/install-opencode.sh
 ```
+
+El launcher `forge-opencode` ejecuta ese binario fijado por ruta absoluta,
+siempre con `--standalone`, y rechaza `--server` / `--server=<url>`. Forge no
+usa el OpenCode del `PATH` (el que instala Omarchy) ni toca
+`~/.local/share/omarchy/`.
+
+Runbook de la migración a OpenCode 2 (backup, ensayo, cutover y rollback):
+[`open-code/MIGRATION-V2.es.md`](open-code/MIGRATION-V2.es.md).
 
 ---
 
@@ -118,7 +127,7 @@ Hay dos mandos independientes; ambos deben estar sincronizados.
 
 **Mando 1 — `shared/models.yaml`**
 
-Edita el valor `opencode:` del rol deseado con el formato `<proveedor>/<model-id>` y regenera los ficheros de configuración:
+Edita el valor `opencode:` del rol deseado con el formato `<proveedor>/<model-id>` o `<proveedor>/<model-id>#<variante>` y regenera los ficheros de configuración:
 
 ```bash
 bash shared/scripts/generate-agents.sh --target=opencode
@@ -126,14 +135,14 @@ bash shared/scripts/generate-agents.sh --target=opencode
 
 **Mando 2 — `open-code/opencode.jsonc`**
 
-Declara el proveedor una sola vez (endpoint base + `"apiKey": "{env:<VARIABLE>}"`). Las credenciales las carga `open-code/env.sh` mediante `load_forge_token <VARIABLE>` leyendo el fichero `~/.opencode-tokens`.
+Declara el proveedor una sola vez con el dialecto nativo de OpenCode 2: `"providers"` con `"env": ["<VARIABLE>"]` (sin claves en el JSON) y, si hace falta, `"settings"` (endpoint base) y `"models"` con las `"variants"` de razonamiento. Las credenciales las carga `open-code/env.sh` mediante `load_forge_token <VARIABLE>` leyendo el fichero `~/.opencode-tokens`.
 
 **Asignación actual (ejemplo)**
 
-| Rol          | Modelo asignado                        |
-|--------------|----------------------------------------|
-| senior       | `openai/gpt-6.1-sol`                    |
-| tech         | `openai/gpt-6-luna`                     |
+| Rol          | Modelo asignado                          |
+|--------------|------------------------------------------|
+| senior       | `openai/gpt-6.1-sol#high`                |
+| tech         | `openai/gpt-6-luna#xhigh`                |
 | tester       | `minimax-coding-plan/MiniMax-M3.1-Flash` |
 | orchestrator | `minimax-coding-plan/MiniMax-M3.1-Flash` |
 | applier      | `minimax-coding-plan/MiniMax-M3.1-Flash` |
@@ -149,7 +158,7 @@ Los proveedores `openai` y `anthropic` ya están declarados en `open-code/openco
    ANTHROPIC_API_KEY=sk-ant-...    # para Claude vía API
    ```
 
-2. Asigna el modelo a cada rol en `shared/models.yaml` (campo `opencode:`, formato `<proveedor>/<model-id>`). Ejemplos de `model-id`:
+2. Asigna el modelo a cada rol en `shared/models.yaml` (campo `opencode:`, formato `<proveedor>/<model-id>` o `<proveedor>/<model-id>#<variante>`). Ejemplos de `model-id`:
    - OpenAI: `openai/gpt-4.1`, `openai/gpt-4o`, `openai/o3`.
    - Anthropic: `anthropic/claude-sonnet-4`, `anthropic/claude-opus-4`.
 
@@ -163,7 +172,7 @@ Los proveedores `openai` y `anthropic` ya están declarados en `open-code/openco
 
 **Caso B — Quieres añadir un proveedor nuevo compatible con OpenAI**
 
-Solo en este caso declaras un bloque nuevo en `open-code/opencode.jsonc` (como `ollama`): `baseURL` y, si el proveedor lo requiere, `apiKey` y la lista explícita de `models`. Añade además el `load_forge_token <VARIABLE>` correspondiente en `open-code/env.sh` (si el proveedor necesita clave) y luego regenera con el comando del Caso A.
+Solo en este caso declaras un bloque nuevo en `open-code/opencode.jsonc` (como `ollama`), dentro de `"providers"`: `"settings": { "baseURL": ... }`, `"env": ["<VARIABLE>"]` si el proveedor necesita clave, y la lista explícita de `"models"`. Añade además el `load_forge_token <VARIABLE>` correspondiente en `open-code/env.sh` y luego regenera con el comando del Caso A.
 
 ---
 

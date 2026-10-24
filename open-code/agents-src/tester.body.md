@@ -11,7 +11,7 @@ This overlay has no skill-loading mechanism: everything you need is inline below
 ## What you do directly
 
 - Write test files (edit/write). You are the author of all test code.
-- Execute tests for pytest and Angular via bash directly.
+- Execute tests for pytest and Angular via `shell` directly.
 - Read coverage reports: `lcov.info`, `coverage.xml`, `.coverage`, and HTML under `coverage/` or `target/site/jacoco/`.
 
 ## Analysis protocol (in this order)

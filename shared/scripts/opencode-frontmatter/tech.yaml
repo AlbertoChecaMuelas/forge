@@ -1,11 +1,23 @@
-name: tech
 description: "Use when implementation decisions are already made and code must be written or modified: a plan or actionable decision in hand, [T] plan steps, a scoped bug fix, or diagnosing a VERIFIER_FAILED / ESCALATE_TECH. Emits ESCALATE_SENIOR if a design decision is missing. Does not write tests; does not audit."
 mode: subagent
-permission:
-  bash: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  read: allow
-  webfetch: deny
-  write: allow
+# OpenCode 2 permission ruleset: an ORDERED list of {action, resource, effect}.
+# The LAST matching rule wins, so broad rules come first and specific ones after.
+permissions:
+  - action: shell
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: webfetch
+    resource: "*"
+    effect: deny

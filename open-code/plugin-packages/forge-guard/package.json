@@ -1,0 +1,11 @@
+{
+  "name": "forge-guard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Forge branch guard plugin for OpenCode 2 (blocks commits on protected branches).",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js"
+  }
+}

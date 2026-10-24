@@ -27,6 +27,22 @@ FORGE_OPENCODE_DIR="${OPENCODE_CONFIG_DIR:-$FORGE_OPENCODE_DIR_DEFAULT}"
 FORGE_OPENCODE_CONFIG="${OPENCODE_CONFIG:-$FORGE_OPENCODE_DIR/opencode.jsonc}"
 FORGE_OPENCODE_INSTALLER="$FORGE_ROOT/open-code/install-opencode.sh"
 FORGE_OPENCODE_UNINSTALLER="$FORGE_ROOT/open-code/uninstall-opencode.sh"
+# ---------------------------------------------------------------------------
+# Pinned OpenCode build (OpenCode 2).
+#
+# Forge owns its own pinned build in an isolated prefix: the launcher invokes
+# it by ABSOLUTE path, so an Omarchy upgrade that reinstalls OpenCode 1 in
+# the PATH cannot change what Forge runs. Nothing under the Omarchy
+# installation is ever touched.
+# ---------------------------------------------------------------------------
+FORGE_OPENCODE_VERSION="2.1.4"
+FORGE_OPENCODE_PACKAGE="@opencode/cli@2.1.4"
+FORGE_OPENCODE_BIN_DIR="${FORGE_OPENCODE_BIN_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/forge/opencode-v2}"
+FORGE_OPENCODE_BIN="$FORGE_OPENCODE_BIN_DIR/node_modules/.bin/opencode"
+# OpenCode 1 leftovers that must not survive in the overlay: in OpenCode 1 the
+# Forge plugins were `.js` files inside the overlay `plugins/` folder, while
+# OpenCode 2 uses package directories under `plugin-packages/`.
+FORGE_OPENCODE_V1_PLUGIN_DIR="plugins"
 
 # --- summary accumulator ---
 _FORGE_WARN_COUNT=0
@@ -387,10 +403,11 @@ _forge_state_sync_opencode_paths() {
   jq \
     --arg dir "$FORGE_OPENCODE_DIR" \
     --arg config_file "$FORGE_OPENCODE_CONFIG" \
+    --arg binary "$FORGE_OPENCODE_BIN" \
     '
     .targets_manifest = (
       (.targets_manifest // [])
-      | map(if .name == "opencode" then .dir = $dir | .config_file = $config_file else . end)
+      | map(if .name == "opencode" then .dir = $dir | .config_file = $config_file | .binary = $binary else . end)
     )
     ' "$FORGE_STATE_FILE" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 0; }
 
@@ -489,6 +506,7 @@ forge_write_opencode_only_state() {
     --arg installed_at "$base_installed_at" \
     --arg dir "$FORGE_OPENCODE_DIR" \
     --arg config_file "$FORGE_OPENCODE_CONFIG" \
+    --arg binary "$FORGE_OPENCODE_BIN" \
     '
     .version = $version |
     .installed_at = $installed_at |
@@ -498,6 +516,7 @@ forge_write_opencode_only_state() {
       name: "opencode",
       dir: $dir,
       config_file: $config_file,
+      binary: $binary,
       symlinks: [],
       symlinks_objects: [],
       components: [],
@@ -1003,8 +1022,13 @@ _forge_opencode_check_config() {
 }
 
 # _forge_opencode_check_plugins <tgt_dir> <config_file> <hint>
-# The plugin set is never hardcoded: it is the `plugin` field of the installed
-# config, and its presence on disk is decided by plugin-sync.py verify.
+# The plugin set is never hardcoded: it is the `plugins` field of the
+# installed config (OpenCode 2 dialect) and its presence on disk is decided
+# by plugin-sync.py verify, which checks the whole package tree.
+#
+# The two OpenCode 1 leftovers are reported as UNEXPECTED when they reappear:
+# they are not valid OpenCode 2 plugins (a declared plugin path must be a
+# directory) and the V1 observer must not come back.
 _forge_opencode_check_plugins() {
   local _tgt_dir="$1" _hint="$3"
   local _helper="$FORGE_ROOT/open-code/lib/plugin-sync.py"
@@ -1026,46 +1050,43 @@ _forge_opencode_check_plugins() {
   fi
 
   local _declared
-  _declared="$(printf '%s' "$_FORGE_OPENCODE_CONFIG_JSON" | jq -r '[.config.plugin // [] | (if type == "array" then .[] elif type == "string" then . else empty end) | select(type == "string") | select(startswith("./")) | ltrimstr("./")] | .[]' 2>/dev/null || echo '')"
+  _declared="$(printf '%s' "$_FORGE_OPENCODE_CONFIG_JSON" | jq -r '[.config.plugins // [] | (if type == "array" then .[] elif type == "string" then . else empty end) | (if type == "string" then . elif type == "object" then (.package // empty) else empty end) | select(type == "string") | select(startswith("./")) | ltrimstr("./")] | .[]' 2>/dev/null || echo '')"
 
   if [ -z "$_declared" ]; then
     printf 'OK|plugins|opencode.jsonc no declara plugins locales|\n'
-    return 0
-  fi
+  else
+    local _out _rc=0
+    _out="$(PYTHONDONTWRITEBYTECODE=1 python3 "$_helper" verify --config "$_cfg" --source-root "$FORGE_ROOT/open-code" 2>&1)" || _rc=$?
 
-  local _out _rc=0
-  _out="$(PYTHONDONTWRITEBYTECODE=1 python3 "$_helper" verify --config "$_cfg" 2>&1)" || _rc=$?
-
-  local _missing=""
-  if [ "$_rc" -ne 0 ]; then
-    _missing="$(printf '%s\n' "$_out" | sed -n "s/.*config declares plugin '\([^']*\)' but .* is missing on disk.*/\1/p")"
-    if [ -z "$_missing" ]; then
+    if [ "$_rc" -ne 0 ]; then
       local _detail
       _detail="$(printf '%s\n' "$_out" | tr '\n' ' ' | tr -s ' ')"
       _detail="${_detail//|/ }"
-      printf 'INVENTORY ERROR|plugins|no se pudieron verificar los plugins declarados (%s)|%s\n' "$_detail" "$_hint"
-      return 0
+      printf 'MISSING|plugins|los plugins declarados no estan completos en disco (%s)|%s\n' "$_detail" "$_hint"
+    else
+      local _rel
+      while IFS= read -r _rel; do
+        [ -z "$_rel" ] && continue
+        printf 'OK|plugins|%s: declarado por opencode.jsonc y presente en disco|\n' "$_rel"
+      done < <(printf '%s\n' "$_declared")
     fi
   fi
 
-  local _rel _is_missing
-  while IFS= read -r _rel; do
-    [ -z "$_rel" ] && continue
-    _is_missing=0
-    if printf '%s\n' "$_missing" | grep -qxF "$_rel"; then
-      _is_missing=1
-    fi
-    if [ "$_is_missing" -eq 1 ]; then
-      printf 'MISSING|plugins|%s: declarado por opencode.jsonc y ausente en disco|%s\n' "$_rel" "$_hint"
-    else
-      printf 'OK|plugins|%s: declarado por opencode.jsonc y presente en disco|\n' "$_rel"
-    fi
-  done < <(printf '%s\n' "$_declared")
+  # OpenCode 1 leftovers: they must not survive the migration.
+  local _v1_dir="$_tgt_dir/$FORGE_OPENCODE_V1_PLUGIN_DIR"
+  if [ -d "$_v1_dir" ]; then
+    local _v1_file
+    for _v1_file in "$_v1_dir"/forge-*.js; do
+      [ -e "$_v1_file" ] || continue
+      printf 'UNEXPECTED|plugins|%s/%s: plugin de OpenCode 1 presente en el overlay|reinstala el overlay: bash install.sh install --target=opencode\n' "$FORGE_OPENCODE_V1_PLUGIN_DIR" "$(basename "$_v1_file")"
+    done
+  fi
 }
 
 # _forge_opencode_check_launcher <hint>
 # The launcher is the only global artifact of the overlay: it must be a
-# symlink to the launcher script of this checkout.
+# symlink to the launcher script of this checkout, and it must enforce the
+# OpenCode 2 isolation contract (always --standalone, never --server).
 _forge_opencode_check_launcher() {
   local _hint="$1"
   local _launcher="$HOME/.local/bin/forge-opencode"
@@ -1087,6 +1108,98 @@ _forge_opencode_check_launcher() {
     printf 'INVALID|launcher|forge-opencode: el launcher no es un symlink|%s\n' "$_hint"
   else
     printf 'MISSING|launcher|forge-opencode: launcher ausente en ~/.local/bin/forge-opencode|%s\n' "$_hint"
+    return 0
+  fi
+
+  # The launcher source is the contract: it must always request a private
+  # server and must reject an explicit shared one.
+  if [ ! -f "$_expected" ]; then
+    printf 'INVENTORY ERROR|launcher|no se pudo comprobar el contrato del launcher: falta %s|el checkout de forge esta incompleto: revisa open-code/ en el repositorio\n' "$_expected"
+    return 0
+  fi
+
+  if grep -q -- '--standalone' "$_expected"; then
+    printf 'OK|launcher|forge-opencode: aplica --standalone (servidor privado)|\n'
+  else
+    printf 'MISMATCH|launcher|forge-opencode: no aplica --standalone (OpenCode 2 comparte servidor por defecto)|%s\n' "$_hint"
+  fi
+
+  if grep -qE -- '--server\|--server=' "$_expected" && grep -q -- '--server=' "$_expected"; then
+    printf 'OK|launcher|forge-opencode: rechaza --server y --server=<url>|\n'
+  else
+    printf 'MISMATCH|launcher|forge-opencode: no rechaza --server|--server=<url>|%s\n' "$_hint"
+  fi
+}
+
+# _forge_opencode_check_binary <tgt_dir> <hint>
+# Forge runs its own pinned OpenCode build, installed in an isolated prefix
+# and invoked by absolute path. The version must be exactly the pin: a 1.x
+# build (or any other version) means the pinned prefix is broken or was
+# replaced, and the diagnosis must say how to repair it.
+_forge_opencode_check_binary() {
+  local _hint="$1"
+  local _bin="$FORGE_OPENCODE_BIN"
+
+  if [ ! -x "$_bin" ]; then
+    printf 'MISSING|binary|el binario pinado %s (%s) no esta instalado|bash install.sh install --target=opencode\n' "$_bin" "$FORGE_OPENCODE_PACKAGE"
+    return 0
+  fi
+
+  local _version
+  _version="$("$_bin" --version 2>/dev/null | tr -d ' \n' || true)"
+  _version="${_version#opencodev}"
+
+  if [ "$_version" = "$FORGE_OPENCODE_VERSION" ]; then
+    printf 'OK|binary|opencode pinado %s en %s|\n' "$_version" "$_bin"
+    return 0
+  fi
+
+  if [ -z "$_version" ]; then
+    printf 'INVALID|binary|el binario pinado %s no responde a --version|bash install.sh install --target=opencode\n' "$_bin"
+    return 0
+  fi
+
+  printf 'MISMATCH|binary|opencode pinado %s (se esperaba %s)|reinstala el binario pinado %s: bash install.sh install --target=opencode (Omarchy puede haber reintroducido OpenCode 1 en el PATH; forge no lo usa)\n' "$_version" "$FORGE_OPENCODE_VERSION" "$FORGE_OPENCODE_PACKAGE"
+}
+
+# _forge_opencode_check_auth <hint>
+# The auth probe uses the OpenCode 2 JSON contract
+# (`auth list --standalone --format json`) and an ISOLATED database, so a
+# diagnostic run can never migrate the productive data.
+_forge_opencode_check_auth() {
+  local _hint="$1"
+  local _bin="$FORGE_OPENCODE_BIN"
+
+  if [ ! -x "$_bin" ]; then
+    printf 'OK|auth|no se pudo sondear la autenticacion (sin binario pinado)|\n'
+    return 0
+  fi
+
+  local _tmp_db _out
+  _tmp_db="$(mktemp -u "${TMPDIR:-/tmp}/forge-auth-probe.XXXXXX.db")"
+
+  _out="$(OPENCODE_DB="$_tmp_db" "$_bin" auth list --standalone --format json 2>/dev/null || true)"
+  rm -f "$_tmp_db" "$_tmp_db-wal" "$_tmp_db-shm"
+
+  if [ -z "$_out" ]; then
+    printf 'OK|auth|la sonda de autenticacion no devolvio salida (se omite)|\n'
+    return 0
+  fi
+
+  if printf '%s' "$_out" | python3 -c '
+import json
+import sys
+
+raw = sys.stdin.read().strip()
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+raise SystemExit(0 if isinstance(data, list) else 1)
+'; then
+    printf 'OK|auth|auth list --standalone --format json devuelve JSON valido (base aislada)|\n'
+  else
+    printf 'INVALID|auth|auth list --standalone --format json no devuelve un JSON valido|%s\n' "$_hint"
   fi
 }
 
@@ -1102,6 +1215,8 @@ _forge_opencode_diagnostics() {
   _forge_opencode_check_config "$_tgt_dir" "$_cfg" "$_hint"
   _forge_opencode_check_plugins "$_tgt_dir" "$_cfg" "$_hint"
   _forge_opencode_check_launcher "$_hint"
+  _forge_opencode_check_binary "$_hint"
+  _forge_opencode_check_auth "$_hint"
 }
 
 # _forge_opencode_render <mode> <tgt_dir> <config_file>

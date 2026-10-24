@@ -11,5 +11,5 @@
 - Never push on the user's behalf.
 - Keep OpenCode cost reporting aligned with `open-code/COST-PARITY.md`.
 - Use `question` only when one short clarification is required.
-- Branch protection is enforced by `plugins/forge-guard.js`.
+- Branch protection is enforced by the `plugin-packages/forge-guard` plugin.
 - The full orchestration, firewall, and routing doctrine intentionally lives in `open-code/agents-src/orchestrator.body.md` so worker agents do not pay that context cost.

@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- runbook de la migración a OpenCode 2 (`open-code/MIGRATION-V2.md` y `open-code/MIGRATION-V2.es.md`): backup, ensayo con `OPENCODE_DB` sobre una copia, cutover y rollback conjunto
+- installador y desinstalador del overlay V2, que instalan el build fijado `@opencode/cli@2.1.4` en un prefijo aislado de Forge (`~/.local/share/forge/opencode-v2`) y registran esa ruta en el manifest
+
+### Changed
+- la configuración de OpenCode usa el dialecto nativo V2: `plugins`, `providers`, `permissions`, `mcp.servers` y `update: "disable"`; se eliminan `small_model`, `autoupdate` y las API keys del JSON
+- el frontmatter de los agentes usa `permissions` como ruleset ordenado (`bash` -> `shell`, `task` -> `subagent`, escritura -> `edit`) y las reglas específicas (`git push*`, `rm -rf*`) van despues de `shell: *` porque gana la ultima coincidencia
+- los comandos y los cuerpos de los agentes usan el contrato `subagent`/`shell` de OpenCode 2
+- el razonamiento de los modelos OpenAI se expresa como variante (`openai/gpt-6-luna#xhigh`, `openai/gpt-6.1-sol#high`)
+- el launcher `forge-opencode` ejecuta el binario fijado por ruta absoluta, pasa siempre `--standalone` y rechaza `--server`/`--server=<url>`
+- `status` y `doctor` validan el contrato V2: plugins como paquetes, `auth list --standalone --format json` con base aislada, version exacta del binario y aislamiento del launcher
+
+### Removed
+- `open-code/plugins/forge-task-observer.js` y su marcador de error: OpenCode 2 propaga el fallo de un `subagent` a la sesion padre, asi que un observador paralelo solo duplicaria o deformaria ese contrato (no debe reintroducirse)
+- los plugins V1 `plugins/forge-guard.js` y `plugins/forge-task-observer.js`: el guard ahora es el paquete V2 `./plugin-packages/forge-guard`
+
 ## [0.7.5] - 2026-10-24
 
 ### Changed

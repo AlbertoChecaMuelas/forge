@@ -1,55 +1,87 @@
 #!/usr/bin/env bash
+# install-opencode.sh — installs the Forge OpenCode 2 overlay.
+#
+# What it does:
+#   1. installs the PINNED OpenCode build (@opencode/cli@2.1.4) into an
+#      ISOLATED Forge-owned prefix (never globally, never through Omarchy),
+#   2. copies the generated agents, the commands and AGENTS.md into the
+#      overlay directory,
+#   3. installs the declared plugin packages (OpenCode 2 plugin layout),
+#   4. writes the installed opencode.jsonc and verifies the plugin tree,
+#   5. links the `forge-opencode` launcher,
+#   6. validates the stored auth entries with the OpenCode 2 JSON contract.
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode-forge}"
 CONFIG_FILE="${OPENCODE_CONFIG:-$CONFIG_DIR/opencode.jsonc}"
-# Relative paths inside the config (e.g. "./plugins/forge-guard.js") resolve
-# against the directory that holds the config file, so that is where the
-# overlay files must land.
+# Relative paths inside the config (e.g. "./plugin-packages/forge-guard")
+# resolve against the directory that holds the config file, so that is where
+# the overlay files must land.
 CONFIG_ROOT_DIR="$(dirname "$CONFIG_FILE")"
 AGENTS_DIR="$CONFIG_DIR/agents"
-PLUGINS_DIR="$CONFIG_ROOT_DIR/plugins"
 COMMANDS_DIR="$CONFIG_DIR/commands"
 AGENTS_MD_PATH="$CONFIG_DIR/AGENTS.md"
-AUTH_FILE="$HOME/.local/share/opencode/auth.json"
 LAUNCHER_DIR="$HOME/.local/bin"
 LAUNCHER_PATH="$LAUNCHER_DIR/forge-opencode"
 
-check_auth_file() {
-  if [ ! -f "$AUTH_FILE" ]; then
-    return 1
-  fi
+# The pinned OpenCode build lives in a Forge-owned, isolated prefix: Forge
+# never depends on the OpenCode binary that happens to be in the PATH (an
+# Omarchy upgrade may reinstall OpenCode 1 there) and never touches the
+# system installation.
+OPENCODE_VERSION="2.1.4"
+OPENCODE_PACKAGE="@opencode/cli@${OPENCODE_VERSION}"
+FORGE_BIN_DIR="${FORGE_OPENCODE_BIN_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/forge/opencode-v2}"
+FORGE_BIN="$FORGE_BIN_DIR/node_modules/.bin/opencode"
 
-  if command -v jq >/dev/null 2>&1; then
-    jq -e 'type == "object" and ([keys[]] | length > 0)' "$AUTH_FILE" >/dev/null 2>&1
-    return $?
-  fi
+# check_auth_list validates the stored auth entries with the OpenCode 2 JSON
+# contract: `auth list --standalone --format json` must print a JSON array
+# with at least one entry.
+check_auth_list() {
+  local auth_output
 
-  python3 - "$AUTH_FILE" <<'PY'
+  auth_output="$("$FORGE_BIN" auth list --standalone --format json 2>/dev/null || true)"
+
+  printf '%s' "$auth_output" | python3 -c '
 import json
 import sys
 
-with open(sys.argv[1], encoding="utf-8") as fh:
-    data = json.load(fh)
-
-if not isinstance(data, dict) or not data:
+raw = sys.stdin.read().strip()
+if not raw:
     raise SystemExit(1)
-PY
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+if not isinstance(data, list):
+    raise SystemExit(1)
+raise SystemExit(0 if len(data) > 0 else 1)
+'
 }
 
-check_auth_command_output() {
-  local auth_output
+install_pinned_opencode() {
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "[forge-opencode] ERROR: npm no esta en PATH; hace falta para instalar $OPENCODE_PACKAGE" >&2
+    return 1
+  fi
 
-  auth_output="$(opencode auth list 2>/dev/null || true)"
-  printf '%s\n' "$auth_output" | grep -qE '● |[1-9][0-9]* credentials'
+  mkdir -p "$FORGE_BIN_DIR"
+  echo "[forge-opencode] instalando $OPENCODE_PACKAGE en ${FORGE_BIN_DIR/#$HOME/\~}"
+  npm install --prefix "$FORGE_BIN_DIR" "$OPENCODE_PACKAGE" >/dev/null
+
+  if [ ! -x "$FORGE_BIN" ]; then
+    echo "[forge-opencode] ERROR: el binario pinado no aparece en $FORGE_BIN" >&2
+    return 1
+  fi
+
+  local installed_version
+  installed_version="$("$FORGE_BIN" --version 2>/dev/null | tr -d ' \n' || true)"
+  if [ "$installed_version" != "opencodev${OPENCODE_VERSION}" ]; then
+    echo "[forge-opencode] ERROR: version inesperada del binario pinado: ${installed_version:-desconocida} (se esperaba $OPENCODE_VERSION)" >&2
+    return 1
+  fi
 }
-
-if ! command -v opencode >/dev/null 2>&1; then
-  echo "[forge-opencode] ERROR: opencode binary not found in PATH" >&2
-  exit 1
-fi
 
 # ----- API key setup (interactive, optional) -----
 
@@ -112,7 +144,7 @@ case "$configure_keys" in
         echo "Valor vacío, key no guardada."
       fi
 
-      printf '¿Deseas añadir otra key? (s/N) '
+      printf "¿Deseas añadir otra key? (s/N) "
       read -r add_another || true
       add_another="${add_another:-N}"
 
@@ -128,7 +160,9 @@ esac
 
 bash "$REPO_ROOT/shared/scripts/generate-agents.sh" --target=opencode
 
-mkdir -p "$AGENTS_DIR" "$PLUGINS_DIR" "$COMMANDS_DIR" "$LAUNCHER_DIR"
+install_pinned_opencode
+
+mkdir -p "$AGENTS_DIR" "$COMMANDS_DIR" "$LAUNCHER_DIR"
 
 for role in applier senior tech tester orchestrator; do
   dest="$AGENTS_DIR/${role}.md"
@@ -142,9 +176,10 @@ for cmd in create-plan execute-plan review create-pr pr-description update-chang
   cp "$REPO_ROOT/open-code/commands/${cmd}.md" "$dest"
 done
 
-# Plugins are derived from the `plugin` field of the source config instead of
+# Plugins are derived from the `plugins` field of the source config instead of
 # being hardcoded here: a plugin declared in the config but missing on disk
-# disables its feature silently, so the list is never duplicated.
+# disables its feature silently, so the list is never duplicated. OpenCode 2
+# plugin packages are directories, so the whole tree is installed.
 python3 "$SCRIPT_DIR/lib/plugin-sync.py" sync \
   --config "$REPO_ROOT/open-code/opencode.jsonc" \
   --source-root "$REPO_ROOT/open-code" \
@@ -171,7 +206,9 @@ PY
 # The installed config must never reference a plugin that is not on disk:
 # OpenCode does not report the failure, so the overlay would be silently
 # incomplete. Verify the installed config against the installed files.
-python3 "$SCRIPT_DIR/lib/plugin-sync.py" verify --config "$CONFIG_FILE"
+python3 "$SCRIPT_DIR/lib/plugin-sync.py" verify \
+  --config "$CONFIG_FILE" \
+  --source-root "$REPO_ROOT/open-code"
 
 chmod +x "$REPO_ROOT/open-code/forge-opencode.sh"
 # Launcher stays a symlink: it runs in the user shell and exec's opencode before any
@@ -186,8 +223,8 @@ fi
 
 if [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo "[forge-opencode] auth detected from environment or env.sh"
-elif check_auth_command_output || check_auth_file; then
-  echo "[forge-opencode] auth detected from opencode credentials"
+elif check_auth_list; then
+  echo "[forge-opencode] auth detected from the opencode auth list"
 else
   echo "[forge-opencode] ERROR: no usable OpenCode auth found" >&2
   echo "[forge-opencode]   -> run 'opencode auth login' or export OPENAI_API_KEY/ANTHROPIC_API_KEY" >&2
@@ -195,4 +232,5 @@ else
 fi
 
 echo "[forge-opencode] installed overlay in ${CONFIG_DIR/#$HOME/\~}"
+echo "[forge-opencode] pinned binary: ${FORGE_BIN/#$HOME/\~} ($OPENCODE_PACKAGE)"
 echo "[forge-opencode] launcher available at ${LAUNCHER_PATH/#$HOME/\~}"
