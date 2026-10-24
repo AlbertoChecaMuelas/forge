@@ -16,6 +16,9 @@ All notable changes to this project will be documented in this file.
 - el launcher `forge-opencode` ejecuta el binario fijado por ruta absoluta, pasa siempre `--standalone` y rechaza `--server`/`--server=<url>`
 - `status` y `doctor` validan el contrato V2: plugins como paquetes, `auth list --standalone --format json` con base aislada, version exacta del binario y aislamiento del launcher
 
+### Fixed
+- uninstall state-authoritative y fail-closed
+
 ### Removed
 - `open-code/plugins/forge-task-observer.js` y su marcador de error: OpenCode 2 propaga el fallo de un `subagent` a la sesion padre, asi que un observador paralelo solo duplicaria o deformaria ese contrato (no debe reintroducirse)
 - los plugins V1 `plugins/forge-guard.js` y `plugins/forge-task-observer.js`: el guard ahora es el paquete V2 `./plugin-packages/forge-guard`
