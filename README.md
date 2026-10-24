@@ -191,6 +191,8 @@ bash install.sh uninstall                 # core/statusline symlinks, settings d
 bash install.sh uninstall
 ```
 
+For an OpenCode installation, a full uninstall is **state-authoritative**: before removing anything it reads and validates the recorded `dir`, `config_file` and `binary`, derives the pinned-binary prefix only from that recorded `binary`, and ignores divergent `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG` and `FORGE_OPENCODE_BIN_DIR` values. Without a state file the command is an informed no-op (exit 0): it does not inspect or modify any path, and it does not reconstruct or retry a previous uninstall. A legacy state without `binary`, or one with a malformed `binary`, fails closed: no binary prefix is removed, the diagnostic is explicit, and the state is retained for a safe retry. User files left in the overlay are preserved and listed in the final summary; that summary does not claim `Todo OK` while those files remain.
+
 Flags accepted by `install.sh uninstall`:
 
 | Flag | Description |
@@ -387,25 +389,31 @@ Forge supports [OpenCode](https://opencode.ai) from the same repository. OpenCod
 | `bash install.sh install --target=opencode` | Installs only the isolated OpenCode overlay. |
 | `bash install.sh install --target=both` | Installs the Claude Code target and then the OpenCode overlay. |
 | `bash open-code/install-opencode.sh` | Re-installs only the OpenCode overlay. |
-| `bash open-code/uninstall-opencode.sh` | Removes only the OpenCode overlay. |
+| `bash open-code/uninstall-opencode.sh --config-dir <dir> --config-file <file> --bin-dir <prefix>` | Low-level helper: removes only the explicitly supplied OpenCode paths. Use `bash install.sh uninstall` to use the paths recorded in state. |
 
 **What the installer does**:
 
-1. Requires `opencode` on `PATH`.
+1. Installs the **pinned** OpenCode 2 build (`@opencode/cli@2.1.4`) into an **isolated Forge-owned prefix** (`~/.local/share/forge/opencode-v2` by default, `$FORGE_OPENCODE_BIN_DIR` to override). It is never installed globally and never replaces the OpenCode build that Omarchy manages in your `PATH`, so an Omarchy upgrade cannot break Forge.
 2. Regenerates the 5 OpenCode agents.
-3. Installs an isolated overlay under `~/.config/opencode-forge/` (or under `$OPENCODE_CONFIG_DIR` when set) instead of touching the user's global OpenCode config, and records the effective overlay and config paths in the state file.
-4. Copies the generated agents, `AGENTS.md`, and every plugin declared in `opencode.jsonc` (`plugins/forge-guard.js`, `plugins/forge-task-observer.js`) into that isolated overlay. The plugin list is derived from the config, never duplicated in the installer, and the install fails if a declared plugin is missing on disk.
+3. Installs an isolated overlay under `~/.config/opencode-forge/` (or under `$OPENCODE_CONFIG_DIR` when set) instead of touching the user's global OpenCode config, and records the effective overlay, config and pinned-binary paths in the state file.
+4. Copies the generated agents, `AGENTS.md`, and every plugin package declared in `opencode.jsonc` (`./plugin-packages/forge-guard`) into that isolated overlay. The plugin list is derived from the config, never duplicated in the installer, and the install fails if a declared plugin package is missing on disk. The OpenCode 1 plugin files left in `plugins/` are purged during the upgrade.
 5. Copies `open-code/opencode.jsonc` into the isolated overlay and rewrites the `AGENTS.md` instruction path.
-6. Installs a separate launcher at `~/.local/bin/forge-opencode` that exports the recorded `OPENCODE_CONFIG_DIR` and `OPENCODE_CONFIG` before running the real `opencode` binary, warning when the exported environment points elsewhere.
-7. Verifies that either OpenCode credentials already exist or token-based auth is available via `open-code/env.sh`.
+6. Installs a separate launcher at `~/.local/bin/forge-opencode` that exports the recorded `OPENCODE_CONFIG_DIR` and `OPENCODE_CONFIG`, runs the **pinned binary by absolute path**, always requests a private server with `--standalone` (OpenCode 2 shares a background server by default) and rejects `--server` / `--server=<url>` before OpenCode starts. The flag is inserted right after the subcommand, because that is where the OpenCode 2 CLI accepts it; the leaf subcommands that do not offer it (`plugin`, `mcp`, `debug`, `service`) run inside the CLI process and never attach to the shared server, so the launcher omits it for them.
+7. Verifies the credentials with the OpenCode 2 JSON contract (`opencode auth list --standalone --format json`), falling back to token-based auth from `open-code/env.sh`.
 
-The installer is idempotent and does not modify `~/.config/opencode/`, `.bashrc`, `.zshrc`, or `config.fish`.
+The installer is idempotent and does not modify `~/.config/opencode/`, `~/.local/share/omarchy/`, `.bashrc`, `.zshrc`, or `config.fish`.
 
 ### Requirements
 
-- OpenCode installed ([https://opencode.ai](https://opencode.ai)).
+- `npm` (used to install the pinned `@opencode/cli@2.1.4` into the isolated prefix).
 - `jq` (auto-installed via `brew` if unavailable; requires Homebrew).
 - `python3` as a fallback if `jq` cannot be installed.
+
+### OpenCode 2 notes
+
+- The configuration, the agent frontmatter and the commands use the **native OpenCode 2 dialect**: `plugins`, `providers`, `permissions` (an ordered ruleset where the last matching rule wins), the `shell` and `subagent` tools, `mcp.servers`, and model variants written as `provider/model#variant`.
+- Forge manages its own pinned OpenCode build. The OpenCode binary in your `PATH` (the one Omarchy installs) is **not** used by Forge: `forge-opencode` always runs the pinned build by absolute path. `status`/`doctor` report a mismatch when the pinned build is missing or has a version other than `2.1.4`.
+- The OpenCode 1 task-infrastructure observer was **removed**: OpenCode 2 propagates the failure of a `subagent` call to the parent session on its own, so a parallel observer would only duplicate (or distort) that contract.
 
 ### Layout of `open-code/`
 
@@ -413,17 +421,18 @@ The installer is idempotent and does not modify `~/.config/opencode/`, `.bashrc`
 open-code/
   agents/                     Generated OpenCode agents
   agents-src/orchestrator.body.md
-  plugins/                    OpenCode plugins declared in opencode.jsonc
-    forge-guard.js            Branch guard plugin for OpenCode
-    forge-task-observer.js    Task infra failure observer (FORGE_TASK_INFRA_ERROR marker)
+  plugin-packages/            OpenCode 2 plugin packages declared in opencode.jsonc
+    forge-guard/              Branch guard plugin for OpenCode 2
+      index.js                Plugin module (Plugin.define + tool hook)
   lib/plugin-sync.py          Derives the installed plugin overlay from opencode.jsonc
   AGENTS.md                  Minimal shared OpenCode instructions
-  opencode.jsonc             Provider configuration template
+  opencode.jsonc             Provider configuration template (OpenCode 2 dialect)
   env.sh                     POSIX token loader
-  forge-opencode.sh          Wrapper that exports isolated OpenCode config paths
-  install-opencode.sh        Installs the isolated OpenCode overlay
+  forge-opencode.sh          Launcher: pinned binary by absolute path, always --standalone
+  install-opencode.sh        Installs the isolated OpenCode overlay and the pinned build
   uninstall-opencode.sh      Removes the isolated OpenCode overlay
-  SPIKE-RESULTS.md           Delegation/plugin/config-loading/cost findings
+  MIGRATION-V2.md            OpenCode 2 migration runbook (backup, trial, cutover, rollback)
+  SPIKE-RESULTS.md           Delegation/plugin/config-loading/cost findings (OpenCode 1 spike)
   COST-PARITY.md             OpenCode cost-reporting contract
 ```
 
@@ -436,7 +445,7 @@ forge/
   hooks/           PreToolUse hooks (branch-guard.sh, rtk-hook)
   tools/           Release and OpenCode generator scripts
   .claude-plugin/  Plugin manifest (plugin.json) for the Claude Code marketplace
-  open-code/       OpenCode overlay: agents/, agents-src/, plugins/, AGENTS.md and isolated installer
+  open-code/       OpenCode overlay: agents/, agents-src/, plugin-packages/, AGENTS.md and isolated installer
   shared/          Files distributed to every target (CLAUDE-shared.md, statusline, settings)
   lib/             Internal installer scripts (catalog, symlink, json-merge, rtk)
   rtk/             Pinned RTK installer and uninstaller

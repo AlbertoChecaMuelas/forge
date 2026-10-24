@@ -1,30 +1,51 @@
+// Forge branch guard — OpenCode 2 plugin API.
+//
+// Ported from the OpenCode 1 plugin factory (`export default async function
+// forgeGuard()` returning a `tool.execute.before` hook) to the OpenCode 2
+// native plugin contract:
+//
+//   * the module exports a DEFAULT definition with a stable `id` and a
+//     `setup(context)` function (OpenCode 2 rejects anything else with
+//     "Plugin must export a default definition with an id and an effect or
+//     setup function."),
+//   * the veto is registered through `ctx.tool.hook("execute.before", ...)`,
+//   * only the OpenCode 2 `shell` tool is inspected (OpenCode 1 called it
+//     `bash`), and its command lives in `input.command`,
+//   * every Git call runs with an explicit `cwd` taken from
+//     `ctx.location.directory` instead of relying on the process cwd.
+//
+// `@opencode/plugin` and `effect` are provided by the OpenCode host runtime:
+// plugins must NOT ship their own copies of them in `node_modules`.
+
 import { spawnSync } from "node:child_process"
+import { Plugin } from "@opencode/plugin"
 
 const PROTECTED_BRANCHES = new Set(["master", "main", "dev"])
 const warnedMergedRepos = new Set()
 
-function runGit(args) {
+function runGit(args, cwd) {
   return spawnSync("git", args, {
+    cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   })
 }
 
-function currentBranch() {
-  const result = runGit(["symbolic-ref", "--short", "HEAD"])
+function currentBranch(cwd) {
+  const result = runGit(["symbolic-ref", "--short", "HEAD"], cwd)
   if (result.status !== 0) {
     return ""
   }
   return (result.stdout || "").trim()
 }
 
-function defaultBranch() {
-  let result = runGit(["symbolic-ref", "refs/remotes/origin/HEAD"])
+function defaultBranch(cwd) {
+  let result = runGit(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd)
   if (result.status === 0) {
     return (result.stdout || "").trim().replace("refs/remotes/origin/", "")
   }
 
-  result = runGit(["config", "init.defaultBranch"])
+  result = runGit(["config", "init.defaultBranch"], cwd)
   if (result.status === 0) {
     return (result.stdout || "").trim() || "master"
   }
@@ -32,48 +53,34 @@ function defaultBranch() {
   return "master"
 }
 
-function repoRoot() {
-  const result = runGit(["rev-parse", "--show-toplevel"])
+function repoRoot(cwd) {
+  const result = runGit(["rev-parse", "--show-toplevel"], cwd)
   if (result.status !== 0) {
     return ""
   }
   return (result.stdout || "").trim()
 }
 
-function isMerged(defaultBranchName) {
+function isMerged(cwd, defaultBranchName) {
   if (!defaultBranchName) {
     return false
   }
 
-  const verify = runGit(["rev-parse", "--verify", `origin/${defaultBranchName}`])
+  const verify = runGit(["rev-parse", "--verify", `origin/${defaultBranchName}`], cwd)
   if (verify.status !== 0) {
     return false
   }
 
-  const merged = runGit(["merge-base", "--is-ancestor", "HEAD", `origin/${defaultBranchName}`])
+  const merged = runGit(["merge-base", "--is-ancestor", "HEAD", `origin/${defaultBranchName}`], cwd)
   return merged.status === 0
 }
 
-function extractToolName(input, output) {
-  return (
-    input?.tool ||
-    input?.toolName ||
-    input?.name ||
-    output?.tool ||
-    output?.toolName ||
-    ""
-  )
-}
-
-function extractCommand(input, output) {
-  return (
-    output?.args?.command ||
-    output?.command ||
-    input?.args?.command ||
-    input?.command ||
-    input?.input?.command ||
-    ""
-  )
+function extractCommand(input) {
+  if (!input || typeof input !== "object") {
+    return ""
+  }
+  const value = input.command
+  return typeof value === "string" ? value : ""
 }
 
 function isGitCommit(command) {
@@ -110,22 +117,30 @@ function isGitCommit(command) {
   return false
 }
 
-export default async function forgeGuard() {
-  return {
-    "tool.execute.before": async (input, output) => {
+export default Plugin.define({
+  id: "forge-guard",
+  async setup(ctx) {
+    // The session directory is the only Git context the guard uses: the
+    // process cwd of the OpenCode server is not the session cwd.
+    const cwd = ctx.location.directory
+
+    await ctx.tool.hook("execute.before", async (input) => {
       if (process.env.FORGE_BRANCH_GUARD_DISABLE) {
         return
       }
 
-      const toolName = String(extractToolName(input, output)).toLowerCase()
-      const command = extractCommand(input, output)
+      // OpenCode 2 renamed the shell tool: `bash` (v1) -> `shell` (v2).
+      if (input.tool !== "shell") {
+        return
+      }
 
-      if (toolName !== "bash" || !command) {
+      const command = extractCommand(input.input)
+      if (!command) {
         return
       }
 
       if (isGitCommit(command)) {
-        const branch = currentBranch()
+        const branch = currentBranch(cwd)
         if (PROTECTED_BRANCHES.has(branch)) {
           throw new Error(
             `[branch-guard] BLOCKED: commit attempt on protected branch '${branch}'. Create a feature branch first (branch guard).`
@@ -133,21 +148,21 @@ export default async function forgeGuard() {
         }
       }
 
-      const branch = currentBranch()
-      const branchDefault = defaultBranch()
+      const branch = currentBranch(cwd)
+      const branchDefault = defaultBranch(cwd)
       if (!branch || branch === branchDefault) {
         return
       }
 
-      const root = repoRoot()
+      const root = repoRoot(cwd)
       const warningKey = `${root}:${branch}:${branchDefault}`
 
-      if (isMerged(branchDefault) && !warnedMergedRepos.has(warningKey)) {
+      if (isMerged(cwd, branchDefault) && !warnedMergedRepos.has(warningKey)) {
         warnedMergedRepos.add(warningKey)
         console.error(
           `[branch-guard] La rama '${branch}' ya esta mergeada en origin/${branchDefault}. Considera cambiar de rama antes de seguir trabajando.`
         )
       }
-    },
-  }
-}
+    })
+  },
+})

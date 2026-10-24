@@ -3,7 +3,7 @@ description: Executes a multi-step plan from .plans/<slug>.md, delegating [A] st
 agent: orchestrator
 ---
 
-You are running the `/execute-plan` command. Your job is to iterate through the plan step by step, delegate execution to `@applier` (`[A]` steps) or `@tech` (`[T]` steps) via the OpenCode `task` tool, and dispatch a fresh review subagent at checkpoints. Every mutation of the plan file itself (front-matter fields, checkbox flips, the `## Risks verified by reviewer` section) is performed via `bash` — you never use the `edit` or `write` tools on the plan file, because this command runs in the primary orchestrator context, which has `edit: deny` and `write: deny` but `bash` allowed.
+You are running the `/execute-plan` command. Your job is to iterate through the plan step by step, delegate execution to `@applier` (`[A]` steps) or `@tech` (`[T]` steps) via the OpenCode `subagent` tool, and dispatch a fresh review subagent at checkpoints. Every mutation of the plan file itself (front-matter fields, checkbox flips, the `## Risks verified by reviewer` section) is performed via `shell` — you never use the `edit` or `write` tools on the plan file, because this command runs in the primary orchestrator context, which has `edit: deny` and `write: deny` but `shell` allowed.
 
 ## Argument
 
@@ -46,7 +46,7 @@ Both are run inline via `bash -lc "..."`; there is no persistent shell state bet
 ### Step 0 — Resolve plan path
 
 1. If `$ARGUMENTS` is not empty: use that path as the plan file (relative to cwd or absolute).
-2. If `$ARGUMENTS` is empty: resolve `.plans/current` in the current repo (`readlink -f .plans/current` via `bash`).
+2. If `$ARGUMENTS` is empty: resolve `.plans/current` in the current repo (`readlink -f .plans/current` via `shell`).
    - If `.plans/current` does not resolve to a readable file, stop with:
      ```
      No se encontró .plans/current. Ejecuta /create-plan primero para generar un plan.
@@ -73,7 +73,7 @@ If `status == "completed"`: inform the user the plan is already complete and sto
 
 ### Step 2 — Mark as in_progress
 
-If `status != "in_progress"`, via `bash` using the `set_frontmatter` helper:
+If `status != "in_progress"`, via `shell` using the `set_frontmatter` helper:
 
 ```bash
 set_frontmatter "<plan-path>" "status" "in_progress"
@@ -98,7 +98,7 @@ This edit is made to the plan file only (not to the repo — `.plans/` is in `.g
 
 ### Step 4 — Iterative step loop
 
-> **HARD RULE — Step delegation.** `[A]` steps are delegated to `@applier`; `[T]` steps are delegated to `@tech`, both via the OpenCode `task` tool, in isolated invocations. `[A]` steps **MAY** be batched into a single `@applier` invocation under the batch boundary rules below. `[T]` steps are **NEVER** batched. Mixing `[A]` and `[T]` in a single call is forbidden.
+> **HARD RULE — Step delegation.** `[A]` steps are delegated to `@applier`; `[T]` steps are delegated to `@tech`, both via the OpenCode `subagent` tool, in isolated invocations. `[A]` steps **MAY** be batched into a single `@applier` invocation under the batch boundary rules below. `[T]` steps are **NEVER** batched. Mixing `[A]` and `[T]` in a single call is forbidden.
 
 Iterate through the plan's pending steps in order (phase by phase, step by step), starting from `current_phase`/`current_step`. For each pending step, read the full step block from the sub-heading `## Step N.M` inside section `# PHASE N` of the plan and identify its label (`[A]` or `[T]`).
 
@@ -142,7 +142,7 @@ Expected `@applier`/`@tech` invocations: **3** (batch A, step 3.4, batch B) inst
 
 #### If the step is `[A]` (single, via `@applier`)
 
-a. Invoke `@applier` via the `task` tool with the literal instructions from the step: exact path, exact command or diff, shell verifier.
+a. Invoke `@applier` via the `subagent` tool with the literal instructions from the step: exact path, exact command or diff, shell verifier.
 
 b. `@applier` validates (executable-plan mode):
    - That `.plans/current` resolves to the active plan.
@@ -151,19 +151,19 @@ b. `@applier` validates (executable-plan mode):
    - That the instruction matches the plan section.
 
 c. If `@applier` returns `OK`:
-   - Via `bash`: `flip_step "<plan-path>" "N.M"`.
-   - Via `bash`: `set_frontmatter "<plan-path>" "current_phase" "<N>"` and `set_frontmatter "<plan-path>" "current_step" "<next-step>"`.
+   - Via `shell`: `flip_step "<plan-path>" "N.M"`.
+   - Via `shell`: `set_frontmatter "<plan-path>" "current_phase" "<N>"` and `set_frontmatter "<plan-path>" "current_step" "<next-step>"`.
 
 d. If `@applier` returns `BLOCKED` or `VERIFIER_FAILED`:
    - Hand control to `@tech` with the reason for the block for diagnosis.
    - `@tech` fixes and reports back. If `@tech` resolves it, mark the step as completed (same `flip_step` + front-matter update as above).
    - If `@tech` returns `ESCALATE_SENIOR`, invoke `@senior`, wait for resolution, then resume.
 
-e. If the `task` dispatch of `@applier` fails with an infrastructure error (no return code — provider/model/sandbox/network failure, distinct from `BLOCKED`, `VERIFIER_FAILED`, or any other escalation code): stop, surface `Fallo de infraestructura del subagente applier: <error literal>` to the user, no retry, no re-route.
+e. If the `subagent` dispatch of `@applier` fails with an infrastructure error (no return code — provider/model/sandbox/network failure, distinct from `BLOCKED`, `VERIFIER_FAILED`, or any other escalation code): stop, surface `Fallo de infraestructura del subagente applier: <error literal>` to the user, no retry, no re-route.
 
 #### If the dispatched item is a batch (via `@applier`)
 
-a. **Dispatch**: issue a single `task` invocation of `@applier` whose first line is exactly:
+a. **Dispatch**: issue a single `subagent` invocation of `@applier` whose first line is exactly:
    ```
    BATCH MODE: N steps from phase P
    ```
@@ -171,31 +171,32 @@ a. **Dispatch**: issue a single `task` invocation of `@applier` whose first line
 
 b. **On `OK_BATCH: N/N`** (all steps completed):
    - All N checkboxes are already `[x]` — `@applier` flipped them during execution; do not flip them again.
-   - Via `bash`: update `current_phase`/`current_step` in the plan front-matter to the step immediately after the last step in the batch (the next pending step in iteration order).
+   - Via `shell`: update `current_phase`/`current_step` in the plan front-matter to the step immediately after the last step in the batch (the next pending step in iteration order).
    - Reviewer trigger: if the batch's last step closes phase `ceil(P/2)` or the final phase, the normal Step 5/6 flow below handles the reviewer invocation. Batch handling itself is not responsible for this — simply continue the step loop.
 
 c. **On `BLOCKED_BATCH: step N.M — <reason>`** (failure at step `N.M`):
    - Read the plan file to confirm which steps completed before the failure: these are the steps whose checkbox is already `[x]`.
-   - Via `bash`: `set_frontmatter "<plan-path>" "current_step" "N.M"` (the failing step; its checkbox is still `- [ ]`).
+   - Via `shell`: `set_frontmatter "<plan-path>" "current_step" "N.M"` (the failing step; its checkbox is still `- [ ]`).
    - Steps completed before the failure are not re-executed (their `[x]` persists).
    - Pass the failure to `@tech` exactly as in the single-step `BLOCKED`/`VERIFIER_FAILED` flow above: `@tech` diagnoses and fixes, then reports back. If `@tech` resolves it, mark step `N.M` as `[x]` (`flip_step`) and resume the batch algorithm from the next pending step. If `@tech` returns `ESCALATE_SENIOR`, invoke `@senior`, wait for resolution, then resume.
 
-d. If the batch `task` dispatch of `@applier` fails with an infrastructure error (no return code — provider/model/sandbox/network failure, distinct from `OK_BATCH`, `BLOCKED_BATCH`, or any other escalation code): stop, surface `Fallo de infraestructura del subagente applier: <error literal>` to the user, no retry, no re-route.
+d. If the batch `subagent` dispatch of `@applier` fails with an infrastructure error (no return code — provider/model/sandbox/network failure, distinct from `OK_BATCH`, `BLOCKED_BATCH`, or any other escalation code): stop, surface `Fallo de infraestructura del subagente applier: <error literal>` to the user, no retry, no re-route.
 
 #### If the step is `[T]` (via `@tech`)
 
-a. Invoke `@tech` via the `task` tool with the full step block: path(s), responsibilities, success criteria, verifier.
+a. Invoke `@tech` via the `subagent` tool with the full step block: path(s), responsibilities, success criteria, verifier.
 
 b. `@tech` executes the step (may delegate mechanical sub-steps to `@applier` internally).
 
-c. On success, `@tech` reports `OK`. Via `bash`: `flip_step "<plan-path>" "N.M"` and update `current_phase`/`current_step` in the front-matter.
+c. On success, `@tech` reports `OK`. Via `shell`: `flip_step "<plan-path>" "N.M"` and update `current_phase`/`current_step` in the front-matter.
 
 d. If `@tech` returns `ESCALATE_SENIOR`: invoke `@senior` with the reason. `@senior` resolves or modifies the plan. Resume.
 
-e. If the `task` dispatch of `@tech` fails with an infrastructure error (no return code — provider/model/sandbox/network failure, distinct from `ESCALATE_SENIOR` or any other escalation code):
-   - Before surfacing the error, check the stderr/log output captured during the `@tech` dispatch for a line matching `FORGE_TASK_INFRA_ERROR: <JSON>` (emitted by the `forge-task-observer.js` plugin on `session.error`), and correlate it to the failed dispatch via the marker's `taskCallID` field. If a matching marker is found, parse the JSON and build `<error literal>` from its structured detail (`name`, `message`, and — when present — `statusCode`, `isRetryable`, or `streamAborted`) instead of an empty placeholder.
-   - Stop and surface `Fallo de infraestructura del subagente tech: <error literal>` to the user, no retry, no re-route. If no matching marker is found (e.g. the plugin was not loaded, or the failure predates any `session.error` event for that session), fall back to whatever literal detail the `task` dispatch itself provides, but never fabricate detail that was not actually observed.
-   - Retry-detection note: `RETRY_CONFIG` for the `task` tool is `NONE` — OpenCode's automatic retry (full prompt reinjection with no session continuity) is not configurable via `opencode.jsonc` or any currently published OpenCode config key, so it cannot be disabled or tuned from this command. Because of this, if the orchestrator notices signs consistent with a silent runtime auto-retry (e.g. an anomalous toolcall count or turn duration for the `@tech` dispatch, or a second `task` dispatch carrying the same prompt in short succession), it MUST explicitly warn the user that a silent auto-retry of the runtime likely occurred — reinjecting the prompt with no session continuity — so the user can judge whether the resulting state is trustworthy.
+e. If the `subagent` dispatch of `@tech` fails with an infrastructure error (no return code — provider/model/sandbox/network failure, distinct from `ESCALATE_SENIOR` or any other escalation code):
+   - OpenCode 2 propagates the failure of a `subagent` call to the parent session as a structured tool error: build `<error literal>` from the error the `subagent` call itself returned (its message plus any structured detail it carries), never from an empty placeholder.
+   - Stop and surface `Fallo de infraestructura del subagente tech: <error literal>` to the user, no retry, no re-route. If the dispatch exposes no detail at all, fall back to whatever literal detail the `subagent` dispatch itself provides, but never fabricate detail that was not actually observed.
+   - There is NO parallel error observer plugin: the OpenCode 1 task-infra observer was removed on purpose because OpenCode 2 already surfaces the subagent error in the parent session. Do not reintroduce such an observer and do not look for any legacy infra-error marker — it does not exist any more.
+   - Retry-detection note: `RETRY_CONFIG` for the `subagent` tool is `NONE` — OpenCode's automatic retry (full prompt reinjection with no session continuity) is not configurable via `opencode.jsonc` or any currently published OpenCode config key, so it cannot be disabled or tuned from this command. Because of this, if the orchestrator notices signs consistent with a silent runtime auto-retry (e.g. an anomalous toolcall count or turn duration for the `@tech` dispatch, or a second `subagent` dispatch carrying the same prompt in short succession), it MUST explicitly warn the user that a silent auto-retry of the runtime likely occurred — reinjecting the prompt with no session continuity — so the user can judge whether the resulting state is trustworthy.
 
 ### Step 5 — Review checkpoint trigger
 
@@ -217,8 +218,8 @@ e. If the `task` dispatch of `@tech` fails with an infrastructure error (no retu
    - `{HEAD_SHA}`: `git rev-parse HEAD`.
    - `{PLAN_STEP}`: the plan path + the phase range covered (`phases 1..ceil(P/2)` for midpoint, `phases ceil(P/2)+1..P` for final, `phases 1..P` when `P <= 3`).
    - `{SCOPE}`: the checkpoint criteria from the plan's `CHECKPOINT` section (or `full diff of the range`).
-2. Dispatch via the `task` tool a FRESH, standalone reviewer invocation whose ENTIRE prompt is the filled template — do not paraphrase or trim it. This invocation is NOT attached to the `@applier`, `@tech`, or `@senior` identity: it is a generic task subagent, and the `task` call for it explicitly sets `model: openai/gpt-6.1-sol` for that invocation only (overriding whatever the default subagent model would be). Its mandate is reviewing only; it never carries planning, implementation, or mechanical-execution intent.
-3. After processing the return, via `bash`: `set_frontmatter "<plan-path>" "last_review_sha" "<HEAD_SHA>"` (used as the base of the incremental re-review of this checkpoint and as `{BASE_SHA}` for the next checkpoint's initial review). Also `set_frontmatter "<plan-path>" "review_rounds" "0"` when opening a new checkpoint (reset to 0 each time this command moves to a new checkpoint). `review_rounds` starts at 0 and is incremented to 1 when a re-review is fired; the incremental re-review reads only `last_review_sha..HEAD` (not the full checkpoint range).
+2. Dispatch via the `subagent` tool a FRESH, standalone reviewer invocation whose ENTIRE prompt is the filled template — do not paraphrase or trim it. This invocation is NOT attached to the `@applier`, `@tech`, or `@senior` identity: it is a generic subagent, and the `subagent` call for it explicitly sets `model: openai/gpt-6.1-sol` for that invocation only (overriding whatever the default subagent model would be). Its mandate is reviewing only; it never carries planning, implementation, or mechanical-execution intent.
+3. After processing the return, via `shell`: `set_frontmatter "<plan-path>" "last_review_sha" "<HEAD_SHA>"` (used as the base of the incremental re-review of this checkpoint and as `{BASE_SHA}` for the next checkpoint's initial review). Also `set_frontmatter "<plan-path>" "review_rounds" "0"` when opening a new checkpoint (reset to 0 each time this command moves to a new checkpoint). `review_rounds` starts at 0 and is incremented to 1 when a re-review is fired; the incremental re-review reads only `last_review_sha..HEAD` (not the full checkpoint range).
 4. If the dispatch fails with an infrastructure error (no return code): stop, surface `Fallo de infraestructura del subagente review: <error literal>` to the user, no retry, no re-route.
 
 **Processing the review return**:
@@ -226,20 +227,20 @@ e. If the `task` dispatch of `@tech` fails with an infrastructure error (no retu
 - `OK_PHASE: <summary>`:
   - If the reviewer's output contains a `VERIFIED: <item1>; <item2>; ...` line immediately before `OK_PHASE:`:
     1. Parse the list: split by `;`, trim whitespace from each item, discard empty entries.
-    2. Ensure the `## Risks verified by reviewer` section exists at the end of the plan body (after `# ROLLBACK`). If it does not exist, create it via `bash` (`printf`/`cat >>`) with a header and a preceding blank line.
-    3. For the **intermediate reviewer** (midpoint), each item `X` is added as `- X (phases 1..ceil(P/2))`. For the **final reviewer**, each item `X` is added as `- X (phases ceil(P/2)+1..P)`. For **P <= 3** (final-only), each item `X` is added as `- X (phases 1..P)`. Add the bullet ONLY if that exact line does not already exist in the section (idempotency: check with `grep -qF -- "<bullet-line>" "<plan-path>"` before appending via `bash`).
+    2. Ensure the `## Risks verified by reviewer` section exists at the end of the plan body (after `# ROLLBACK`). If it does not exist, create it via `shell` (`printf`/`cat >>`) with a header and a preceding blank line.
+    3. For the **intermediate reviewer** (midpoint), each item `X` is added as `- X (phases 1..ceil(P/2))`. For the **final reviewer**, each item `X` is added as `- X (phases ceil(P/2)+1..P)`. For **P <= 3** (final-only), each item `X` is added as `- X (phases 1..P)`. Add the bullet ONLY if that exact line does not already exist in the section (idempotency: check with `grep -qF -- "<bullet-line>" "<plan-path>"` before appending via `shell`).
     4. This edit is made to the plan file (`.plans/<slug>.md`), NOT committed (`.plans/` is in `.gitignore`).
-  - Mark the CHECKPOINT as approved via `bash`: `sed -i "s|^- \[ \] Approved by reviewer|- [x] Approved by reviewer|" "<plan-path>"` (only one CHECKPOINT block is pending `[ ]` at a time, so a plain replace targets the right one).
+  - Mark the CHECKPOINT as approved via `shell`: `sed -i "s|^- \[ \] Approved by reviewer|- [x] Approved by reviewer|" "<plan-path>"` (only one CHECKPOINT block is pending `[ ]` at a time, so a plain replace targets the right one).
   - Continue with the next step in the plan.
 
 - `FINDINGS_PHASE: impl=N, design=M[, coverage=K]`:
-  - **Batch-fix first**: group ALL impl findings (N > 0) into a single batch `task` delegation to `@tech`, and ALL design findings (M > 0) into a single batch `task` delegation to `@senior`. Coverage findings (K > 0) are NOT fixed here — they are recorded and routed to `@tester` after the plan closes (Step 7). Do NOT re-invoke the reviewer per individual finding.
+  - **Batch-fix first**: group ALL impl findings (N > 0) into a single batch `subagent` delegation to `@tech`, and ALL design findings (M > 0) into a single batch `subagent` delegation to `@senior`. Coverage findings (K > 0) are NOT fixed here — they are recorded and routed to `@tester` after the plan closes (Step 7). Do NOT re-invoke the reviewer per individual finding.
   - **After the batch of fixes is applied**, check `review_rounds`:
-    - If `review_rounds < 1`: via `bash`, `set_frontmatter "<plan-path>" "review_rounds" "1"`, then fire EXACTLY ONE re-review. This re-review reads only the incremental diff `last_review_sha..HEAD` (not the full checkpoint range) and uses the SAME dispatch mechanism as above but with `model: minimax-coding-plan/MiniMax-M3.1-Flash` (the repo's configured faster OpenCode Flash-tier model, per `shared/models.yaml`) instead of `openai/gpt-6.1-sol` — the diff is small and bounded, so a lighter model suffices.
+    - If `review_rounds < 1`: via `shell`, `set_frontmatter "<plan-path>" "review_rounds" "1"`, then fire EXACTLY ONE re-review. This re-review reads only the incremental diff `last_review_sha..HEAD` (not the full checkpoint range) and uses the SAME dispatch mechanism as above but with `model: minimax-coding-plan/MiniMax-M3.1-Flash` (the repo's configured faster OpenCode Flash-tier model, per `shared/models.yaml`) instead of `openai/gpt-6.1-sol` — the diff is small and bounded, so a lighter model suffices.
       - If the re-review returns `OK_PHASE`: apply the standard `OK_PHASE` processing (mark CHECKPOINT approved, persist any `VERIFIED` bullets), then close the checkpoint.
       - If the re-review returns `FINDINGS_PHASE`: since `review_rounds` is now 1, fall directly to the `review_rounds == 1` branch below.
     - If `review_rounds` is already 1 and the re-review returns another `FINDINGS_PHASE`: do NOT fire another re-review. Record the remaining findings as follow-ups (impl→`@tech`, design→`@senior`, coverage→`@tester`) and close the checkpoint.
-  - **On closing the checkpoint**: via `bash`, `set_frontmatter "<plan-path>" "last_review_sha" "<HEAD_SHA>"` and `set_frontmatter "<plan-path>" "review_rounds" "0"` for the next checkpoint.
+  - **On closing the checkpoint**: via `shell`, `set_frontmatter "<plan-path>" "last_review_sha" "<HEAD_SHA>"` and `set_frontmatter "<plan-path>" "review_rounds" "0"` for the next checkpoint.
 
 - `BLOCKED_REVIEW: <reason>`:
   - Escalate to the user with the reason. Do not advance until the user resolves it.
@@ -248,12 +249,12 @@ e. If the `task` dispatch of `@tech` fails with an infrastructure error (no retu
 
 When all steps are marked `[x]`:
 
-1. Run the `# GLOBAL VERIFIER` of the plan (the shell commands in that block) via `bash`.
+1. Run the `# GLOBAL VERIFIER` of the plan (the shell commands in that block) via `shell`.
 2. Dispatch the mandatory **final** review (same dispatch mechanism as Step 5, `model: openai/gpt-6.1-sol`, NOT `@applier`/`@tech`/`@senior`) on the accumulated diff (`git diff master...HEAD` or `git diff <base>...HEAD`), passing the phase range:
    - `P >= 4`: `phases ceil(P/2)+1..P` (the second half, not already covered by the midpoint reviewer).
    - `P <= 3`: `phases 1..P` (the full plan, since no intermediate reviewer was run).
 3. If the review returns `OK_PHASE` or `OK`:
-   - Via `bash`: `set_frontmatter "<plan-path>" "status" "completed"` and `set_frontmatter "<plan-path>" "completed_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`.
+   - Via `shell`: `set_frontmatter "<plan-path>" "status" "completed"` and `set_frontmatter "<plan-path>" "completed_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`.
 4. If `FINDINGS_PHASE`: apply the standard correction loop from Step 5 (impl → `@tech`, design → `@senior`, coverage → `@tester` follow-up), including the `review_rounds` cap.
 
 > **Intermediate phase closes** (phases other than `ceil(P/2)` and the final phase) do **not** trigger a review. Continue to the next phase without any dispatch.
@@ -270,7 +271,7 @@ Report, in Spanish:
 
 ## Progress tracking in the plan
 
-- The plan is edited **at each step** to reflect progress (checkboxes `[ ]` → `[x]` and front-matter), always via `bash` (`set_frontmatter`/`flip_step`/`sed`/`awk`/`printf`), never via the `edit` or `write` tools.
+- The plan is edited **at each step** to reflect progress (checkboxes `[ ]` → `[x]` and front-matter), always via `shell` (`set_frontmatter`/`flip_step`/`sed`/`awk`/`printf`), never via the `edit` or `write` tools.
 - **The plan is NOT committed** (`.plans/` is in `.gitignore` of the target repo).
 - The symlink `.plans/current` is kept pointing to the active plan throughout execution.
 - If the user pauses execution: state is persisted in the front-matter (`current_phase`, `current_step`). When `/execute-plan` is re-launched (no args), it reads `.plans/current` and resumes from where it left off.
@@ -287,20 +288,20 @@ The reviewer trigger is phase-count-based (not commit-based), so resuming after 
 
 ## Hard constraints
 
-- **NEVER `git push`**: blocked by forge settings (the orchestrator's `bash` permission asks for confirmation on `git push*`; never bypass that).
+- **NEVER `git push`**: blocked by forge settings (the orchestrator's `shell` permission asks for confirmation on `git push*`; never bypass that).
 - **NEVER merge or close PRs**: that is the user's responsibility.
 - **NEVER touch files outside the active step's scope**: `@applier` enforces this; `@tech` has the judgment to flag it.
 - **Maximum ONE re-review per checkpoint** (midpoint and final), backed by the `review_rounds` counter in the plan front-matter; findings that persist after that re-review pass through as follow-ups (impl→`@tech`, design→`@senior`, coverage→`@tester`), not as an additional re-review.
 - **Never include the plan as a commit file**: never `git add .plans/`.
 - **Bounded batching of `[A]` steps**: `/execute-plan` MAY batch consecutive `[A]` steps within the same phase into a single `@applier` invocation, subject to the boundary rules in the batch construction algorithm above (Step 4). `[T]` steps are always delegated individually to `@tech`. Mixed `[A]`+`[T]` batches are forbidden. The audit trail (one checkbox flip per step, one commit per committing step) is preserved by `@applier` executing the batch sequentially.
-- **Safe deletion pattern in `[A]` steps**: any plan step that deletes files or symlinks using shell variables MUST use a guarded pattern, never raw `rm -f "$VAR/..."` with bare interpolation. Accepted patterns: for symlinks: `[ -L "$path" ] && rm "$path"`; for files in a known dir: `[ -n "$DEST" ] && [ -f "$DEST/$name" ] && rm "$DEST/$name"`. Reason: an unguarded raw `rm -f` with interpolated variables is exactly the class of destructive command that requires manual confirmation under the sandboxed `bash` permission model, and would break automated execution of the plan.
-- **All plan-file mutations go through `bash`**: this command's own `edit`/`write` tools are denied by the orchestrator's permission profile; every front-matter update and checkbox flip is a `sed`/`awk`/`printf` invocation via `bash`, never a direct file edit.
+- **Safe deletion pattern in `[A]` steps**: any plan step that deletes files or symlinks using shell variables MUST use a guarded pattern, never raw `rm -f "$VAR/..."` with bare interpolation. Accepted patterns: for symlinks: `[ -L "$path" ] && rm "$path"`; for files in a known dir: `[ -n "$DEST" ] && [ -f "$DEST/$name" ] && rm "$DEST/$name"`. Reason: an unguarded raw `rm -f` with interpolated variables is exactly the class of destructive command that requires manual confirmation under the sandboxed `shell` permission model, and would break automated execution of the plan.
+- **All plan-file mutations go through `shell`**: this command's own `edit`/`write` tools are denied by the orchestrator's permission profile; every front-matter update and checkbox flip is a `sed`/`awk`/`printf` invocation via `shell`, never a direct file edit.
 
 ## How to invoke subagents
 
-- Use the `task` tool. For `[A]` steps and batches: target `@applier`. For `[T]` steps, diagnosis of `BLOCKED`/`VERIFIER_FAILED`, and correction of impl findings: target `@tech`. For `ESCALATE_SENIOR` resolution and correction of design findings: target `@senior`. For coverage-finding follow-ups after the plan closes: target `@tester`.
+- Use the `subagent` tool. For `[A]` steps and batches: target `@applier`. For `[T]` steps, diagnosis of `BLOCKED`/`VERIFIER_FAILED`, and correction of impl findings: target `@tech`. For `ESCALATE_SENIOR` resolution and correction of design findings: target `@senior`. For coverage-finding follow-ups after the plan closes: target `@tester`.
 - Always pass the necessary context: current step, plan path, literal instructions (for `@applier`), success criteria (for `@tech`).
-- **Review checkpoints do not use a resident agent.** Fill the review template below with `{BASE_SHA}`, `{HEAD_SHA}`, `{PLAN_STEP}` (plan path + phase range, e.g. "phases 1..ceil(P/2)") and `{SCOPE}`, and dispatch via `task` a FRESH, standalone reviewer invocation whose entire prompt is the filled template, explicitly overriding the model for that call to `openai/gpt-6.1-sol` (or `minimax-coding-plan/MiniMax-M3.1-Flash`, the faster OpenCode Flash-tier model, for the single allowed re-review, see Step 5). Do not name `@applier`, `@tech`, or `@senior` as the target of a review-checkpoint dispatch. If the dispatch fails with an infrastructure error (no return code), apply the standard infra-failure protocol: stop, surface `Fallo de infraestructura del subagente review: <error>` to the user, no retry, no re-route.
+- **Review checkpoints do not use a resident agent.** Fill the review template below with `{BASE_SHA}`, `{HEAD_SHA}`, `{PLAN_STEP}` (plan path + phase range, e.g. "phases 1..ceil(P/2)") and `{SCOPE}`, and dispatch via `subagent` a FRESH, standalone reviewer invocation whose entire prompt is the filled template, explicitly overriding the model for that call to `openai/gpt-6.1-sol` (or `minimax-coding-plan/MiniMax-M3.1-Flash`, the faster OpenCode Flash-tier model, for the single allowed re-review, see Step 5). Do not name `@applier`, `@tech`, or `@senior` as the target of a review-checkpoint dispatch. If the dispatch fails with an infrastructure error (no return code), apply the standard infra-failure protocol: stop, surface `Fallo de infraestructura del subagente review: <error>` to the user, no retry, no re-route.
 
 ## Review template
 

@@ -15,14 +15,14 @@ when it chains into this one) is responsible for saving the returned Markdown to
 
 ## Flow
 
-1. Resolve the base ref via `bash`:
+1. Resolve the base ref via `shell`:
    - If `$ARGUMENTS` gives a base ref, use it as `{BASE}`.
    - Otherwise, default `{BASE}` to `master`. Resolve `{BASE_SHA}=$(git merge-base master HEAD)`,
      falling back to `main` (`{BASE_SHA}=$(git merge-base main HEAD)`, `{BASE}=main`) if `master`
      does not exist in this repository.
 2. Fill the prompt template below, substituting before dispatch:
    - `{BASE}` -> the resolved base branch name (e.g. `master` or `main`).
-3. Dispatch a FRESH subagent via the `task` tool whose entire prompt is the filled template,
+3. Dispatch a FRESH subagent via the `subagent` tool whose entire prompt is the filled template,
    explicitly overriding the model for that call to `minimax-coding-plan/MiniMax-M3.1-Flash`.
    Do not paraphrase or trim the template.
 4. Relay the subagent's output to the caller VERBATIM — no surrounding commentary, no
@@ -44,27 +44,27 @@ The base branch is `{BASE}`.
 
 ## Current branch
 
-Run via `bash`: `git rev-parse --abbrev-ref HEAD`
+Run via `shell`: `git rev-parse --abbrev-ref HEAD`
 
 ## Pre-resolved stamp and change-type checkboxes (authoritative — copy verbatim; forge repositories only)
 
-Run via `bash`: `ROOT="$(git rev-parse --show-toplevel)"; if [ -f "$ROOT/tools/release/bump-version.sh" ] && grep -q '^FORGE_VERSION=' "$ROOT/install.sh" 2>/dev/null; then forge_mode=true; else forge_mode=false; fi; if [ "$forge_mode" = true ]; then bash "$ROOT/tools/release/mr-stamp.sh" --base {BASE}; else echo "N/A (non-forge repository — no stamp, no change-type block)"; fi`
+Run via `shell`: `ROOT="$(git rev-parse --show-toplevel)"; if [ -f "$ROOT/tools/release/bump-version.sh" ] && grep -q '^FORGE_VERSION=' "$ROOT/install.sh" 2>/dev/null; then forge_mode=true; else forge_mode=false; fi; if [ "$forge_mode" = true ]; then bash "$ROOT/tools/release/mr-stamp.sh" --base {BASE}; else echo "N/A (non-forge repository — no stamp, no change-type block)"; fi`
 
 ## Included commits (subjects and bodies)
 
-Run via `bash`: `git log {BASE}..HEAD --pretty=format:"%h %s%n%b" --no-merges`
+Run via `shell`: `git log {BASE}..HEAD --pretty=format:"%h %s%n%b" --no-merges`
 
 ## Modified files (with statistics)
 
-Run via `bash`: `git diff {BASE}..HEAD --stat`
+Run via `shell`: `git diff {BASE}..HEAD --stat`
 
 ## Full list of changed files
 
-Run via `bash`: `git diff {BASE}..HEAD --name-only`
+Run via `shell`: `git diff {BASE}..HEAD --name-only`
 
 ## Risks verified by reviewer (if any)
 
-Run via `bash`: `if [ -f .plans/current ]; then awk '/^## Risks verified by reviewer/{f=1;next} /^## /{f=0} f && /^- /{print}' .plans/current 2>/dev/null; fi`
+Run via `shell`: `if [ -f .plans/current ]; then awk '/^## Risks verified by reviewer/{f=1;next} /^## /{f=0} f && /^- /{print}' .plans/current 2>/dev/null; fi`
 
 ---
 

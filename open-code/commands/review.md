@@ -3,7 +3,7 @@ description: "Ad-hoc audit of an already-produced change: fills the forge review
 agent: orchestrator
 ---
 
-You are running the `/review` command. You orchestrate an ad-hoc review of an ALREADY-PRODUCED change: a commit range, a branch vs its base, a PR, or the working tree. You do NOT analyze the application from scratch. Initial-assessment requests ("audita la app", "análisis de seguridad", "revisa el código", "ponlo al día") belong to `@senior` as prior analysis and may emit `REQUIRES_PLAN`; this command is only for auditing a concrete, already-produced diff. Every git lookup here is performed via `bash`; you never use `edit` or `write`.
+You are running the `/review` command. You orchestrate an ad-hoc review of an ALREADY-PRODUCED change: a commit range, a branch vs its base, a PR, or the working tree. You do NOT analyze the application from scratch. Initial-assessment requests ("audita la app", "análisis de seguridad", "revisa el código", "ponlo al día") belong to `@senior` as prior analysis and may emit `REQUIRES_PLAN`; this command is only for auditing a concrete, already-produced diff. Every git lookup here is performed via `shell`; you never use `edit` or `write`.
 
 ## Argument
 
@@ -11,7 +11,7 @@ You are running the `/review` command. You orchestrate an ad-hoc review of an AL
 
 ## Flow
 
-1. Resolve the audit range via `bash`:
+1. Resolve the audit range via `shell`:
    - Both refs given -> `BASE_SHA=$(git rev-parse $1)`, `HEAD_SHA=$(git rev-parse $2)`.
    - Only the first ref given -> `BASE_SHA=$(git rev-parse $1)`, `HEAD_SHA=$(git rev-parse HEAD)`.
    - No arguments -> `BASE_SHA=$(git merge-base master HEAD)` (fall back to `main` if `master` does not exist), `HEAD_SHA=$(git rev-parse HEAD)`. If BASE equals HEAD and the working tree is dirty, the commit range is empty: set `WORKING_TREE_MODE=true` for step 2.
@@ -19,7 +19,7 @@ You are running the `/review` command. You orchestrate an ad-hoc review of an AL
    - `{BASE_SHA}` / `{HEAD_SHA}` -> the resolved SHAs.
    - `{PLAN_STEP}` -> `ad-hoc audit (no plan)` unless the user names a plan or phase.
    - `{SCOPE}` -> if `WORKING_TREE_MODE` is set, prepend this literal directive: "The commit range {BASE_SHA}..{HEAD_SHA} is empty (BASE equals HEAD). Ignore it and instead audit the uncommitted working tree via `git diff` and `git diff --staged`." followed by the user's focus if given, else `full diff of the working tree`. Otherwise (normal case) -> the user's focus if given (e.g. "security"), else `full diff of the range`.
-3. Dispatch a FRESH review subagent via the `task` tool whose entire prompt is the filled template, explicitly overriding the model for that call to `openai/gpt-6.1-sol`. Do not name `@applier`, `@tech`, or `@senior` as the target of this dispatch, and do not paraphrase or trim the template.
+3. Dispatch a FRESH review subagent via the `subagent` tool whose entire prompt is the filled template, explicitly overriding the model for that call to `openai/gpt-6.1-sol`. Do not name `@applier`, `@tech`, or `@senior` as the target of this dispatch, and do not paraphrase or trim the template.
 4. Relay the subagent's review body to the user (any surrounding announcement in Spanish). The last line will be exactly one of `OK_PHASE:`, `FINDINGS_PHASE:` or `BLOCKED_REVIEW:`. Findings route only if the user wants to address them: impl -> `@tech`, design -> `@senior`, coverage -> `@tester`.
 5. If the dispatch itself fails (infrastructure error, no return code): report `Fallo de infraestructura del subagente review: <error>` and stop. Do not retry, do not re-route.
 

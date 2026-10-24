@@ -6,6 +6,17 @@ set -euo pipefail
 FORGE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_SH="$FORGE_ROOT/install.sh"
 
+# Shared isolation helpers: the isolated environment, the fingerprint of the
+# real user files and the fake toolchain.
+# shellcheck source=tests/isolation.sh
+. "$FORGE_ROOT/tests/isolation.sh"
+
+# Fingerprint of the real user files, taken BEFORE any test runs. The suite
+# must leave them untouched: the installer resolves the pinned OpenCode prefix
+# from XDG_DATA_HOME / FORGE_OPENCODE_BIN_DIR, so an unisolated run installs
+# @opencode/cli@2.1.4 in the REAL ~/.local/share/forge/opencode-v2.
+PROTECTED_SNAPSHOT="$(forge_protected_snapshot)"
+
 # ---------------------------------------------------------------------------
 # Test harness
 # ---------------------------------------------------------------------------
@@ -48,14 +59,25 @@ assert_file_not_exists() {
 # ---------------------------------------------------------------------------
 # Isolated runner for the installer.
 #
-# OPENCODE_CONFIG_DIR / OPENCODE_CONFIG are removed on purpose: the overlay
-# installer gives them precedence over HOME, so an inherited real-user config
-# would be rewritten by any command that reaches the OpenCode target.
+# HOME, the XDG directories and the Forge-owned OpenCode prefix are redirected
+# into the sandbox, and the OpenCode config overrides are removed on purpose:
+# the overlay installer gives them precedence over HOME, so an inherited
+# real-user config would be rewritten by any command that reaches the OpenCode
+# target.
+#
+# FORGE_OPENCODE_BIN_DIR matters as much: the pinned OpenCode build is
+# installed there, and without this isolation the installer would download
+# @opencode/cli@2.1.4 into the REAL ~/.local/share/forge/opencode-v2.
+#
+# The fake toolchain is first in PATH so the suite never downloads anything.
 # ---------------------------------------------------------------------------
 run_install() {
   local home="$1"
   shift
-  env -u OPENCODE_CONFIG_DIR -u OPENCODE_CONFIG HOME="$home" "$@"
+
+  forge_make_toolchain "$home/fakebin"
+
+  forge_isolated_env "$home" PATH="$home/fakebin:$PATH" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -201,12 +223,34 @@ test_update_no_show_cost_removes_sentinel
 test_update_show_cost_both_targets
 test_update_show_cost_skips_opencode
 
+# ---------------------------------------------------------------------------
+# Leak guard: the suite must never create the real pinned OpenCode prefix and
+# must never modify the real user files.
+# ---------------------------------------------------------------------------
+check_real_user_untouched() {
+  local rc=0
+
+  if ! forge_assert_no_forge_prefix; then
+    rc=1
+  fi
+  if ! forge_assert_protected_unchanged "$PROTECTED_SNAPSHOT"; then
+    rc=1
+  fi
+
+  return $rc
+}
+
 echo ""
 echo "================================"
 echo " Passed: $PASS_COUNT"
 if [ "$FAIL" -ne 0 ]; then
   echo " FAIL: some tests failed" >&2
   exit 1
-else
-  echo " ALL PASS"
 fi
+
+if ! check_real_user_untouched; then
+  echo " FAIL: the suite touched the real user files" >&2
+  exit 1
+fi
+
+echo " ALL PASS"

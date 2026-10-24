@@ -1,48 +1,52 @@
 {
   "$schema": "https://opencode.ai/config.json",
 
-  // Change per-role model ids in shared/models.yaml and regenerate agents.
+  // OpenCode 2 native dialect. Change per-role model ids in shared/models.yaml
+  // and regenerate agents.
   // This top-level model is the fallback for sessions that do not pick an agent model.
   "default_agent": "orchestrator",
   "model": "minimax-coding-plan/MiniMax-M3.1-Flash",
-  "small_model": "minimax-coding-plan/MiniMax-M3.1-Flash",
+  "update": "disable",
   "instructions": [
     "__FORGE_OPENCODE_AGENTS_MD__"
   ],
-  "plugin": [
-    "./plugins/forge-guard.js", "./plugins/forge-task-observer.js"
+  // The only Forge plugin: the V2 branch guard. It lives in a package
+  // directory because OpenCode 2 requires declared plugin paths to be
+  // directories ("configured plugin path must be a directory").
+  "plugins": [
+    "./plugin-packages/forge-guard"
   ],
   "mcp": {
-    "playwright": {
-      "type": "local",
-      "command": ["npx", "-y", "@playwright/mcp@latest"]
+    "servers": {
+      "playwright": {
+        "type": "local",
+        "command": ["npx", "-y", "@playwright/mcp@0.0.83"]
+      }
     }
   },
-  "provider": {
+  "providers": {
     "openai": {
-      "options": {
-        "apiKey": "{env:OPENAI_API_KEY}"
-      },
+      "env": ["OPENAI_API_KEY"],
       "models": {
-        "gpt-6.1-sol": {
-          "options": {
-            "reasoningEffort": "high"
-          }
-        },
         "gpt-6-luna": {
-          "options": {
-            "reasoningEffort": "xhigh"
-          }
+          "variants": [
+            { "id": "high", "settings": { "reasoningEffort": "high", "reasoningSummary": "auto" } },
+            { "id": "xhigh", "settings": { "reasoningEffort": "xhigh", "reasoningSummary": "auto" } }
+          ]
+        },
+        "gpt-6.1-sol": {
+          "variants": [
+            { "id": "high", "settings": { "reasoningEffort": "high", "reasoningSummary": "auto" } },
+            { "id": "xhigh", "settings": { "reasoningEffort": "xhigh", "reasoningSummary": "auto" } }
+          ]
         }
       }
     },
     "anthropic": {
-      "options": {
-        "apiKey": "{env:ANTHROPIC_API_KEY}"
-      }
+      "env": ["ANTHROPIC_API_KEY"]
     },
     "ollama": {
-      "options": {
+      "settings": {
         "baseURL": "http://127.0.0.1:11434/v1"
       }
     }

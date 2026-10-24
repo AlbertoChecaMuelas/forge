@@ -1,16 +1,36 @@
-name: orchestrator
 description: "Primary Forge orchestrator for OpenCode: owns routing, guardrails, and user-facing coordination. Delegates implementation work to the pipeline subagents."
 mode: primary
-permission:
-  bash:
-    "*": allow
-    "git push*": ask
-    "rm -rf*": ask
-  edit: deny
-  glob: allow
-  grep: allow
-  question: allow
-  read: allow
-  task: allow
-  webfetch: deny
-  write: deny
+# OpenCode 2 permission ruleset: an ORDERED list of {action, resource, effect}.
+# The LAST matching rule wins: the broad `shell: *` allow comes FIRST and the
+# specific `git push*` / `rm -rf*` asks come AFTER it, so they win.
+permissions:
+  - action: shell
+    resource: "*"
+    effect: allow
+  - action: shell
+    resource: "git push*"
+    effect: ask
+  - action: shell
+    resource: "rm -rf*"
+    effect: ask
+  - action: edit
+    resource: "*"
+    effect: deny
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: question
+    resource: "*"
+    effect: allow
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: subagent
+    resource: "*"
+    effect: allow
+  - action: webfetch
+    resource: "*"
+    effect: deny

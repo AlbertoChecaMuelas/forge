@@ -5,7 +5,7 @@ agent: orchestrator
 
 You are running the `/create-pr` command. You orchestrate the release flow for the current
 branch: version bump, changelog refresh, release commit, PR description regeneration and `gh`
-PR creation. Every script invocation and git lookup here is performed directly via `bash` —
+PR creation. Every script invocation and git lookup here is performed directly via `shell` —
 this flow is script-driven and deterministic for the git-side operations; you never improvise
 with raw `gh pr create` or REST API calls, and you never push to the remote at any point.
 
@@ -16,7 +16,7 @@ with raw `gh pr create` or REST API calls, and you never push to the remote at a
 
 ## Preconditions
 
-Before starting, verify via `bash`:
+Before starting, verify via `shell`:
 (a) `gh` is on PATH and authenticated (`gh auth status`);
 (b) the repo has an `origin` remote (`git remote get-url origin`);
 (c) the current branch (`git rev-parse --abbrev-ref HEAD`) is not `master`/`main`/`dev`.
@@ -35,7 +35,7 @@ flow resumable.
 
 ### Step 0 — Detect forge mode
 
-Run via `bash`:
+Run via `shell`:
 ```
 ROOT="$(git rev-parse --show-toplevel)"; if [ -f "$ROOT/tools/release/bump-version.sh" ] && grep -q '^FORGE_VERSION=' "$ROOT/install.sh" 2>/dev/null; then forge_mode=true; else forge_mode=false; fi
 ```
@@ -49,7 +49,7 @@ to drive a version bump, a changelog refresh or PR creation, so the flow falls b
 
 ### Step 1 — Compute the version bump
 
-Run via `bash`:
+Run via `shell`:
 ```
 $(git rev-parse --show-toplevel)/tools/release/bump-version.sh --base <base>
 ```
@@ -68,7 +68,7 @@ and stop.
 
 ### Step 2 — Refresh `[Unreleased]` and create the release commit
 
-Run via `bash`:
+Run via `shell`:
 ```
 cd "$(git rev-parse --show-toplevel)/tools/release" && bash update-changelog.sh --branch <base>
 ```
@@ -85,7 +85,7 @@ entries. The section is NOT renamed here — after the PR merges and the tag is 
 If the script exits 2 (bad arguments or base ref does not exist), report the failure to the user
 in Spanish and stop.
 
-Then run via `bash`:
+Then run via `shell`:
 ```
 $(git rev-parse --show-toplevel)/tools/release/commit-release.sh <BUMP> <NEXT>
 ```
@@ -126,22 +126,22 @@ regenerate the PR description from the now-updated history (the release/changelo
 Step 2 is included in the diff range). `/pr-description` never writes files itself — it returns
 the Markdown body VERBATIM to its caller.
 
-Write that returned output VERBATIM to `PR-DESCRIPTION.md` at the repo root via `bash` (e.g.
+Write that returned output VERBATIM to `PR-DESCRIPTION.md` at the repo root via `shell` (e.g.
 using a heredoc, so no paraphrasing or reformatting occurs). `PR-DESCRIPTION.md` is a working
 artifact and must NEVER be committed:
 - Before (or right after) the write, ensure the repo's `.gitignore` contains the line
-  `PR-DESCRIPTION.md`. Check first via `bash`:
+  `PR-DESCRIPTION.md`. Check first via `shell`:
   `grep -q '^PR-DESCRIPTION\.md$' $(git rev-parse --show-toplevel)/.gitignore` — only append the
   line (create the file if missing) when that check fails, so the operation stays idempotent (in
   this repo the line is already present, so this is a no-op here, but the check must still run so
   the same flow works unmodified in other repos).
-- If `git ls-files --error-unmatch PR-DESCRIPTION.md` shows it is tracked, run via `bash`
+- If `git ls-files --error-unmatch PR-DESCRIPTION.md` shows it is tracked, run via `shell`
   `git rm --cached PR-DESCRIPTION.md` so the ignore rule takes effect, and include that deletion
   in the next commit you make.
 
 ### Step 4 — Create the PR
 
-Run via `bash`:
+Run via `shell`:
 ```
 $(git rev-parse --show-toplevel)/tools/release/create-pr.sh --base <base>
 ```
@@ -174,21 +174,21 @@ already detects the same non-forge condition and omits the `mr-stamp.sh` freshne
 `## Tipo de cambio` block. `/pr-description` never writes files itself — it returns the Markdown
 body VERBATIM to its caller.
 
-Write that returned output VERBATIM to `PR-DESCRIPTION.md` at the repo root via `bash` (e.g. using
+Write that returned output VERBATIM to `PR-DESCRIPTION.md` at the repo root via `shell` (e.g. using
 a heredoc with a quoted delimiter such as `<<'EOF'`, so the shell does not expand `$VAR`,
 `$(...)` or backticks inside the LLM-generated Markdown, and so no paraphrasing or reformatting
 occurs). `PR-DESCRIPTION.md` is a working artifact and must NEVER be committed:
 - Before (or right after) the write, ensure the repo's `.gitignore` contains the line
-  `PR-DESCRIPTION.md`. Check first via `bash`:
+  `PR-DESCRIPTION.md`. Check first via `shell`:
   `grep -q '^PR-DESCRIPTION\.md$' $(git rev-parse --show-toplevel)/.gitignore` — only append the
   line (create the file if missing) when that check fails, so the operation stays idempotent.
-- If `git ls-files --error-unmatch PR-DESCRIPTION.md` shows it is tracked, run via `bash`
+- If `git ls-files --error-unmatch PR-DESCRIPTION.md` shows it is tracked, run via `shell`
   `git rm --cached PR-DESCRIPTION.md` so the ignore rule takes effect, and include that deletion
   in the next commit you make.
 
 #### Step G2 — Verify the branch is pushed to `origin`
 
-Run via `bash`:
+Run via `shell`:
 ```
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 REMOTE_SHA="$(git rev-parse "origin/${CURRENT_BRANCH}" 2>/dev/null || true)"
@@ -202,7 +202,7 @@ any circumstance.
 #### Step G3 — Create the PR inline
 
 Extract the title and body from `PR-DESCRIPTION.md` exactly as `create-pr.sh` does in forge mode —
-replicate its logic inline via `bash`, do not invoke the script (it does not exist in this repo):
+replicate its logic inline via `shell`, do not invoke the script (it does not exist in this repo):
 - **Title**: the first non-empty line that is not a bare `---` separator.
 - **Body**: from the first `# ` heading to the end of the file, excluding the
   `<!-- forge:pr-description ... -->` stamp line if one is present (it should not be, in generic
@@ -210,7 +210,7 @@ replicate its logic inline via `bash`, do not invoke the script (it does not exi
 
 If either extraction is empty, report the failure to the user in Spanish and stop.
 
-Run via `bash`:
+Run via `shell`:
 ```
 gh pr create --base "<base>" --head "$CURRENT_BRANCH" --title "$TITLE" --body "$BODY"
 ```
@@ -236,7 +236,7 @@ placeholder).
   into `master`, CI `auto-tag` creates and pushes the tag, then closes `[Unreleased]` as
   `[v<NEXT>] - YYYY-MM-DD` and pushes that follow-up commit to `master`.
 - **Forge mode**: never call the update-changelog command from this flow — always call the
-  `update-changelog.sh` script under `tools/release/` directly via `bash` (see Step 2).
+  `update-changelog.sh` script under `tools/release/` directly via `shell` (see Step 2).
 - **Forge mode**: never improvise PR creation with raw `gh pr create`/`gh pr edit`/REST calls —
   always go through `tools/release/create-pr.sh`.
 - **Generic mode**: the repo has no `tools/release/create-pr.sh` to call. Building `gh pr

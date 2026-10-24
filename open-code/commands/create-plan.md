@@ -3,7 +3,7 @@ description: Generates a multi-step executable plan in .plans/<slug>.md for the 
 agent: orchestrator
 ---
 
-You are running the `/create-plan` command. Your job is to collect the user's objective, coordinate with `@senior` (via the `task` tool) to produce the plan, and persist it in `.plans/<slug>.md` of the current repo. Every side effect (directory creation, git checks, greps, file promotion, symlinks) is performed via `bash` — you never use `edit` or `write` tools directly on the plan file.
+You are running the `/create-plan` command. Your job is to collect the user's objective, coordinate with `@senior` (via the `subagent` tool) to produce the plan, and persist it in `.plans/<slug>.md` of the current repo. Every side effect (directory creation, git checks, greps, file promotion, symlinks) is performed via `shell` — you never use `edit` or `write` tools directly on the plan file.
 
 ## Argument
 
@@ -27,7 +27,7 @@ You are running the `/create-plan` command. Your job is to collect the user's ob
 
 #### Detecting pass-2 mode
 
-If `$ARGUMENTS` contains both the `--- BEGIN RESEARCH SUMMARY ---` and `--- END RESEARCH SUMMARY ---` delimiters (in that order), this is **pass-2 mode**. Pass the entire `$ARGUMENTS` (including the delimited block, and the trailing `REQUIRES_PLAN:` line if present) verbatim to `@senior` via the `task` tool. The instruction given to `@senior` in this mode is the following, sent in full:
+If `$ARGUMENTS` contains both the `--- BEGIN RESEARCH SUMMARY ---` and `--- END RESEARCH SUMMARY ---` delimiters (in that order), this is **pass-2 mode**. Pass the entire `$ARGUMENTS` (including the delimited block, and the trailing `REQUIRES_PLAN:` line if present) verbatim to `@senior` via the `subagent` tool. The instruction given to `@senior` in this mode is the following, sent in full:
 
 > You are operating in pass 2 of the two-pass plan flow. The research summary produced in pass 1 is included below between the `--- BEGIN RESEARCH SUMMARY ---` and `--- END RESEARCH SUMMARY ---` delimiters. Produce the formatted plan now, in one shot, using ONLY that summary as input; do not re-read the repo.
 >
@@ -69,7 +69,7 @@ If `$ARGUMENTS` contains both the `--- BEGIN RESEARCH SUMMARY ---` and `--- END 
 > - `[A]` (applier): fully specifiable mechanical step, no micro-decisions.
 > - `[T]` (tech): step requiring code judgment, local decisions, or debugging.
 >
-> **Splitting large `[T]` steps**: any `[T]` step whose expected output is large or heavy-generation (e.g. writing a long new file from scratch, a broad multi-file rewrite, an extensive documentation section, or anything else likely to require a long, uninterrupted single turn) MUST be split into several smaller `[T]` sub-steps, each with a narrower and independently verifiable output (e.g. `Step N.2` generates section A, `Step N.3` generates section B, instead of one `Step N.2` generating everything). A single oversized `[T]` step run as one long turn increases the risk of an empty completion or an infrastructure failure with no continuity — this happened in practice on a `task` invocation that ran for 1h12m before failing after an unproductive auto-retry. Rule of thumb when drafting a `[T]` step: if its expected output alone could plausibly fill a long single turn, split it before emitting the plan.
+> **Splitting large `[T]` steps**: any `[T]` step whose expected output is large or heavy-generation (e.g. writing a long new file from scratch, a broad multi-file rewrite, an extensive documentation section, or anything else likely to require a long, uninterrupted single turn) MUST be split into several smaller `[T]` sub-steps, each with a narrower and independently verifiable output (e.g. `Step N.2` generates section A, `Step N.3` generates section B, instead of one `Step N.2` generating everything). A single oversized `[T]` step run as one long turn increases the risk of an empty completion or an infrastructure failure with no continuity — this happened in practice on a `subagent` invocation that ran for 1h12m before failing after an unproductive auto-retry. Rule of thumb when drafting a `[T]` step: if its expected output alone could plausibly fill a long single turn, split it before emitting the plan.
 >
 > Reviewer CHECKPOINT placement rule:
 > - `P <= 3` phases: emit exactly 1 CHECKPOINT block, placed after the last phase (final only).
@@ -140,12 +140,12 @@ If `$ARGUMENTS` contains both the `--- BEGIN RESEARCH SUMMARY ---` and `--- END 
 > - You never ask more than 5 questions: if after 5 questions you still lack enough information, you would return `BLOCKED_SENIOR` — but in pass 2 you have the full research summary already, so this should not occur; if the summary is genuinely insufficient, return `BLOCKED_SENIOR: <reason>` instead of guessing.
 > - If the repo is not git: this command already blocks before reaching you.
 > - Idempotency of `.gitignore` is the orchestrator's responsibility (Step 5 below), not yours.
-> - Plan content is written once by its author (you) and never re-serialized: you write the complete formatted plan directly to `.plans/.staging-<slug>.md` via a single `bash` quoted-heredoc call and return ONLY a `STAGED:` confirmation line. The orchestrator promotes that file on disk (`mv`/append) and runs all gates on disk; it never loads, re-types, or relays the plan body. Any re-emission of the plan body after your staging write is a contract violation.
-> - Placeholder gate (on disk): the orchestrator will scan your staging file on disk (`grep -nE "TBD|TODO|similar (a|to)|as appropriate|\?\?\?" <staging-file>`) before promotion. If it matches, you will be asked ONCE to fix every placeholder IN PLACE in the staging file via `bash` and return a fresh `STAGED:` line. Get it right the first time.
+> - Plan content is written once by its author (you) and never re-serialized: you write the complete formatted plan directly to `.plans/.staging-<slug>.md` via a single `shell` quoted-heredoc call and return ONLY a `STAGED:` confirmation line. The orchestrator promotes that file on disk (`mv`/append) and runs all gates on disk; it never loads, re-types, or relays the plan body. Any re-emission of the plan body after your staging write is a contract violation.
+> - Placeholder gate (on disk): the orchestrator will scan your staging file on disk (`grep -nE "TBD|TODO|similar (a|to)|as appropriate|\?\?\?" <staging-file>`) before promotion. If it matches, you will be asked ONCE to fix every placeholder IN PLACE in the staging file via `shell` and return a fresh `STAGED:` line. Get it right the first time.
 >
 > ### What you must do now
 >
-> Derive `<slug>` from the objective (short kebab-case identifier). Then WRITE the plan yourself to `.plans/.staging-<slug>.md` via a single quoted-heredoc `bash` call (e.g. `bash -lc "cat > .plans/.staging-<slug>.md <<'PLANEOF' ... PLANEOF"`) and return ONLY the line:
+> Derive `<slug>` from the objective (short kebab-case identifier). Then WRITE the plan yourself to `.plans/.staging-<slug>.md` via a single quoted-heredoc `shell` call (e.g. `bash -lc "cat > .plans/.staging-<slug>.md <<'PLANEOF' ... PLANEOF"`) and return ONLY the line:
 >
 > `STAGED: <absolute-path> — slug=<slug>, phases=N, steps=M`
 >
@@ -155,7 +155,7 @@ Continue to Step 2 with the staging file that `@senior` wrote. The plan body nev
 
 #### Pass-1 mode (fallback)
 
-If the research-summary delimiters are NOT present in `$ARGUMENTS`, this is **pass-1 mode**. Invoke `@senior` via the `task` tool with the following context:
+If the research-summary delimiters are NOT present in `$ARGUMENTS`, this is **pass-1 mode**. Invoke `@senior` via the `subagent` tool with the following context:
 
 - The text of `$ARGUMENTS` (may be empty).
 - The current repo (result of `git rev-parse --show-toplevel`).
@@ -170,7 +170,7 @@ Criteria `@senior` uses to evaluate whether it has enough information:
 
 When `@senior` returns a research summary in pass-1 mode (its output contains the `--- BEGIN RESEARCH SUMMARY ---` and `--- END RESEARCH SUMMARY ---` delimiters, possibly followed by a `REQUIRES_PLAN:` line), this command does NOT continue to Step 2. It stops and surfaces to the orchestrator's user-facing summary: "Research summary captured. Re-invoke `/create-plan` with the summary as `$ARGUMENTS` to produce the formatted plan." This is a safety net — the normal flow is the calling context (e.g. the post-senior gate) capturing and re-invoking automatically.
 
-**Capturing senior's output**: in pass-2 mode the plan body is NEVER relayed through this command. `@senior` writes the formatted plan directly to `.plans/.staging-<slug>.md` (a single quoted-heredoc `bash` call in its own turn) and returns ONLY the line `STAGED: <absolute-path> — slug=<slug>, phases=N, steps=M`. You parse that line for the staging path, the slug, and the N/M counts; you never read or re-emit the plan body. There is no `PLAN_CONTENT` variable — the file on disk is the single source of truth and is promoted in Step 6 without re-serialization. In pass-1 mode, `@senior`'s output is the research summary — it is NOT written to `.plans/`; it is surfaced to the user for re-invocation.
+**Capturing senior's output**: in pass-2 mode the plan body is NEVER relayed through this command. `@senior` writes the formatted plan directly to `.plans/.staging-<slug>.md` (a single quoted-heredoc `shell` call in its own turn) and returns ONLY the line `STAGED: <absolute-path> — slug=<slug>, phases=N, steps=M`. You parse that line for the staging path, the slug, and the N/M counts; you never read or re-emit the plan body. There is no `PLAN_CONTENT` variable — the file on disk is the single source of truth and is promoted in Step 6 without re-serialization. In pass-1 mode, `@senior`'s output is the research summary — it is NOT written to `.plans/`; it is surfaced to the user for re-invocation.
 
 **STAGED line parse contract**: extract fields as follows — `path` is everything between `STAGED: ` and the first ` — `; then split the remainder on `, ` to obtain `key=value` pairs: `slug=<slug>`, `phases=N`, `steps=M`. The `slug` field from this parse is the authoritative slug for all subsequent steps. Example: given `STAGED: /repo/.plans/.staging-my-feature.md — slug=my-feature, phases=3, steps=12`, `path=/repo/.plans/.staging-my-feature.md`, `slug=my-feature`, `phases=3`, `steps=12`.
 
@@ -186,7 +186,7 @@ Scan the staging file `@senior` wrote (`<absolute-path>` from the `STAGED:` line
 grep -nE "TBD|TODO|similar (a|to)|as appropriate|\?\?\?" "<staging-file>"
 ```
 
-- If the grep matches: do NOT promote. Return to `@senior` ONCE via `task`, with ONLY the matching line numbers and the literal instruction: "The staging plan violates the zero-context executor rule (matching lines: <lines>). Fix every placeholder IN PLACE in `<staging-file>` via `bash` and return a fresh `STAGED:` line." Re-run this on-disk grep against the rewritten staging file.
+- If the grep matches: do NOT promote. Return to `@senior` ONCE via `subagent`, with ONLY the matching line numbers and the literal instruction: "The staging plan violates the zero-context executor rule (matching lines: <lines>). Fix every placeholder IN PLACE in `<staging-file>` via `shell` and return a fresh `STAGED:` line." Re-run this on-disk grep against the rewritten staging file.
 - If it still matches after that single retry: stop with `BLOCKED: plan contains placeholders after senior retry` and surface the matching lines to the user. Do not load or re-emit the plan body.
 
 After the gate passes, verify front-matter sanity on disk: `head -1 "<staging-file>" | grep -q '^---$'`. If it fails, stop with `BLOCKED: staging plan missing YAML front-matter`.
@@ -199,7 +199,7 @@ At this point `<slug>` is set, and `<staging-file>` is `.plans/.staging-<slug>.m
 
 ### Step 3 — Duplicate slug gate
 
-Check whether `.plans/<slug>.md` exists in the current repo (`bash`: `test -f .plans/<slug>.md`).
+Check whether `.plans/<slug>.md` exists in the current repo (`shell`: `test -f .plans/<slug>.md`).
 
 **If it does NOT exist**: continue to Step 4.
 
@@ -225,7 +225,7 @@ Already guaranteed by Step 0 (`mkdir -p .plans/` runs during environment validat
 
 ### Step 5 — Add .plans/ to the target repo's .gitignore
 
-Run via `bash`:
+Run via `shell`:
 ```bash
 if [ ! -f .gitignore ]; then
   printf '.plans/\n' > .gitignore
@@ -237,7 +237,7 @@ If the target repo has no `.gitignore`, this creates it with the line `.plans/`.
 
 ### Step 6 — Promote the plan
 
-The plan body is already on disk in the staging file `<staging-file>` (`.plans/.staging-<slug>.md`) that `@senior` wrote, and it has passed the on-disk placeholder + front-matter gates (Step 1.5). Promotion is a token-free file operation performed via `bash` — you NEVER load, re-type, or delegate the plan body. Run the branch matching the mode resolved in Step 3, from the repo root:
+The plan body is already on disk in the staging file `<staging-file>` (`.plans/.staging-<slug>.md`) that `@senior` wrote, and it has passed the on-disk placeholder + front-matter gates (Step 1.5). Promotion is a token-free file operation performed via `shell` — you NEVER load, re-type, or delegate the plan body. Run the branch matching the mode resolved in Step 3, from the repo root:
 
 - **create** (slug did not exist):
   ```bash
@@ -259,7 +259,7 @@ Rules:
 
 ### Step 7 — Create/update .plans/current symlink
 
-Run from the target repo, via `bash`:
+Run from the target repo, via `shell`:
 ```bash
 cd <repo-root> && ln -sfn <slug>.md .plans/current
 ```

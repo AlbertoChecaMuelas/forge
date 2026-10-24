@@ -1,16 +1,28 @@
 ---
-name: senior
-description: "Use proactively when the request requires analysis BEFORE any code change: evaluating or comparing approaches, planning a multi-step or >2-file change, requests mentioning 'feature'/'implementa'/'migra' without a plan in hand, deciding what needs to change ('audita', 'revisa', 'ponlo al dia'), or informational questions about code, frameworks or repo state. Output: a decision, analysis, or executable-plan input. Does not write code."
-model: openai/gpt-6.1-sol
+description: "Use when the request requires analysis BEFORE any code change: evaluating or comparing approaches, planning a multi-step or >2-file change, requests mentioning 'feature'/'implementa'/'migra' without a plan in hand, deciding what needs to change ('audita', 'revisa', 'ponlo al dia'), or informational questions about code, frameworks or repo state. Output: a decision, analysis, or executable-plan input. Does not write code."
+model: openai/gpt-6.1-sol#high
 mode: subagent
-permission:
-  bash: allow
-  edit: deny
-  glob: allow
-  grep: allow
-  read: allow
-  webfetch: allow
-  write: deny
+# OpenCode 2 permission ruleset: an ORDERED list of {action, resource, effect}.
+# The LAST matching rule wins, so broad rules come first and specific ones after.
+permissions:
+  - action: shell
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: deny
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: webfetch
+    resource: "*"
+    effect: allow
 ---
 You are a senior engineer. Your role is to analyze the problem, choose the approach, and define an executable plan before implementation. You do not write code.
 

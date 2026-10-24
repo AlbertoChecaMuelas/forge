@@ -1,5 +1,5 @@
 ---
-description: "Updates the [Unreleased] section of CHANGELOG.md. Branch-scoped mode (--branch <base>) runs the deterministic tools/release/update-changelog.sh script directly via bash — no subagent. Classic mode (empty argument) and release mode (a semver argument) scan git log <last-tag>..HEAD and dispatch a fresh subagent (model minimax-coding-plan/MiniMax-M3.1-Flash) to classify commits and rewrite the section."
+description: "Updates the [Unreleased] section of CHANGELOG.md. Branch-scoped mode (--branch <base>) runs the deterministic tools/release/update-changelog.sh script directly via `shell` — no subagent. Classic mode (empty argument) and release mode (a semver argument) scan git log <last-tag>..HEAD and dispatch a fresh subagent (model minimax-coding-plan/MiniMax-M3.1-Flash) to classify commits and rewrite the section."
 agent: orchestrator
 ---
 
@@ -7,7 +7,7 @@ You are running the `/update-changelog` command. You update the `[Unreleased]` s
 `CHANGELOG.md`. You never classify commits or rewrite the changelog yourself in classic/release
 mode — that is delegated to a fresh subagent. In branch-scoped mode you never read or classify
 commits yourself either — that is fully delegated to a deterministic script. Every git lookup
-here is performed via `bash`; you never use `edit` or `write` directly in this command.
+here is performed via `shell`; you never use `edit` or `write` directly in this command.
 
 ## Argument
 
@@ -25,11 +25,11 @@ matches a semver `X.Y.Z`, use release mode. Otherwise, if empty, use classic mod
 
 ## Step A — Branch-scoped mode (deterministic, script-driven)
 
-When `$ARGUMENTS` starts with `--branch `, run the deterministic script via `bash` and report its
+When `$ARGUMENTS` starts with `--branch `, run the deterministic script via `shell` and report its
 output. Do NOT read, classify, or rewrite the changelog yourself; do not dispatch a subagent for
 this mode.
 
-Run via `bash`:
+Run via `shell`:
 ```
 $(git rev-parse --show-toplevel)/tools/release/update-changelog.sh --branch "<base>"
 ```
@@ -54,7 +54,7 @@ Fill the prompt template below, substituting before dispatch:
 - `{ARGUMENTS}` → the raw `$ARGUMENTS` value (the semver in release mode, or the literal text
   `(none — classic mode)` when empty).
 
-Dispatch a FRESH subagent via the `task` tool whose entire prompt is the filled template,
+Dispatch a FRESH subagent via the `subagent` tool whose entire prompt is the filled template,
 explicitly overriding the model for that call to `minimax-coding-plan/MiniMax-M3.1-Flash`. Do
 not paraphrase or trim the template.
 
@@ -73,20 +73,20 @@ You are updating the `[Unreleased]` section of `CHANGELOG.md`. Mode: {MODE}. Arg
 
 ## Step 1 — Determine the lower bound
 
-Run via `bash`: `git describe --tags --abbrev=0 2>/dev/null || echo ""`
+Run via `shell`: `git describe --tags --abbrev=0 2>/dev/null || echo ""`
 
 ## Step 2 — Get commits
 
-If Step 1 returned a tag, run via `bash`:
+If Step 1 returned a tag, run via `shell`:
 `git log <tag>..HEAD --oneline 2>/dev/null || git log --oneline`
 (substitute `<tag>` with the tag returned by Step 1).
 
-If Step 1 returned nothing (repo with no tags), use all commits, run via `bash`:
+If Step 1 returned nothing (repo with no tags), use all commits, run via `shell`:
 `git log --oneline`
 
 ## Step 3 — Read the current CHANGELOG.md
 
-Resolve the repo root via `bash`: `git rev-parse --show-toplevel`. Then read
+Resolve the repo root via `shell`: `git rev-parse --show-toplevel`. Then read
 `<repo-root>/CHANGELOG.md` with `read`. If it does not exist, treat the current content as
 `# Changelog`.
 
@@ -147,7 +147,7 @@ instead:
 ```
 ## [1.2.0] - YYYY-MM-DD
 ```
-where `YYYY-MM-DD` is today's date in ISO 8601 format, obtained via `bash`: `date +%F`.
+where `YYYY-MM-DD` is today's date in ISO 8601 format, obtained via `shell`: `date +%F`.
 
 Only include subsections that have entries.
 

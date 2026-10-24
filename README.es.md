@@ -194,6 +194,8 @@ bash install.sh uninstall                 # symlinks de core/statusline, default
 bash install.sh uninstall
 ```
 
+Para una instalación de OpenCode, una desinstalación completa es **autoritativa respecto al state**: antes de borrar nada lee y valida los campos registrados `dir`, `config_file` y `binary`, deriva el prefijo del binario fijado únicamente de ese `binary` registrado e ignora valores divergentes de `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG` y `FORGE_OPENCODE_BIN_DIR`. Sin state file el comando es un no-op informado (exit 0): no inspecciona ni modifica ninguna ruta y no reconstruye ni reintenta una desinstalación anterior. Un state legacy sin `binary`, o con un `binary` malformado, falla de forma cerrada: no borra ningún prefijo binario, muestra un diagnóstico explícito y conserva el state para un reintento seguro. Los ficheros del usuario que queden en la overlay se preservan y se listan en el resumen final; ese resumen no afirma `Todo OK` mientras esos ficheros sigan presentes.
+
 Flags que acepta `install.sh uninstall`:
 
 | Flag | Descripción |
@@ -390,25 +392,32 @@ Forge soporta [OpenCode](https://opencode.ai) desde este mismo repositorio. Open
 | `bash install.sh install --target=opencode` | Instala solo la overlay aislada de OpenCode. |
 | `bash install.sh install --target=both` | Instala el target de Claude Code y luego la overlay de OpenCode. |
 | `bash open-code/install-opencode.sh` | Reinstala solo la overlay de OpenCode. |
-| `bash open-code/uninstall-opencode.sh` | Elimina solo la overlay de OpenCode. |
+| `bash open-code/uninstall-opencode.sh --config-dir <dir> --config-file <file> --bin-dir <prefix>` | Helper de bajo nivel: elimina solo las rutas de OpenCode indicadas explícitamente. Usa `bash install.sh uninstall` para usar las rutas registradas en el state. |
 
 **Qué hace el instalador**:
 
-1. Requiere `opencode` en `PATH`.
+1. Instala el build **fijado** de OpenCode 2 (`@opencode/cli@2.1.4`) en un **prefijo aislado propiedad de Forge** (`~/.local/share/forge/opencode-v2` por defecto, `$FORGE_OPENCODE_BIN_DIR` para cambiarlo). Nunca se instala globalmente ni sustituye el build de OpenCode que gestiona Omarchy en tu `PATH`, así que una actualización de Omarchy no puede romper Forge.
 2. Regenera los 5 agentes OpenCode.
-3. Instala una overlay aislada en `~/.config/opencode-forge/` (o en `$OPENCODE_CONFIG_DIR` si está definida) en vez de tocar la configuración global del usuario, y registra en el state file la ruta efectiva del overlay y la de la config.
-4. Copia los agentes generados, `AGENTS.md` y todos los plugins declarados en `opencode.jsonc` (`plugins/forge-guard.js`, `plugins/forge-task-observer.js`) dentro de esa overlay aislada. La lista de plugins se deriva de la config, nunca se duplica en el instalador, y la instalación falla si algún plugin declarado no está en disco.
+3. Instala una overlay aislada en `~/.config/opencode-forge/` (o en `$OPENCODE_CONFIG_DIR` si está definida) en vez de tocar la configuración global del usuario, y registra en el state file la ruta efectiva del overlay, la de la config y la del binario fijado.
+4. Copia los agentes generados, `AGENTS.md` y todos los paquetes de plugin declarados en `opencode.jsonc` (`./plugin-packages/forge-guard`) dentro de esa overlay aislada. La lista de plugins se deriva de la config, nunca se duplica en el instalador, y la instalación falla si algún paquete declarado no está en disco. Los restos de OpenCode 1 que queden en `plugins/` se purgan durante la actualización.
 5. Copia `open-code/opencode.jsonc` a la overlay aislada y reescribe la ruta de instrucciones de `AGENTS.md`.
-6. Instala un launcher independiente en `~/.local/bin/forge-opencode` que exporta el `OPENCODE_CONFIG_DIR` y el `OPENCODE_CONFIG` registrados antes de invocar el binario real `opencode`, avisando cuando el entorno exportado apunta a otro sitio.
-7. Verifica que existan credenciales de OpenCode o autenticación por tokens vía `open-code/env.sh`.
+6. Instala un launcher independiente en `~/.local/bin/forge-opencode` que exporta el `OPENCODE_CONFIG_DIR` y el `OPENCODE_CONFIG` registrados, ejecuta el **binario fijado por ruta absoluta**, pide siempre un servidor privado con `--standalone` (OpenCode 2 comparte servidor en segundo plano por defecto) y rechaza `--server` / `--server=<url>` antes de arrancar OpenCode. El flag se inserta justo después del subcomando, que es donde lo acepta el CLI de OpenCode 2; los subcomandos hoja que no lo ofrecen (`plugin`, `mcp`, `debug`, `service`) se ejecutan dentro del propio proceso del CLI y nunca se conectan al servidor compartido, así que el launcher se lo omite.
+7. Verifica las credenciales con el contrato JSON de OpenCode 2 (`opencode auth list --standalone --format json`), con fallback a la autenticación por tokens de `open-code/env.sh`.
 
-El instalador es idempotente y no modifica `~/.config/opencode/`, `.bashrc`, `.zshrc` ni `config.fish`.
+El instalador es idempotente y no modifica `~/.config/opencode/`, `~/.local/share/omarchy/`, `.bashrc`, `.zshrc` ni `config.fish`.
 
 ### Requisitos
 
-- OpenCode instalado ([https://opencode.ai](https://opencode.ai)).
+- `npm` (se usa para instalar el `@opencode/cli@2.1.4` fijado en el prefijo aislado).
 - `jq` (se instala automáticamente con `brew` si no está disponible; requiere Homebrew).
 - `python3` como fallback si no se puede instalar `jq`.
+
+### Notas sobre OpenCode 2
+
+- La configuración, el frontmatter de los agentes y los comandos usan el **dialecto nativo de OpenCode 2**: `plugins`, `providers`, `permissions` (un ruleset ordenado donde gana la última coincidencia), las herramientas `shell` y `subagent`, `mcp.servers` y las variantes de modelo escritas como `provider/model#variant`.
+- Forge gestiona su propio build fijado de OpenCode. El binario de OpenCode del `PATH` (el que instala Omarchy) **no** lo usa Forge: `forge-opencode` siempre ejecuta el build fijado por ruta absoluta. `status`/`doctor` informan del desajuste cuando el build fijado falta o tiene una versión distinta de `2.1.4`.
+- El observador de fallos de infraestructura de `task` de OpenCode 1 se **eliminó**: OpenCode 2 propaga por sí mismo el fallo de una llamada `subagent` a la sesión padre, así que un observador paralelo solo duplicaría (o deformaría) ese contrato.
+- El runbook completo de la migración (backup, ensayo, cutover y rollback) está en [`open-code/MIGRATION-V2.es.md`](open-code/MIGRATION-V2.es.md).
 
 ### Estructura de `open-code/`
 
@@ -416,17 +425,18 @@ El instalador es idempotente y no modifica `~/.config/opencode/`, `.bashrc`, `.z
 open-code/
   agents/                     Agentes OpenCode generados
   agents-src/orchestrator.body.md
-  plugins/                    Plugins OpenCode declarados en opencode.jsonc
-    forge-guard.js            Plugin de branch guard para OpenCode
-    forge-task-observer.js    Observador de fallos de infra de task (marcador FORGE_TASK_INFRA_ERROR)
+  plugin-packages/            Paquetes de plugin OpenCode 2 declarados en opencode.jsonc
+    forge-guard/              Plugin de branch guard para OpenCode 2
+      index.js                Módulo del plugin (Plugin.define + hook de herramienta)
   lib/plugin-sync.py          Deriva la overlay de plugins instalada desde opencode.jsonc
   AGENTS.md                  Instrucciones OpenCode compartidas mínimas
-  opencode.jsonc             Plantilla de configuración del proveedor
+  opencode.jsonc             Plantilla de configuración del proveedor (dialecto OpenCode 2)
   env.sh                     Loader POSIX de tokens
-  forge-opencode.sh          Wrapper que exporta rutas aisladas de config
-  install-opencode.sh        Instala la overlay aislada de OpenCode
+  forge-opencode.sh          Launcher: binario fijado por ruta absoluta, siempre --standalone
+  install-opencode.sh        Instala la overlay aislada de OpenCode y el binario fijado
   uninstall-opencode.sh      Elimina la overlay aislada de OpenCode
-  SPIKE-RESULTS.md           Hallazgos de delegación/plugin/config/coste
+  MIGRATION-V2.es.md          Runbook de migración a OpenCode 2 (backup, ensayo, cutover, rollback)
+  SPIKE-RESULTS.md           Hallazgos de delegación/plugin/config/coste (spike de OpenCode 1)
   COST-PARITY.md             Contrato de reporting de coste en OpenCode
 ```
 
@@ -439,7 +449,7 @@ forge/
   hooks/           Hooks PreToolUse (branch-guard.sh, rtk-hook)
   tools/           Scripts de release
   .claude-plugin/  Manifiesto del plugin (plugin.json) para el marketplace de Claude Code
-  open-code/       Overlay OpenCode: agents/, agents-src/, plugins/, AGENTS.md e instalador aislado
+  open-code/       Overlay OpenCode: agents/, agents-src/, plugin-packages/, AGENTS.md e instalador aislado
   shared/          Ficheros distribuidos a cada target (CLAUDE-shared.md, statusline, settings)
   lib/             Scripts internos del instalador (catalog, symlink, json-merge, rtk)
   rtk/             Instalador y desinstalador del RTK pineado

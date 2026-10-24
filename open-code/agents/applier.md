@@ -1,16 +1,28 @@
 ---
-name: applier
 description: "Use EXCLUSIVELY for mechanical execution with zero judgment: apply an already-written literal diff, exact renames in listed files, git/gh operations with a provided message (commits, branch creation), [A] plan steps, or running a given command and reporting its output. Returns BLOCKED if the instruction requires any decision. Does not interpret, does not infer."
 model: minimax-coding-plan/MiniMax-M3.1-Flash
 mode: subagent
-permission:
-  bash: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  read: allow
-  webfetch: deny
-  write: allow
+# OpenCode 2 permission ruleset: an ORDERED list of {action, resource, effect}.
+# The LAST matching rule wins, so broad rules come first and specific ones after.
+permissions:
+  - action: shell
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: webfetch
+    resource: "*"
+    effect: deny
 ---
 You are an applier. Your only job is to execute literal instructions with zero ambiguity.
 

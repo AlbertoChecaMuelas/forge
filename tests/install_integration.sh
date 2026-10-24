@@ -7,6 +7,17 @@ set -euo pipefail
 FORGE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_SH="$FORGE_ROOT/install.sh"
 
+# Shared isolation helpers: the isolated environment and the fingerprint of
+# the real user files.
+# shellcheck source=tests/isolation.sh
+. "$FORGE_ROOT/tests/isolation.sh"
+
+# Fingerprint of the real user files, taken BEFORE any test runs. The suite
+# must leave them untouched: the installer resolves the pinned OpenCode prefix
+# from XDG_DATA_HOME / FORGE_OPENCODE_BIN_DIR, so an unisolated run installs
+# @opencode/cli@2.1.4 in the REAL ~/.local/share/forge/opencode-v2.
+PROTECTED_SNAPSHOT="$(forge_protected_snapshot)"
+
 # ---------------------------------------------------------------------------
 # Test harness
 # ---------------------------------------------------------------------------
@@ -81,12 +92,27 @@ assert_file_not_exists() {
 }
 
 # ---------------------------------------------------------------------------
+# Isolated runner.
+#
+# HOME, the XDG directories and the Forge-owned OpenCode prefix are redirected
+# into the sandbox, and OPENCODE_CONFIG_DIR / OPENCODE_CONFIG are removed on
+# purpose: the installer gives them precedence over HOME, so an inherited
+# real-user config could otherwise be read (or written) by a test.
+#
+# FORGE_OPENCODE_BIN_DIR closes the last leak: the pinned OpenCode build is
+# installed in that prefix, so an unisolated run would download
+# @opencode/cli@2.1.4 into the REAL ~/.local/share/forge/opencode-v2.
+# ---------------------------------------------------------------------------
+run_iso() {
+  local home="$1"
+  shift
+
+  forge_isolated_env "$home" "$@"
+}
+
+# ---------------------------------------------------------------------------
 # Diagnostic runner: runs a forge subcommand in an isolated HOME and captures
 # the combined output (stdout+stderr) plus the exit code.
-#
-# OPENCODE_CONFIG_DIR / OPENCODE_CONFIG are removed on purpose: the installer
-# gives them precedence over HOME, so an inherited real-user config could
-# otherwise be read (or written) by a test.
 #
 # Sets: RUN_OUT (combined output), RUN_RC (exit code).
 # ---------------------------------------------------------------------------
@@ -94,8 +120,7 @@ run_forge() {
   local home="$1"
   shift
   RUN_RC=0
-  RUN_OUT="$(env -u OPENCODE_CONFIG_DIR -u OPENCODE_CONFIG HOME="$home" \
-    bash "$INSTALL_SH" "$@" 2>&1)" || RUN_RC=$?
+  RUN_OUT="$(run_iso "$home" bash "$INSTALL_SH" "$@" 2>&1)" || RUN_RC=$?
 }
 
 # Disposable sandbox root for the diagnostics tests: isolated from the real
@@ -134,7 +159,7 @@ test_e2e_install_uninstall_roundtrip() {
   orig_claude="$(cat "$claude_orig")"
 
   # Install
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude
 
   # After install: check managed keys applied
   assert_true "claude: permissions.allow overwritten by shared" \
@@ -152,7 +177,7 @@ test_e2e_install_uninstall_roundtrip() {
   assert_file_valid_json "$TMPHOME/.forge-state.json" "state file valid after install"
 
   # Uninstall
-  HOME="$TMPHOME" bash "$INSTALL_SH" uninstall
+  run_iso "$TMPHOME" bash "$INSTALL_SH" uninstall
 
   # After uninstall: settings must be byte-a-byte identical to original
   local after_claude
@@ -185,7 +210,7 @@ test_e2e_repair_recreates_broken_symlinks() {
   mkdir -p "$TMPHOME/.claude"
 
   # Install
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude
 
   # Verify symlink exists
   assert_true "senior.md symlink created" \
@@ -197,7 +222,7 @@ test_e2e_repair_recreates_broken_symlinks() {
     test ! -e "$TMPHOME/.claude/agents/senior.md"
 
   # Repair
-  HOME="$TMPHOME" bash "$INSTALL_SH" repair
+  run_iso "$TMPHOME" bash "$INSTALL_SH" repair
 
   # Verify recreated
   assert_is_symlink_to \
@@ -222,7 +247,7 @@ test_e2e_status_reports_broken() {
   mkdir -p "$TMPHOME/.claude"
 
   # Install
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude
 
   # Break a symlink by pointing it to /nonexistent
   rm "$TMPHOME/.claude/agents/senior.md"
@@ -230,9 +255,9 @@ test_e2e_status_reports_broken() {
 
   # Status should exit != 0 and mention BROKEN or MISMATCH
   local status_out
-  status_out="$(HOME="$TMPHOME" bash "$INSTALL_SH" status 2>&1 || true)"
+  status_out="$(run_iso "$TMPHOME" bash "$INSTALL_SH" status 2>&1 || true)"
   local status_exit=0
-  HOME="$TMPHOME" bash "$INSTALL_SH" status >/dev/null 2>&1 || status_exit=$?
+  run_iso "$TMPHOME" bash "$INSTALL_SH" status >/dev/null 2>&1 || status_exit=$?
 
   if [ "$status_exit" -ne 0 ]; then
     pass "status exits non-zero con symlink roto"
@@ -264,7 +289,7 @@ test_e2e_rtk_no_binary_without_confirmation() {
 
   assert_file_not_exists "$TMPHOME/.forge/bin/rtk" "rtk binary absent before install"
 
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
   assert_file_not_exists "$TMPHOME/.forge/bin/rtk" "rtk binary not created without explicit confirmation"
 
@@ -284,7 +309,7 @@ test_state_schema_v2_shape() {
 
   mkdir -p "$TMPHOME/.claude"
 
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
   local state="$TMPHOME/.forge-state.json"
 
@@ -330,14 +355,14 @@ test_repair_uses_state_not_hardcoded() {
 
   mkdir -p "$TMPHOME/.claude"
 
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
   # Break a symlink
   rm "$TMPHOME/.claude/agents/senior.md"
   assert_true "symlink roto (setup)" test ! -e "$TMPHOME/.claude/agents/senior.md"
 
   # Repair using state-driven logic
-  HOME="$TMPHOME" bash "$INSTALL_SH" repair >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" repair >/dev/null 2>&1
 
   assert_is_symlink_to \
     "$TMPHOME/.claude/agents/senior.md" \
@@ -364,7 +389,7 @@ test_repair_uses_state_not_hardcoded() {
   rm "$TMPHOME/.claude/agents/senior.md"
 
   # Repair should auto-migrate v1→v2 and recreate symlink
-  HOME="$TMPHOME" bash "$INSTALL_SH" repair >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" repair >/dev/null 2>&1
 
   assert_is_symlink_to \
     "$TMPHOME/.claude/agents/senior.md" \
@@ -514,7 +539,7 @@ test_claude_status_doctor_parity() {
   trap 'rm -rf "$TMPHOME"' EXIT
 
   mkdir -p "$TMPHOME/.claude"
-  env -u OPENCODE_CONFIG_DIR -u OPENCODE_CONFIG HOME="$TMPHOME" \
+  run_iso "$TMPHOME" \
     bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
   # --- (1) missing symlink -> BROKEN + non-zero exit ---
@@ -633,7 +658,7 @@ test_claude_status_doctor_parity() {
   trap 'rm -rf "$TMPHOME2"' EXIT
 
   mkdir -p "$TMPHOME2/.claude"
-  env -u OPENCODE_CONFIG_DIR -u OPENCODE_CONFIG HOME="$TMPHOME2" \
+  run_iso "$TMPHOME2" \
     bash "$INSTALL_SH" install --target=claude --only=statusline >/dev/null 2>&1
 
   run_forge "$TMPHOME2" status
@@ -669,7 +694,7 @@ test_e2e_new_commands_distributed() {
   trap 'rm -rf "$TMPHOME"' EXIT
 
   # Install
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
   # Verify SKILL.md symlinks for all five skills
   assert_is_symlink_to \
@@ -754,7 +779,7 @@ test_e2e_new_commands_distributed() {
   done
 
   # Idempotence: second install should not create backups
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
   local backup_count
   backup_count=$(find "$TMPHOME/.claude/skills" -name "*.forge-bak-*" 2>/dev/null | wc -l | tr -d ' ')
   if [ "$backup_count" = "0" ]; then
@@ -764,7 +789,7 @@ test_e2e_new_commands_distributed() {
   fi
 
   # Uninstall removes all five skill directories
-  HOME="$TMPHOME" bash "$INSTALL_SH" uninstall >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" uninstall >/dev/null 2>&1
 
   assert_file_not_exists "$TMPHOME/.claude/skills/cost-report/SKILL.md" \
     "skills/cost-report/SKILL.md eliminado tras uninstall"
@@ -841,7 +866,7 @@ test_e2e_legacy_commands_cleanup() {
   ln -s "/tmp/something_unrelated" "$TMPHOME/.claude/commands/unrelated.md"
 
   # Run install — this should clean up legacy commands/*.md symlinks pointing to FORGE_ROOT
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
   # Each of the five forge-owned symlinks must be gone
   for cmd in cost-report create-plan execute-plan pr-description update-changelog; do
@@ -870,7 +895,7 @@ test_install_only_statusline() {
   mkdir -p "$TMPHOME/.claude"
 
   # Install with --only=statusline
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=statusline >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=statusline >/dev/null 2>&1
 
   # statusline symlink must be present
   assert_true "statusline.sh symlink present" \
@@ -914,7 +939,7 @@ test_p2_1_only_unknown_component_exits_nonzero() {
 
   local stderr_out
   local exit_code=0
-  stderr_out="$(HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=bogus-component 2>&1 >/dev/null)" || exit_code=$?
+  stderr_out="$(run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=bogus-component 2>&1 >/dev/null)" || exit_code=$?
 
   if [ "$exit_code" -ne 0 ]; then
     pass "install --only=bogus-component exits non-zero"
@@ -945,7 +970,7 @@ test_p2_2_only_commands_warns_no_agents() {
   mkdir -p "$TMPHOME/.claude"
 
   local combined_out exit_code=0
-  combined_out="$(HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=commands 2>&1)" || exit_code=$?
+  combined_out="$(run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=commands 2>&1)" || exit_code=$?
 
   if [ "$exit_code" -eq 0 ]; then
     pass "install --only=commands exits 0"
@@ -976,10 +1001,10 @@ test_p2_3_sequential_install_unions_components() {
   mkdir -p "$TMPHOME/.claude"
 
   # First install: statusline only
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=statusline >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=statusline >/dev/null 2>&1
 
   # Second install: agents only
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=agents >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=agents >/dev/null 2>&1
 
   local state="$TMPHOME/.forge-state.json"
   assert_file_valid_json "$state" "state file valid after two sequential partial installs"
@@ -1018,10 +1043,10 @@ test_p2_4_uninstall_component_statusline_leaves_agents() {
   mkdir -p "$TMPHOME/.claude"
 
   # Full install
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
   # Selective uninstall of statusline
-  HOME="$TMPHOME" bash "$INSTALL_SH" uninstall --component=statusline >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" uninstall --component=statusline >/dev/null 2>&1
 
   local state="$TMPHOME/.forge-state.json"
 
@@ -1082,10 +1107,10 @@ test_p2_5_uninstall_unknown_component_exits_nonzero() {
   mkdir -p "$TMPHOME/.claude"
 
   # Full install to create state
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
   local exit_code=0
-  HOME="$TMPHOME" bash "$INSTALL_SH" uninstall --component=bogus-component >/dev/null 2>&1 || exit_code=$?
+  run_iso "$TMPHOME" bash "$INSTALL_SH" uninstall --component=bogus-component >/dev/null 2>&1 || exit_code=$?
 
   if [ "$exit_code" -ne 0 ]; then
     pass "uninstall --component=bogus-component exits non-zero"
@@ -1110,10 +1135,10 @@ test_p2_6_uninstall_not_installed_component_exits_nonzero() {
   mkdir -p "$TMPHOME/.claude"
 
   # Install agents only (statusline NOT installed)
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=agents >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=agents >/dev/null 2>&1
 
   local stderr_out exit_code=0
-  stderr_out="$(HOME="$TMPHOME" bash "$INSTALL_SH" uninstall --component=statusline 2>&1 >/dev/null)" || exit_code=$?
+  stderr_out="$(run_iso "$TMPHOME" bash "$INSTALL_SH" uninstall --component=statusline 2>&1 >/dev/null)" || exit_code=$?
 
   if [ "$exit_code" -ne 0 ]; then
     pass "uninstall --component=statusline (not installed) exits non-zero"
@@ -1144,11 +1169,11 @@ test_p2_9_status_only_statusline_no_missing_agents() {
   mkdir -p "$TMPHOME/.claude"
 
   # Install statusline only
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=statusline >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=statusline >/dev/null 2>&1
 
   # Run status and capture all output
   local status_out exit_code=0
-  status_out="$(HOME="$TMPHOME" bash "$INSTALL_SH" status 2>&1)" || exit_code=$?
+  status_out="$(run_iso "$TMPHOME" bash "$INSTALL_SH" status 2>&1)" || exit_code=$?
 
   # Status should NOT mention MISSING for agents/senior.md
   if printf '%s' "$status_out" | grep -qi "MISSING.*senior\|senior.*MISSING\|BROKEN.*senior\|senior.*BROKEN"; then
@@ -1248,7 +1273,7 @@ test_p2_10_uninstall_component_multi_target_unit() {
     }' > "$state_file"
 
   # Run uninstall --component=statusline against this crafted state
-  HOME="$TMPHOME" bash "$INSTALL_SH" uninstall --component=statusline >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" uninstall --component=statusline >/dev/null 2>&1
 
   # After uninstall: state file should be gone (all components removed from both targets)
   # OR if state remains, neither target should have statusline in components
@@ -1289,7 +1314,7 @@ test_partial_to_full_upgrade_installs_all_components() {
   mkdir -p "$TMPHOME/.claude"
 
   # Step 1: partial install — statusline only
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=statusline >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=statusline >/dev/null 2>&1
 
   # After step 1: agents/senior.md must NOT be present
   assert_file_not_exists "$TMPHOME/.claude/agents/senior.md" \
@@ -1300,7 +1325,7 @@ test_partial_to_full_upgrade_installs_all_components() {
     test -L "$TMPHOME/.claude/statusline.sh"
 
   # Step 2: full install (no --only)
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
   # After step 2: agents/senior.md must be present (newly deployed)
   assert_true "agents/senior.md present after full install" \
@@ -1349,14 +1374,14 @@ test_uninstall_component_leaves_no_orphan_parent_dirs() {
   mkdir -p "$TMPHOME/.claude"
 
   # Step 1: install agents only
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=agents >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude --only=agents >/dev/null 2>&1
 
   # Verify agents/senior.md symlink is present before uninstall
   assert_true "agents/senior.md present before uninstall" \
     test -L "$TMPHOME/.claude/agents/senior.md"
 
   # Step 2: selective uninstall of agents component
-  HOME="$TMPHOME" bash "$INSTALL_SH" uninstall --component=agents >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" uninstall --component=agents >/dev/null 2>&1
 
   # Step 3: agents/senior.md symlink must be gone
   assert_file_not_exists "$TMPHOME/.claude/agents/senior.md" \
@@ -1394,7 +1419,7 @@ test_rules_symlinks_created() {
   TMPHOME="$(mktemp -d)"
   trap 'rm -rf "$TMPHOME"' EXIT
 
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
   local link
   for link in \
@@ -1427,7 +1452,7 @@ test_install_default_excludes_core() {
   trap 'rm -rf "$TMPHOME"' EXIT
 
   mkdir -p "$TMPHOME/.claude"
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
   local has_core
   has_core="$(jq -r '[.targets_manifest[].components[] | select(. == "core")] | length' "$TMPHOME/.forge-state.json")"
@@ -1454,7 +1479,7 @@ test_install_only_core() {
 
   mkdir -p "$TMPHOME/.claude"
   printf '@RTK.md\n' > "$TMPHOME/.claude/CLAUDE.md"
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --only=core --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --only=core --target=claude >/dev/null 2>&1
 
   assert_is_symlink_to "$TMPHOME/.claude/CLAUDE-shared.md" \
     "$FORGE_ROOT/shared/CLAUDE-shared.md" \
@@ -1504,14 +1529,14 @@ test_core_conflicts() {
 
   mkdir -p "$TMPHOME/.claude"
   assert_exit_nonzero "core_conflicts: --only=core,agents exits non-zero" \
-    env HOME="$TMPHOME" bash "$INSTALL_SH" install --only=core,agents --target=claude
+    env run_iso "$TMPHOME" bash "$INSTALL_SH" install --only=core,agents --target=claude
 
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --only=core --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --only=core --target=claude >/dev/null 2>&1
   assert_exit_nonzero "core_conflicts: --only=agents over installed core exits non-zero" \
-    env HOME="$TMPHOME" bash "$INSTALL_SH" install --only=agents --target=claude
+    env run_iso "$TMPHOME" bash "$INSTALL_SH" install --only=agents --target=claude
   assert_exit_nonzero "core_conflicts: default install over installed core exits non-zero" \
-    env HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude
-  if HOME="$TMPHOME" bash "$INSTALL_SH" install --only=core --target=claude >/dev/null 2>&1; then
+    env run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude
+  if run_iso "$TMPHOME" bash "$INSTALL_SH" install --only=core --target=claude >/dev/null 2>&1; then
     pass "core_conflicts: re-installing core is idempotent (no self-conflict)"
   else
     fail "core_conflicts: re-installing core failed"
@@ -1534,8 +1559,8 @@ test_full_uninstall_strips_claude_md_ref_and_dirs() {
 
   mkdir -p "$TMPHOME/.claude"
   printf '@RTK.md\nuser content line\n' > "$TMPHOME/.claude/CLAUDE.md"
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
-  HOME="$TMPHOME" bash "$INSTALL_SH" uninstall >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" uninstall >/dev/null 2>&1
 
   if grep -qF '@CLAUDE-shared.md' "$TMPHOME/.claude/CLAUDE.md"; then
     fail "full_uninstall: @CLAUDE-shared.md still dangling in CLAUDE.md"
@@ -1578,8 +1603,8 @@ case ":$PATH:" in *":$HOME/.forge/bin:"*) ;; *) export PATH="$HOME/.forge/bin:$P
   printf '#!/bin/sh\necho rtk 0.0.0\n' > "$TMPHOME/.forge/bin/rtk"
   chmod +x "$TMPHOME/.forge/bin/rtk"
   printf 'export USER_LINE=1\n%s\n' "$snippet" > "$TMPHOME/.zshrc"
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
-  HOME="$TMPHOME" bash "$INSTALL_SH" uninstall >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" uninstall >/dev/null 2>&1
 
   assert_file_not_exists "$TMPHOME/.forge/bin/rtk" "full_uninstall_rtk: binary removed by default"
   assert_file_not_exists "$TMPHOME/.forge" "full_uninstall_rtk: empty ~/.forge pruned"
@@ -1599,8 +1624,8 @@ case ":$PATH:" in *":$HOME/.forge/bin:"*) ;; *) export PATH="$HOME/.forge/bin:$P
   printf '#!/bin/sh\necho rtk 0.0.0\n' > "$TMPHOME/.forge/bin/rtk"
   chmod +x "$TMPHOME/.forge/bin/rtk"
   printf 'export USER_LINE=1\n%s\n' "$snippet" > "$TMPHOME/.zshrc"
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
-  HOME="$TMPHOME" bash "$INSTALL_SH" uninstall --keep-rtk >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" uninstall --keep-rtk >/dev/null 2>&1
 
   if [ -x "$TMPHOME/.forge/bin/rtk" ]; then
     pass "full_uninstall_rtk: --keep-rtk preserves the binary"
@@ -1646,8 +1671,8 @@ test_uninstall_sanitizes_restored_broken_settings() {
 }
 EOF
 
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
-  HOME="$TMPHOME" bash "$INSTALL_SH" uninstall >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" uninstall >/dev/null 2>&1
 
   local model hooks statusline subagent
   model="$(jq -r '.model' "$TMPHOME/.claude/settings.json")"
@@ -1697,8 +1722,8 @@ test_purge_removes_pre_forge() {
 
   mkdir -p "$TMPHOME/.claude"
   printf '{"model": "fable"}\n' > "$TMPHOME/.claude/settings.json"
-  HOME="$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
-  HOME="$TMPHOME" bash "$INSTALL_SH" uninstall --purge >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
+  run_iso "$TMPHOME" bash "$INSTALL_SH" uninstall --purge >/dev/null 2>&1
 
   assert_file_not_exists "$TMPHOME/.claude/settings.json.pre-forge" \
     "purge: settings.json.pre-forge deleted with --purge"
@@ -1910,12 +1935,34 @@ test_uninstall_sanitizes_restored_broken_settings
 test_purge_removes_pre_forge
 test_run_all_executes_every_candidate_suite
 
+# ---------------------------------------------------------------------------
+# Leak guard: the suite must never create the real pinned OpenCode prefix and
+# must never modify the real user files.
+# ---------------------------------------------------------------------------
+check_real_user_untouched() {
+  local rc=0
+
+  if ! forge_assert_no_forge_prefix; then
+    rc=1
+  fi
+  if ! forge_assert_protected_unchanged "$PROTECTED_SNAPSHOT"; then
+    rc=1
+  fi
+
+  return $rc
+}
+
 echo ""
 echo "=============================="
 echo " Passed: $PASS_COUNT"
 if [ "$FAIL" -ne 0 ]; then
   echo " FAIL: some tests failed" >&2
   exit 1
-else
-  echo " ALL PASS"
 fi
+
+if ! check_real_user_untouched; then
+  echo " FAIL: the suite touched the real user files" >&2
+  exit 1
+fi
+
+echo " ALL PASS"

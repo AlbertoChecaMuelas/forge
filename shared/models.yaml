@@ -7,16 +7,23 @@ applier:
 tech:
   claude: sonnet
   # GPT equiv: openai/gpt-6-luna
-  opencode: openai/gpt-6-luna
+  # OpenCode 2 expresses the reasoning effort as a model VARIANT:
+  # `provider/model#variant`. The variant is declared for the openai provider
+  # in open-code/opencode.jsonc.
+  opencode: openai/gpt-6-luna#xhigh
 senior:
   claude: opus
   # GPT equiv: openai/gpt-6.1-sol
-  opencode: openai/gpt-6.1-sol
+  # Reasoning effort as V2 variant (see open-code/opencode.jsonc).
+  opencode: openai/gpt-6.1-sol#high
 tester:
   claude: sonnet
   # GPT equiv: openai/gpt-6-luna
+  # MiniMax M3.1 Flash exposes no reasoning-effort variants, so no `#variant`
+  # suffix is used here (and none is needed).
   opencode: minimax-coding-plan/MiniMax-M3.1-Flash
 orchestrator:
   claude: opus
   # GPT equiv: openai/gpt-6.1-sol
+  # MiniMax M3.1 Flash exposes no reasoning-effort variants (see tester).
   opencode: minimax-coding-plan/MiniMax-M3.1-Flash
