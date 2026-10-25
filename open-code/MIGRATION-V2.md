@@ -343,3 +343,266 @@ rollback or restoration was performed for this documentation update.
   archived row. Retained SQLite copies confirm 881→878 for that particular
   snapshot/reference. These are measurements of different retained evidence;
   no session-loss conclusion follows from event-table counts.
+
+## Safety follow-ups — evidence and limits (2026-10-25)
+
+This is a bounded acceptance of reusable functions and a direct guard-hook
+check, not an end-to-end migration acceptance. The follow-up harnesses use the
+real shared implementations from `open-code/lib/plugin-sync.py` and the
+external `lib/cutover_safety.py` against synthetic SQLite files and
+batch-owned processes. They do not reimplement the production algorithms.
+Process tests ran only after rootless private PID-namespace containment was
+proved and an outside watchdog was ready. No complete cutover/rollback entry
+point, migration, reset, restoration, real OpenCode session, provider request,
+or pre-existing process was used by this automated acceptance. Separately, the
+Step 4.2 operational intervention for PID 530393 was carried out in read-only
+inspection and ended blocked; it is not synthetic coverage, part of the GLOBAL
+VERIFIER, or an execution from a test tool.
+
+| Follow-up | Requirement and result | Limits / remaining action |
+|---|---|---|
+| **#1 — shared snapshot/deadline/fuse functions** | Validated dynamically against synthetic resources through the actual shared functions. The automated suite reports 52 cases: 43 dynamic, 4 simulated, 5 inspected, 0 failures, RC 0; the snapshot checks transactional consistency and isolation, and the deadline/fuse checks include the isolated `os._exit(124)` path. | This does not execute the migration or any complete entrypoint. A focused dynamic fuse proof already existed before this batch: RC 124, owned backend terminated, private root removed. The new objective was repeatable automated coverage, not a claim that no dynamic evidence existed. `FORGE_V2_TEST_NO_PIDFD` and `FORGE_V2_TEST_HANG_SUITE` exercise failure/barrier-cleanup paths only when explicitly injected; they are not part of the standard green run. |
+| **#2 — shared pidfd/holder/group safety functions** | Validated dynamically, with real shared functions and synthetic processes/files; deterministic OS-condition cases are separately reported as simulation, and source/function identity is inspected separately. Coverage includes pidfd identity rejection and bounded stop, DB/WAL/SHM/`-journal` and deleted-path holder classification, and the existing process-group cleanup behavior. | Simulations of permission denial, disappearance, and PID reuse are not real host signal/PID-reuse tests. No pre-existing process was signalled. This is function-level evidence, not an operational cutover test. |
+| **#3 — process-group cleanup contract** | Residual risk explicitly accepted and documented; `killpg` and the group/descendant cleanup contract remain in place. `GRP-1` dynamically exercised one early-leader-exit case: the leader exited while one owned descendant remained, and the tested group was emptied. | A pidfd identifies one process; by itself it does **not** preserve cleanup of a process group and its descendants. The early-leader case is bounded evidence, not proof of every descendant/race arrangement. A theoretical PID/PGID reuse window remains. Removing `killpg` requires a separate design/plan for descendant tracking or equivalent containment; it is not a mechanical pidfd substitution. |
+| **#4 — forge-guard** | The real guard package and its `execute.before` callback were directly corroborated with a simulated context. The adapted suite passed 18/18 checks in five runs; 0 pushes were attempted, no protected-branch commits were created, and the three commits were confined to `feature`. | **Direct hook corroboration with simulated context; OpenCode end-to-end dispatch not tested.** No real OpenCode session/conversation or tool dispatch occurred; this does not establish the effect of the hook on a real shell execution. Guard policy was not changed. |
+| **#5 — PID 530393** | The separate Step 4.2 operational intervention was carried out. Identity was verified with an open pidfd, UID 1000, `inicio_ticks=26522468`, exe `/tmp/opencode/cutover-lab/xdg/data/forge/opencode-v2/node_modules/@opencode/cli/bin/opencode.exe (deleted)`, cmdline `opencode serve --hostname 127.0.0.1 --port 34765 --print-logs`, and DB/WAL/SHM FDs under the lab (all `(deleted)`); no descendants or TTY were observed and there were no established connections. | **Terminal result: BLOCKED** because residuality was not accredited. `/proc/<pid>/fd` was inaccessible with EACCES for three non-zombie UID-1000 processes: PID 860 (`systemd --user`, parent of the target), 863 (`(sd-pam)`), and 1169 (`fusermount3`). Their prior references therefore could not be ruled out. No signal was sent; PID 530393 remains alive and intact. Evidence: [`/tmp/opencode/forge-v2-followups/pid-530393-intervention.md`](/tmp/opencode/forge-v2-followups/pid-530393-intervention.md). This operational intervention is separate from synthetic coverage, is not part of the GLOBAL VERIFIER, and was not run from a test tool. |
+
+The safety result distinguishes **dynamic tests** (real functions/resources in
+the private namespace), **simulations** (injected OS conditions, not real
+signals or PID reuse), and **inspections** (identity, signatures, and absence
+of complete-entrypoint execution). The automated acceptance of functions
+does not establish an end-to-end cutover: migration, reset, restoration, and
+the complete operation of `cutover.sh` / `ROLLBACK.sh` were not executed.
+
+### Component identity and fingerprints
+
+Versions below are the versions declared by the component itself; target
+OpenCode versions are not script/library versions. A component without a
+declared version is identified by its content hash. Initial external hashes
+are from the independent Step 1.1 backup. The final hashes of all six external
+components, including the edited notes and report, are in the external
+evidence manifest `/tmp/opencode/forge-v2-followups/external-after.sha256`;
+that manifest is authoritative and is not embedded into itself.
+
+| Component and path | Declared version | Initial → final SHA-256 |
+|---|---|---|
+| External `cutover.sh` — `/home/espinilleitor/forge-v2-cutover-20261024/cutover.sh` | Not declared (its `CUTOVER_EXPECTED_VERSION` targets OpenCode 2.1.4) | `6b1e7d6ee464d122e3d9380080fc474ad383e46a253a2e0aebfb927400e1f681` → `824897d990db781199c5bad26c186b7a2665c9ad167ef9482a44946780a5b613` |
+| External `ROLLBACK.sh` — `/home/espinilleitor/forge-v2-cutover-20261024/ROLLBACK.sh` | Not declared (mentions OpenCode 1.19.4 / 2.1.4) | `691829305d19a4988ff8a0d02ffcb9705900745ab20c68b01b5d5d0ed2e5075d` → `f91e7787ce7690fc0d5ec70aaafa5c051acb3b379006214c0e870e84474f8f85` |
+| External `CUTOVER-NOTES.md` — `/home/espinilleitor/forge-v2-cutover-20261024/CUTOVER-NOTES.md` | Not declared; OpenCode 2.1.4 is a compatibility target | Initial and final hashes: see `/tmp/opencode/forge-v2-followups-checkpoint/external.sha256` and `/tmp/opencode/forge-v2-followups/external-after.sha256` |
+| External `lib/dbtool.py` — `/home/espinilleitor/forge-v2-cutover-20261024/lib/dbtool.py` | Not declared; its docstring describes the 1.19.4 → 2.1.4 flow | `d15cc6aea6289683b9df7add7fcb82f27ba3eaddcb8368a563f1be8a98ab0db0` → unchanged |
+| External `REMEDIATION-REPORT.md` — `/home/espinilleitor/forge-v2-cutover-20261024/REMEDIATION-REPORT.md` | Not declared; OpenCode 2.1.4 is an observation | Initial and final hashes: see `/tmp/opencode/forge-v2-followups-checkpoint/external.sha256` and `/tmp/opencode/forge-v2-followups/external-after.sha256` |
+| New external `lib/cutover_safety.py` — `/home/espinilleitor/forge-v2-cutover-20261024/lib/cutover_safety.py` | Not declared | absent → `1e93447968a4f3ddb4395022260c89d643aa696c95edd003f853e79db4378454` |
+| Repo `open-code/lib/plugin-sync.py` | Not declared (V2-only, not a semantic version) | `70966cf5fac50faea615d882ff2c2e326729b5df883fe14507a84c72af415e9e` → `7760fd6a143fa906d6bf5b85df1ea8715cf8d04de83be440cea75e04e4cac8b5` |
+| Repo `tests/forge_guard_plugin_unit.sh` | Not declared | `a60d8c2d6ff1b75e5fd26b8139b0abb405c77125f3ecf3d2a9c5bc1b9a8e86d4` → `318cac66866a14d81ae796000c17a05b0e2c9d4aca5422443203b50d70f5a7d5` |
+| New repo `tests/forge_v2_safety.sh` | Not declared | absent → `cbbbe39953c1af23935f6315a3a75908b6f24e28fc4d060739163afb3a2da4b9` |
+| New repo `tests/forge_v2_safety_harness.py` | Not declared | absent → `451cfce0b85ea9653e67588d5cc906d6b1ec96d1c824d4941eeab024742ca718` |
+| Guard package `open-code/plugin-packages/forge-guard/package.json` / `index.js` | `forge-guard` 1.0.0 | `package.json` `1a19e5f2dbf7c4580aaa3c128b347e314a9e0002d9a28e2236b32823b5ff0220`; `index.js` `e1d2eb0dad24c0d0f8660f0e7d58297de67a9a23d341cc47be2ea3a83e5c007a` (unchanged from inventory) |
+| Runtime target `@opencode/cli` | 2.1.4 (declared package target; not a changed component) | Not fingerprinted as part of the follow-up component manifest |
+
+The detailed requirements/results/limits and the complete initial-to-final
+fingerprint map are also recorded in
+`/tmp/opencode/forge-v2-followups/acceptance.md`. The final hashes for the
+edited external documents are deliberately referenced from the external
+manifest rather than asserted inside those documents.
+
+## Coverage-closure batch — dispositions and evidence (2026-10-25)
+
+This is a new status entry for the coverage-closure batch; it does not replace
+or revise the historical conclusions above. The Step 3.2 GLOBAL VERIFIER
+acceptance is complete with RC 0; its actual timings and evidence are recorded
+below and in the linked evidence documents.
+
+### Follow-up — corte exterior y limpieza previa del supervisor
+
+El verificador registra por ejecución la identidad del launcher/suite interior
+asociada a la ruta única del informe. Ante corte exterior, interrupción o error,
+congela primero el grupo exterior propio, termina y espera la ausencia en `/proc`
+del launcher y la suite de su sesión propia, y solo entonces retira al supervisor;
+el resumen excepcional conserva ambos grupos, start ticks y estados de ausencia.
+El contrato de `killpg` se conserva sin rediseñar B. El guard exterior por defecto
+es 600 s: queda después del timeout interno normal de 300 s, que empieza una vez
+terminada la preparación/autorización, y deja margen documentado para preparación
+y limpieza acotadas. La prueba de corte forzada (guard 8 s, RC global 1 esperado)
+y la verificación autónoma por defecto (RC 0) constan en
+[`exceptional-cleanup.md`](/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/exceptional-cleanup.md)
+y `runs/20261025T164452.668671570-2072645/`.
+
+### A — negative safety scenarios
+
+The delivered `tests/forge_v2_safety_scenarios.sh` contract adds sequential
+`normal`, `no-pidfd`, and `no-pidfd-hang` scenarios. The autonomous verifier
+integrates both negative scenarios into each successful run: `no-pidfd` must
+prove authorization was denied before any sensitive case, while
+`no-pidfd-hang` must prove a real timeout and cleanup of its own init and
+synthetic descendant with pidfd disabled. Its injection occurs before the
+authorization barrier, so that scenario proves cleanup, not authorization
+denial. Expected incremental cost was two additional isolated starts and about
+20 seconds of timeout, plus preparation and cleanup. The final measured run
+used three starts total (one normal plus two additional): `no-pidfd` took
+0.620 s and `no-pidfd-hang` took 20.550 s, including preparation and cleanup.
+The timeout was 20.001 s and combined negative-path cost was 21.170 s. These
+are observed costs, not new cost thresholds.
+
+### Guard temporal de la interfaz y RC 13/14/15
+
+La supervisión temporal de la interfaz permanece activa durante la ejecución
+completa, con lecturas y esperas acotadas por su propio plazo. El guard de la
+interfaz es 420 s por defecto (`FORGE_V2_SCENARIO_GUARD`) y el guard exterior del GLOBAL VERIFIER
+es 600 s por defecto (`FORGE_V2_OUTER_SCENARIO_GUARD`, nunca por debajo de 600 s); ambos plazos son
+independientes para que el exterior no corte la limpieza de la interfaz.
+**RC 13** indica guard exterior contradictorio; **RC 14** indica guard de interfaz vencido con
+limpieza acreditada y **RC 15** indica vencimiento con limpieza incompleta. Los tres son fallos duros globales, no se
+reinterpretan como éxitos ni como RC de supervisor/suite. Estos RC por capa se
+leen exclusivamente de `verdict.json` (`supervisor_rc`, `suite_rc`) y
+`safety-results.json` (`cleanup.suite_returncode`).
+
+En el camino de vencimiento, el GLOBAL VERIFIER valida de forma independiente
+`guard-expiry.json` y `guard-verdict.json`: legibilidad, `survivors == []`, RC
+del ejecutor concordante, PIDs/grupos propios registrados ausentes en `/proc`
+y plazo respetado. La prueba negativa explícita con guard de interfaz de 5 s y
+guard exterior de 600 s produjo RC del ejecutor 14 y RC global **1** (fallo
+duro requerido), con la evidencia conservada en
+`runs/20261025T171005.295367971-2088071/`. La ejecución autónoma satisfactoria
+posterior terminó RC **0** y acreditó los RC ejecutor/supervisor/suite
+`0/0/0`, `0/6/4` y `0/6/-9` para `normal`, `no-pidfd` y `no-pidfd-hang`, respectivamente; véase
+`runs/20261025T171021.598466224-2088493/summary.md` y su `acceptance.md`.
+
+La prueba histórica de corte `runs/20261025T164706.784704034-2077577/` usó el script pre-split:
+allí `FORGE_V2_SCENARIO_GUARD=8` se interpretó como exterior y no acredita el código entregado.
+Tras el split, el camino excepcional se verifica mediante
+`FORGE_V2_OUTER_SCENARIO_GUARD` por encima del guard de interfaz y el manejador `TERM` del GLOBAL
+VERIFIER; la señal dirigida no se presenta como expiración natural del timer. Los tres casos de
+fallo de limpieza y sus límites de espera están documentados en
+[`exceptional-cleanup.md`](/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/exceptional-cleanup.md).
+
+### B — process-group cleanup
+
+The existing `killpg` cleanup contract is retained. It can clean the owned
+process group, including descendants, even after the group leader exits; the
+group identifier cannot be reused while that original group still exists. A
+real residual race remains after the entire group disappears. The evidence
+does not demonstrate an exploit or a reproducible defect, and the residual
+race remains accepted under the existing policy. Checking the leader's start
+identity does not remove the TOCTOU window; requiring the leader to remain
+alive would break a covered early-leader-exit case. Genealogical pidfd tracking
+or cgroups would be redesigns outside this batch. Neither implementation nor
+acceptance policy was changed.
+
+### C — PID 530393 and blocked intervention
+
+The test OpenCode server remains alive and intact temporarily; it is neither
+reported as cleaned nor made a permanent acceptance by this entry. The latest
+historical intervention evidence did not show established connections or
+references from this server to the productive database, but that dated result
+is not a guarantee of its current harmlessness. The required stop criterion
+remains blocked because permissions prevented completing the reference check
+for three other processes; this does not establish that those processes use
+the files. Repeating device/inode checks, or switching to `/proc/*/maps` or
+`fanotify`, cannot retrospectively reveal inaccessible open descriptors, so
+the global investigation is not repeated. No process was signalled. Stopping
+it later requires explicit authorization of a revised criterion, revalidation,
+and a pidfd-directed signal, outside this plan. Killing `systemd --user` is
+ruled out; a normal future restart may retire the server but will not be
+induced, and logging out alone does not guarantee that result.
+
+See [the A/B/C disposition and evidence limits](/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/disposition-b-c.md)
+and [the dated PID status](/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/pid-530393-status.md).
+
+### Step 3.2 — GLOBAL VERIFIER acceptance and measured cost
+
+The autonomous verifier completed with **RC 0** on 2026-10-25, using new run
+evidence at
+`/tmp/opencode/forge-v2-coverage-closure-20261025/runs/20261025T161944.999989623-2054585/`.
+The normal route passed all 52 safety cases (43 dynamic, 4 simulated, 5
+inspection) with supervisor/suite/executor RC `0/0/0` and 16/16 semantic
+checks. `no-pidfd` passed 19/19 semantic checks with RCs supervisor/suite/
+executor `6/4/0`, proving explicit authorization denial before sensitive
+cases and immediate cleanup. `no-pidfd-hang` passed 19/19 checks with RCs
+`6/-9/0`, a real 20.001 s timeout, one synthetic child, and verified cleanup
+without pidfd. Its injection precedes the authorization barrier; it does not
+claim authorization denial. The forge-guard suite also passed 18/18 checks.
+
+| Route | Preparation (s) | Execution (s) | Timeout (s) | Cleanup (s) | Total (s) | Namespace starts |
+|---|---:|---:|---:|---:|---:|---:|
+| Normal | 0.048 | 98.762 | 0 | 0.390 | 99.200 | 1 |
+| `no-pidfd` | 0.064 | 0.206 | 0 | 0.350 | 0.620 | 1 |
+| `no-pidfd-hang` | 0.053 | 0.143 | 20.001 | 0.353 | 20.550 | 1 |
+| Negative routes combined (additional cost) | 0.117 | 0.349 | 20.001 | 0.703 | 21.170 | 2 |
+
+The expectation of two additional isolated starts and approximately 20 seconds
+of timeout was met. No threshold is inferred from this single measurement.
+Detailed acceptance, resource state, and isolation evidence are in
+[`acceptance.md`](/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/acceptance.md),
+[`cost.md`](/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/cost.md),
+[`resources-final.md`](/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/resources-final.md),
+and [`isolation.md`](/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/isolation.md).
+The tester-owned bytecode fix is preserved separately in
+[`safety-results-bytecode-fix.md`](/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/safety-results-bytecode-fix.md)
+and its latest test report in
+[`safety-results-latest.json`](/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/safety-results-latest.json);
+the historical previous-lot evidence was restored byte-for-byte and audited
+against its checkpoint.
+The PID 530393 remained alive with the same start ticks and listener; no signal
+or intervention occurred. The original database was accessed only by `stat()`
+for this phase; a concurrent mtime change is recorded without attributing it
+to this verifier.
+
+### Final post-split verification after re-review
+
+The final launcher closes a race in the RC 13 path: the process created under
+`setsid --fork --wait` publishes its PID and waits for a bounded registration
+handshake before executing the scenario interface. The parent validates the
+process start ticks, PGID, and SID, then releases it. Thus, an immediate
+contradictory-guard exit cannot precede group registration; absent supervisor
+logs are handled without aborting sequential evidence collection. This does
+not change the approved `killpg` contract.
+
+The final RC 0 GLOBAL VERIFIER run is
+`runs/20261025T180255.395291197-2123545/`, with interface/exterior guards
+420/600 s. The executor returned `0/0/0`; the supervisor/suite RC pairs were
+`0/0`, `6/4`, and `6/-9` for `normal`, `no-pidfd`, and `no-pidfd-hang`. Normal
+passed 52/52 cases and 16/16 semantic checks; the negative scenarios passed
+19/19 each; forge-guard passed 18/18. The groups recorded in
+`own-process-groups.tsv` have no live members. The measured totals were
+99.260 s normal, 0.620 s `no-pidfd`, and 20.660 s `no-pidfd-hang`.
+
+The final negative probes are deliberately separate from that successful
+acceptance: RC 13 from equal 600/600 guards is a hard-failure probe (all three
+outer groups were registered and empty; no scenario reached its supervisor),
+RC 14 from a 5 s interface guard was independently validated with zero
+survivors, and RC 15 detected three survivors before forced recovery to zero
+live resources. Each has the expected nonzero GLOBAL VERIFIER RC 1. Three
+post-split `TERM` probes exercised outer identity revalidation failure,
+`SIGSTOP` failure, and a forced false inner-absence result; all three ended
+with launcher, suite, supervisor, and owned groups absent. `TERM` was sent to
+the GLOBAL VERIFIER process started by each probe; this is not represented as
+natural timer expiry. Exact run paths, identities, budgets, and the RC 15
+probe-mode note are in
+[`exceptional-cleanup.md`](/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/exceptional-cleanup.md)
+and [`acceptance.md`](/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/acceptance.md).
+
+The initial historical component/measurement tables above were not rewritten;
+the post-split run is an appended status update, not a replacement for those
+dated observations. The Step 1.1 direct-read deviation remains recorded and
+was not repeated; the original DB was accessed only with `stat()` during these
+follow-ups. PID 530393 remained alive with the checkpoint identity and local
+listener and received no signal.
+
+### Coverage-closure component fingerprints
+
+These hashes identify the files at this documentation step; the two
+unchanged-worktree references are retained as-is. Hashes of the six external
+files are checked against the immutable batch checkpoint, not recopied here.
+The final hash of this document is recorded in the external batch manifest
+`/tmp/opencode/forge-v2-coverage-closure-20261025/evidence/fingerprints.sha256`
+so the document does not embed a self-referential digest.
+
+| Component | SHA-256 |
+|---|---|
+| `tests/forge_v2_safety_harness.py` | `d8b58d47771173edac6a2ec38c47d22b165fa20aada3a790498f53a3e1ec852b` |
+| `tests/forge_v2_safety_scenarios.sh` | `301fbf40816e3bbbb36597adc8ddbd3c5505b1f873f970ef878193705b0272c1` |
+| `tools/verification/forge-v2-followups.sh` | `a05ec8f609420ceb5a6910a5658f9677456d7031c99121f29431837d3448673d` |
+| `tools/verification/verify-forge-v2-syntax.py` | `ee316af286a368dd556c89bcc70ed391238feab5791f8a928a124f5591f9839b` |
+| `open-code/MIGRATION-V2.md` | Final hash: véase el manifiesto externo de esta entrega; no se inserta aquí. |
+| `open-code/lib/plugin-sync.py` (unchanged) | `7760fd6a143fa906d6bf5b85df1ea8715cf8d04de83be440cea75e04e4cac8b5` |
+| `tests/forge_guard_plugin_unit.sh` (unchanged) | `318cac66866a14d81ae796000c17a05b0e2c9d4aca5422443203b50d70f5a7d5` |

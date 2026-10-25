@@ -1078,14 +1078,18 @@ def _process_group_pids(pgid):
     return found
 
 
-def _reap_group_children(pgid):
+def _reap_group_children(pgid, processes):
+    processes_by_pid = {process.pid: process for process in processes}
     while True:
         try:
-            pid, _status = os.waitpid(-pgid, os.WNOHANG)
+            pid, status = os.waitpid(-pgid, os.WNOHANG)
         except (ChildProcessError, OSError):
             return
         if pid <= 0:
             return
+        process = processes_by_pid.get(pid)
+        if process is not None and process.returncode is None:
+            process.returncode = os.waitstatus_to_exitcode(status)
 
 
 def _enable_child_subreaper():
@@ -1122,7 +1126,7 @@ def _terminate_process_groups(processes, deadline):
     term_end = min(deadline, time.monotonic() + 0.5)
     while time.monotonic() < term_end:
         for pgid in groups:
-            _reap_group_children(pgid)
+            _reap_group_children(pgid, unique.values())
         if not any(_process_group_pids(pgid) for pgid in groups):
             break
         time.sleep(min(0.05, max(0.0, term_end - time.monotonic())))
@@ -1138,7 +1142,7 @@ def _terminate_process_groups(processes, deadline):
 
     while time.monotonic() < deadline:
         for pgid in groups:
-            _reap_group_children(pgid)
+            _reap_group_children(pgid, unique.values())
         for process in unique.values():
             try:
                 process.poll()
@@ -1149,7 +1153,7 @@ def _terminate_process_groups(processes, deadline):
         time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
 
     for pgid in groups:
-        _reap_group_children(pgid)
+        _reap_group_children(pgid, unique.values())
     for process in unique.values():
         try:
             process.wait(timeout=0)
