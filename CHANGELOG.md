@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- preserva el estado de salida por señal y adapta la suite del guard
+- checkpoint approved V2 launcher and cutover safeguards
+
 ## [0.8.0] - 2026-10-24
 
 ### Added
