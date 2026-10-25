@@ -443,6 +443,10 @@ used three starts total (one normal plus two additional): `no-pidfd` took
 The timeout was 20.001 s and combined negative-path cost was 21.170 s. These
 are observed costs, not new cost thresholds.
 
+### POSIX launcher contract
+
+`forge-opencode` is declared `#!/usr/bin/env sh` and must remain POSIX (no arrays or `+=`), because `sh` is `dash` on supported systems; `shellcheck -s sh` is the static guard for this contract.
+
 ### Guard temporal de la interfaz y RC 13/14/15
 
 La supervisión temporal de la interfaz permanece activa durante la ejecución
@@ -601,8 +605,75 @@ so the document does not embed a self-referential digest.
 |---|---|
 | `tests/forge_v2_safety_harness.py` | `d8b58d47771173edac6a2ec38c47d22b165fa20aada3a790498f53a3e1ec852b` |
 | `tests/forge_v2_safety_scenarios.sh` | `301fbf40816e3bbbb36597adc8ddbd3c5505b1f873f970ef878193705b0272c1` |
-| `tools/verification/forge-v2-followups.sh` | `a05ec8f609420ceb5a6910a5658f9677456d7031c99121f29431837d3448673d` |
+| `tools/verification/forge-v2-followups.sh` | `f193308b9cfd5d8ad44d5b74352623f38b7120c3d9769289aa1dacf336f6477f` |
+| `open-code/forge-opencode.sh` | `c33860443e5b0ec8191329d8735bb1009b6eca24c35e68906441cf752990b752` |
 | `tools/verification/verify-forge-v2-syntax.py` | `ee316af286a368dd556c89bcc70ed391238feab5791f8a928a124f5591f9839b` |
 | `open-code/MIGRATION-V2.md` | Final hash: véase el manifiesto externo de esta entrega; no se inserta aquí. |
 | `open-code/lib/plugin-sync.py` (unchanged) | `7760fd6a143fa906d6bf5b85df1ea8715cf8d04de83be440cea75e04e4cac8b5` |
 | `tests/forge_guard_plugin_unit.sh` (unchanged) | `318cac66866a14d81ae796000c17a05b0e2c9d4aca5422443203b50d70f5a7d5` |
+
+## Runtime health contracts and real-runtime integration (2026-10-25)
+
+Health has two distinct acceptance contracts; static checks alone never stand
+in for runtime health:
+
+- **Runtime unavailable or not exercisable** (the fake runtime used by the
+  ordinary tests): `status` and `doctor` return RC 1 and report
+  `Estado general: DEGRADADO`; they identify `plugin-runtime` with its cause.
+  Other healthy static checks may still pass, but they do not make the overall
+  result healthy. `UNAVAILABLE` remains a health-blocking result; the product
+  contract was not relaxed.
+- **Real OpenCode CLI 2.1.4**: the real-runtime integration scenario requires
+  `status` RC 0 with `Estado general: OK`, `doctor` RC 0 with `FAILs=0`, and
+  the exact runtime inventory containing one `forge-guard` entry. Its
+  row must be `ID=forge-guard`, `VERSION=local`, and `SOURCE` must end in
+  `plugin-packages/forge-guard/index.js` within the scenario's isolated copy.
+  The header is exactly `ID VERSION SOURCE`. This is real runtime enumeration,
+  not a result inferred from static package files.
+
+`tests/run-all.sh` is the effective suite entry point and discovers
+`tests/*_integration.sh`, including
+`tests/opencode_real_runtime_integration.sh`. That scenario is mandatory: its
+failure propagates as a nonzero suite result; a missing runtime is an explicit
+failure, never a green skip. In CI, install the required CLI globally with
+`npm install -g @opencode/cli@2.1.4`; the scenario resolves and uses that real
+binary. It does not require Forge's pinned prefix to be installed.
+
+For local execution, optionally set `FORGE_TEST_REAL_OPENCODE_BIN` to the
+absolute path of an existing executable for real OpenCode CLI 2.1.4, for
+example:
+
+```sh
+FORGE_TEST_REAL_OPENCODE_BIN="$HOME/.local/share/forge/opencode-v2/node_modules/.bin/opencode" \
+  tests/opencode_real_runtime_integration.sh
+```
+
+Without the override, resolution uses the global npm installation. The
+scenario never uses the `~/.local/bin/opencode` user wrapper; it rejects a
+resolved binary that points there. If neither source provides the required
+runtime, it reports the cause and fails. It does not install tools, change the
+local OpenCode version, or alter the local installation. Do not uninstall or
+remove the user's real OpenCode installation to obtain a green test result.
+
+The test compares the `forge-`-prefixed state before and after execution so a
+pre-existing environmental entry is not mistaken for a write by the test:
+absent → absent passes; absent → present fails; present → absent fails; and
+present → present passes only when its fingerprint shows no mutation. This
+comparison avoids the false environmental failure without hiding new entries,
+deletions, or changes to pre-existing state.
+
+The isolated real CLI scenario also has harness-specific requirements. It sets
+its own `XDG_RUNTIME_DIR`, which the real CLI needs to register its private
+service, and uses a controlled `PATH` rather than inheriting the caller's PATH
+(which may contain the user wrapper). These are test-isolation requirements,
+not changes to the product runtime contract.
+
+### Provisional performance debt
+
+On the real installation, each diagnostic costs about 16 seconds and a real
+scenario about 32 seconds, plus isolation setup and cleanup. These are observed
+costs, not product thresholds. The mitigation in this batch is to reuse each
+captured `status` and `doctor` output in the suite rather than invoke the same
+diagnostic repeatedly. There is no result cache and no relaxation of product
+checks. Any future optimization requires measurement and must retain fresh
+runtime enumeration, isolation, and cleanup.

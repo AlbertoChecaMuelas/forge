@@ -249,6 +249,8 @@ if [ "${1:-}" = plugin ] && { [ "${2:-}" = list ] || [ "${2:-}" = --help ] || [ 
   # supervisor shared it, the shell could die before it waited for the
   # supervisor's cleanup and would expose RC=-SIGTERM instead of 143.
   forge_runtime_pid=
+  # This handler is invoked indirectly by the INT/TERM traps below.
+  # shellcheck disable=SC2329
   forge_runtime_handle_signal() {
     forge_signal="$1"
     trap - INT TERM
@@ -266,20 +268,22 @@ if [ "${1:-}" = plugin ] && { [ "${2:-}" = list ] || [ "${2:-}" = --help ] || [ 
   trap 'forge_runtime_handle_signal INT' INT
   trap 'forge_runtime_handle_signal TERM' TERM
 
-  forge_runtime_private_db_args=()
-  if [ "${FORGE_OPENCODE_PRIVATE_DB:-}" = "1" ]; then
-    forge_runtime_private_db_args+=(--database-private)
-  fi
+  forge_runtime_launch() {
+    python3 -c 'import os, sys; os.setsid(); os.execvp("python3", ["python3", *sys.argv[1:]])' \
+      "$SCRIPT_DIR/lib/plugin-sync.py" runtime-list \
+      --binary "$forge_runtime_bin" \
+      --config-dir "$OPENCODE_CONFIG_DIR" \
+      --config "$OPENCODE_CONFIG" \
+      "$@" &
+    forge_runtime_pid=$!
+  }
 
   set +e
-  python3 -c 'import os, sys; os.setsid(); os.execvp("python3", ["python3", *sys.argv[1:]])' \
-    "$SCRIPT_DIR/lib/plugin-sync.py" runtime-list \
-    --binary "$forge_runtime_bin" \
-    --config-dir "$OPENCODE_CONFIG_DIR" \
-    --config "$OPENCODE_CONFIG" \
-    "${forge_runtime_private_db_args[@]}" \
-    -- "$@" &
-  forge_runtime_pid=$!
+  if [ "${FORGE_OPENCODE_PRIVATE_DB:-}" = "1" ]; then
+    forge_runtime_launch --database-private -- "$@"
+  else
+    forge_runtime_launch -- "$@"
+  fi
   wait "$forge_runtime_pid"
   forge_runtime_rc=$?
   trap - INT TERM

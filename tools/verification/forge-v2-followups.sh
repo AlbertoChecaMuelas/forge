@@ -8,7 +8,6 @@ EXTERNAL=/home/espinilleitor/forge-v2-cutover-20261024
 PREVIOUS_EVIDENCE=/tmp/opencode/forge-v2-followups
 BASE=/tmp/opencode/forge-v2-coverage-closure-20261025
 RUNS="$BASE/runs"
-REMEDIATION=/tmp/opencode/forge-v2-remediation
 BACKUP=/tmp/opencode/forge-v2-remediation/backup
 CHECKPOINT=/tmp/opencode/forge-v2-followups-checkpoint/checkpoint.commit
 EXTERNAL_BACKUP=/tmp/opencode/forge-v2-followups-checkpoint/external
@@ -196,7 +195,8 @@ capture_inner_identity_from_log() {
 }
 
 discover_inner_identities() {
-  local identity_file="$RUN_DIR/$(basename "$ACTIVE_SCENARIO_DIR").outer-cleanup-identities.json"
+  local identity_file
+  identity_file="$RUN_DIR/$(basename "$ACTIVE_SCENARIO_DIR").outer-cleanup-identities.json"
   python3 - "$ACTIVE_SCENARIO_PID" "$ACTIVE_SCENARIO_REPORT" "$REPO/tests/forge_v2_safety_harness.py" "$identity_file" <<'PY'
 import json
 import os
@@ -509,7 +509,7 @@ cleanup_active_scenario() {
   local pgid="$ACTIVE_SCENARIO_PGID" sid="$ACTIVE_SCENARIO_SID"
   local inner_pgid="$ACTIVE_SCENARIO_INNER_PGID" inner_sid="$ACTIVE_SCENARIO_INNER_SID"
   local own_group=0 registered_outer=0 inner_registered=0 inner_before='[]' inner_after='unknown'
-  local outer_before='[]' outer_after='unknown' discovery_output= key found_pid found_start found_pgid found_sid
+  local outer_before='[]' outer_after='unknown' discovery_output='' key found_pid found_start found_pgid found_sid
   local stopped=0 inner_signalled=0 inner_dead=0 cleanup_rc=0 wait_deadline
   local launcher_gone=unknown suite_gone=unknown supervisor_gone=unknown
   local launcher_absent_before=unknown suite_absent_before=unknown inner_absent_before=0
@@ -798,9 +798,9 @@ cleanup_active_scenario() {
 run_scenario() {
   local scenario="$1" scenario_dir="$RUN_DIR/$1" scenario_log="$RUN_DIR/$1.runner.log"
   local identity_file="$RUN_DIR/$1.outer-session-pid" identity_ready_file="$RUN_DIR/$1.outer-session-registered"
-  local start= prep_end= finish= cleanup_start= cleanup_end= total_end= rc=0 timed_out=0 elapsed launch_wait_deadline
+  local start='' finish='' cleanup_start='' cleanup_end='' total_end='' rc=0 timed_out=0 launch_wait_deadline
   local wrapper_start wrapper_end cleanup_mark injection_mark timeout_elapsed cleanup_elapsed prep_elapsed total_elapsed execution_elapsed outer_cleanup_elapsed tail_cleanup_elapsed starts children delta normal_total
-  local own_members= scenario_pgid= scenario_sid= members_after= cleanup_failed=0
+  local own_members='' scenario_pgid='' scenario_sid='' members_after='' cleanup_failed=0
   export FORGE_V2_EXTERNAL_ROOT FORGE_V2_REAL_DB FORGE_V2_HANG_TIMEOUT FORGE_V2_SCENARIO_GUARD
   export FORGE_V2_OUTER_SCENARIO_GUARD
   export FORGE_V2_BATCH_ROOT="$scenario_dir/work"
@@ -823,6 +823,7 @@ run_scenario() {
   ACTIVE_SCENARIO_EXCEPTION_STATUS=not-applicable
   start="$(mono_now)"
   printf '=== Ejecutando interfaz literal: bash tests/forge_v2_safety_scenarios.sh %s %s ===\n' "$scenario" "$scenario_dir"
+  # shellcheck disable=SC2016 # The single-quoted body is executed by child Bash; its expansions belong there.
   setsid --fork --wait bash -c '
     identity_file="$1"
     identity_ready_file="$2"
@@ -911,7 +912,6 @@ run_scenario() {
   else
     : > "$identity_ready_file"
     capture_inner_identity_from_log || true
-    prep_end="$(mono_now)"
     local scenario_deadline=$((SECONDS + FORGE_V2_OUTER_SCENARIO_GUARD))
     while :; do
       capture_inner_identity_from_log || true
@@ -1082,10 +1082,10 @@ finish_verifier() {
   fi
   {
     printf '# Resumen de ejecución GLOBAL VERIFIER\n\n'
-    printf -- '- Run: `%s`\n- RC global: `%s`\n- PID 530393 final: `%s`\n' "$RUN_DIR" "$rc" "$([[ "$PID_FINAL_OK" == 1 ]] && echo vivo-identidad-y-servicio-verificados || echo fallo-de-verificacion)"
-    printf -- '- Limpieza exterior: `%s`\n' "$([[ -z "$ACTIVE_SCENARIO_PID" ]] && echo sin-ejecucion-activa || echo fallo)"
-    printf -- '- Guard de interfaz: `%s` s; guard exterior independiente del verificador: `%s` s.\n' "$FORGE_V2_SCENARIO_GUARD" "$FORGE_V2_OUTER_SCENARIO_GUARD"
-    printf -- '- Semántica RC: interfaz RC 13 (plazos contradictorios), 14 (guard vencido con limpieza acreditada) y 15 (guard vencido con limpieza incompleta) son fallos duros; cualquier RC ejecutor distinto de 0 hace no-cero el RC global. No se reinterpretan como `supervisor_rc` ni `suite_rc`: esos RC por capa provienen de `verdict.json` y `safety-results.json` (`cleanup.suite_returncode`).\n'
+    printf -- "- Run: \`%s\`\n- RC global: \`%s\`\n- PID 530393 final: \`%s\`\n" "$RUN_DIR" "$rc" "$([[ "$PID_FINAL_OK" == 1 ]] && echo vivo-identidad-y-servicio-verificados || echo fallo-de-verificacion)"
+    printf -- "- Limpieza exterior: \`%s\`\n" "$([[ -z "$ACTIVE_SCENARIO_PID" ]] && echo sin-ejecucion-activa || echo fallo)"
+    printf -- "- Guard de interfaz: \`%s\` s; guard exterior independiente del verificador: \`%s\` s.\n" "$FORGE_V2_SCENARIO_GUARD" "$FORGE_V2_OUTER_SCENARIO_GUARD"
+    printf -- "- Semántica RC: interfaz RC 13 (plazos contradictorios), 14 (guard vencido con limpieza acreditada) y 15 (guard vencido con limpieza incompleta) son fallos duros; cualquier RC ejecutor distinto de 0 hace no-cero el RC global. No se reinterpretan como \`supervisor_rc\` ni \`suite_rc\`: esos RC por capa provienen de \`verdict.json\` y \`safety-results.json\` (\`cleanup.suite_returncode\`).\n"
     if [[ "$FORGE_V2_GUARD_EXPIRY_PROBE" == 1 ]]; then
       local probe_runner_rc probe_guard_status
       probe_runner_rc="$(awk -F '\t' '$1 == "no-pidfd-hang" { print $2; exit }' "$SCENARIO_RC_FILE")"
@@ -1097,7 +1097,7 @@ finish_verifier() {
           probe_guard_status=FAIL
         fi
       fi
-      printf -- '- Prueba negativa de guard vencido: escenario `no-pidfd-hang`, RC del ejecutor `%s`, validación independiente `%s`; el RC global no-cero es obligatorio y no equivale a un fallo inesperado de la ejecución autónoma satisfactoria.\n\n' "${probe_runner_rc:-ausente}" "$probe_guard_status"
+      printf -- "- Prueba negativa de guard vencido: escenario \`no-pidfd-hang\`, RC del ejecutor \`%s\`, validación independiente \`%s\`; el RC global no-cero es obligatorio y no equivale a un fallo inesperado de la ejecución autónoma satisfactoria.\n\n" "${probe_runner_rc:-ausente}" "$probe_guard_status"
     else
       printf '\n'
     fi
@@ -1107,12 +1107,12 @@ finish_verifier() {
     fi
     printf '\n'
     for scenario in normal no-pidfd no-pidfd-hang; do
-      printf '## Escenario `%s`\n\n' "$scenario"
+      printf "## Escenario \`%s\`\n\n" "$scenario"
       rc_line='no ejecutado'
       if [[ -f "$SCENARIO_RC_FILE" ]]; then
         rc_line="$(awk -F '\t' -v s="$scenario" '$1 == s { print "RC=" $2; found=1 } END { if (!found) print "no ejecutado" }' "$SCENARIO_RC_FILE")"
       fi
-      printf -- '- RC del ejecutor: `%s`\n' "$rc_line"
+      printf -- "- RC del ejecutor: \`%s\`\n" "$rc_line"
       if [[ -f "$RUN_DIR/$scenario/verdict.md" ]]; then
         printf '\n'
         cat "$RUN_DIR/$scenario/verdict.md"
@@ -1125,9 +1125,9 @@ finish_verifier() {
         printf '```\n'
       fi
       if [[ -f "$RUN_DIR/$scenario/guard-expiry.json" || -f "$RUN_DIR/$scenario/guard-verdict.json" ]]; then
-        printf '\nEvidencia original del guard vencido conservada bajo `%s`: ' "$RUN_DIR/$scenario"
+        printf "\nEvidencia original del guard vencido conservada bajo \`%s\`: " "$RUN_DIR/$scenario"
         for guard_file in guard-expiry.json guard-verdict.json; do
-          [[ -s "$RUN_DIR/$scenario/$guard_file" ]] && printf '`%s` ' "$guard_file"
+          [[ -s "$RUN_DIR/$scenario/$guard_file" ]] && printf "\`%s\` " "$guard_file"
         done
         printf '\n'
       fi
@@ -1157,8 +1157,8 @@ finish_verifier() {
       printf 'Sin rutas excepcionales activadas.\n'
     fi
     printf '```\n\n'
-    printf -- '- Estado final PID: consulte `pid-530393-final.tsv`; sin señales ni relanzamiento.\n'
-    printf -- '- Verificaciones normales/globales: consulte `forge-v2-followups-global.log`; evidencias por escenario bajo `normal/`, `no-pidfd/`, `no-pidfd-hang/`.\n'
+    printf -- "- Estado final PID: consulte \`pid-530393-final.tsv\`; sin señales ni relanzamiento.\n"
+    printf -- "- Verificaciones normales/globales: consulte \`forge-v2-followups-global.log\`; evidencias por escenario bajo \`normal/\`, \`no-pidfd/\`, \`no-pidfd-hang/\`.\n"
   } > "$SCENARIO_SUMMARY" || rc=1
   printf '\nVERIFIER_FINAL_RC=%s\n' "$rc" >> "$RUN_LOG"
   cat "$RUN_LOG" >&3
