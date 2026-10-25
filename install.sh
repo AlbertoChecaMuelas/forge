@@ -1224,6 +1224,152 @@ _forge_opencode_check_plugins() {
   fi
 }
 
+# _forge_opencode_check_plugin_inventory <installed overlay> <installed config> <hint>
+# Run the installed launcher against a private copy of the selected installed
+# overlay/config and a coherent private DB snapshot. The launcher supervises a
+# fresh ephemeral service and polls the real CLI listing; static package
+# presence is not accepted as runtime enumeration.
+_forge_opencode_check_plugin_inventory() {
+  local _tgt_dir="$1" _cfg="$2" _hint="$3"
+  local _launcher="$HOME/.local/bin/forge-opencode"
+  local _helper="$FORGE_ROOT/open-code/lib/plugin-sync.py"
+  local _source_db="" _root="" _home _xdg _overlay _config _manifest _db _cwd
+  local _copy_json _copy_err _snapshot_err _snapshot_rc=0 _rc=0 _out _stderr
+
+  if [ ! -x "$_launcher" ] || [ ! -x "$FORGE_OPENCODE_BIN" ] || [ ! -f "$_helper" ] \
+      || ! command -v python3 >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    printf 'UNAVAILABLE|plugin-runtime|plugin list no ejecutada: falta launcher, binario o dependencia para preparar el sondeo aislado|%s\n' "$_hint"
+    return 0
+  fi
+
+  _source_db="$(_forge_opencode_resolve_db_path)" || _source_db=""
+  if [ -z "$_source_db" ]; then
+    printf 'UNAVAILABLE|plugin-runtime|plugin list no ejecutada: el binario pinado no pudo resolver OPENCODE_DB antes del aislamiento|%s\n' "$_hint"
+    return 0
+  fi
+  _root="$(_forge_opencode_private_tempdir forge-opencode-plugin-diagnostic "$_source_db")" || _root=""
+  if [ -z "$_root" ] || [ ! -d "$_root" ]; then
+    printf 'UNAVAILABLE|plugin-runtime|plugin list no ejecutada: no se pudo crear aislamiento privado|%s\n' "$_hint"
+    return 0
+  fi
+  chmod 700 "$_root" 2>/dev/null || true
+  _home="$_root/home"
+  _xdg="$_root/xdg"
+  _overlay="$_root/config/opencode-forge"
+  _manifest="$_home/.forge-state.json"
+  _db="$_root/data/opencode/opencode.db"
+  _cwd="$_root/work"
+  _stderr="$_root/plugin-list.stderr"
+  _copy_err="$_root/prepare.stderr"
+  _snapshot_err="$_root/snapshot.stderr"
+
+  if ! mkdir -p "$_home/.local/bin" "$_xdg/config" "$_xdg/data" "$_xdg/state" \
+      "$_xdg/cache" "$_xdg/tmp" "$(dirname "$_db")" "$_cwd" 2>/dev/null; then
+    rm -rf -- "$_root"
+    printf 'UNAVAILABLE|plugin-runtime|plugin list no ejecutada: no se pudo preparar HOME/XDG privados|%s\n' "$_hint"
+    return 0
+  fi
+  chmod 700 "$_home" "$_xdg" "$_overlay" "$_cwd" 2>/dev/null || true
+
+  case "$_launcher" in
+    /*) ;;
+    *) _launcher="$PWD/$_launcher" ;;
+  esac
+  if ! ln -s "$_launcher" "$_home/.local/bin/forge-opencode" 2>/dev/null; then
+    rm -rf -- "$_root"
+    printf 'UNAVAILABLE|plugin-runtime|plugin list no ejecutada: no se pudo aislar el launcher instalado|%s\n' "$_hint"
+    return 0
+  fi
+
+  # Materialize the installed overlay, not the checkout source. The helper
+  # preserves plugins/options and relative layout, removes service records,
+  # and drops MCP/providers so no external integration is started.
+  _copy_json="$(PYTHONDONTWRITEBYTECODE=1 python3 "$_helper" runtime-copy \
+    --config-dir "$_tgt_dir" --config "$_cfg" --destination "$_overlay" 2>"$_copy_err")" || _rc=$?
+  if [ "$_rc" -ne 0 ] || [ -z "$_copy_json" ]; then
+    local _copy_detail
+    _copy_detail="$(head -n 1 "$_copy_err" 2>/dev/null | tr '\n|' '  ' | tr -s ' ')"
+    [ -n "$_copy_detail" ] || _copy_detail="no se pudo materializar la configuración seleccionada"
+    rm -rf -- "$_root"
+    printf 'UNAVAILABLE|plugin-runtime|plugin list no ejecutada: aislamiento de config/paquetes no seguro (%s)|%s\n' "$_copy_detail" "$_hint"
+    return 0
+  fi
+  _config="$(printf '%s' "$_copy_json" | jq -r '.config_file // empty' 2>/dev/null || true)"
+  if [ -z "$_config" ] || [ ! -f "$_config" ]; then
+    rm -rf -- "$_root"
+    printf 'UNAVAILABLE|plugin-runtime|plugin list no ejecutada: el helper no produjo una config aislada verificable|%s\n' "$_hint"
+    return 0
+  fi
+
+  if ! jq -n \
+      --arg dir "$_overlay" \
+      --arg config_file "$_config" \
+      --arg binary "$FORGE_OPENCODE_BIN" \
+      '{targets_manifest:[{name:"opencode",dir:$dir,config_file:$config_file,binary:$binary}]}' \
+      > "$_manifest" 2>/dev/null; then
+    rm -rf -- "$_root"
+    printf 'UNAVAILABLE|plugin-runtime|plugin list no ejecutada: no se pudo crear el manifest privado|%s\n' "$_hint"
+    return 0
+  fi
+  chmod 600 "$_manifest" 2>/dev/null || true
+
+  _db="$(_forge_opencode_snapshot_db "$_helper" "$_source_db" "$_db" "$_snapshot_err")" || _snapshot_rc=$?
+  if [ "$_snapshot_rc" -ne 0 ]; then
+    local _snapshot_detail
+    _snapshot_detail="$(head -n 1 "$_snapshot_err" 2>/dev/null | tr '\n|' '  ' | tr -s ' ')"
+    [ -n "$_snapshot_detail" ] || _snapshot_detail="no se pudo crear la copia privada de DB"
+    rm -rf -- "$_root"
+    printf 'UNAVAILABLE|plugin-runtime|plugin list no ejecutada: snapshot aislado no disponible (%s)|%s\n' "$_snapshot_detail" "$_hint"
+    return 0
+  fi
+
+  _out="$(
+    cd "$_cwd" && env -i \
+      HOME="$_home" \
+      XDG_CONFIG_HOME="$_xdg/config" \
+      XDG_DATA_HOME="$_xdg/data" \
+      XDG_STATE_HOME="$_xdg/state" \
+      XDG_CACHE_HOME="$_xdg/cache" \
+      OPENCODE_CONFIG_DIR="$_overlay" \
+      OPENCODE_CONFIG="$_config" \
+      OPENCODE_DB="$_db" \
+      FORGE_OPENCODE_PRIVATE_DB=1 \
+      OPENCODE_DISABLE_AUTOUPDATE=1 \
+      OPENCODE_DISABLE_MODELS_FETCH=1 \
+      OPENCODE_DISABLE_CHANNEL_DB=1 \
+      OPENCODE_DISABLE_FILEWATCHER=1 \
+      OPENCODE_DISABLE_CLAUDE_CODE=1 \
+      OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 \
+      PYTHONDONTWRITEBYTECODE=1 TMPDIR="$_xdg/tmp" PATH=/usr/bin:/bin \
+      "$_home/.local/bin/forge-opencode" plugin list 2>"$_stderr"
+  )" || _rc=$?
+
+  if [ "$_rc" -eq 0 ] && printf '%s' "$_out" | PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import os, sys
+lines = [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
+if len(lines) != 2 or lines[0].split() != ["ID", "VERSION", "SOURCE"]:
+    raise SystemExit(1)
+fields = lines[1].split(None, 2)
+if len(fields) != 3 or fields[0] != "forge-guard" or fields[1] != "local":
+    raise SystemExit(1)
+source = os.path.normpath(fields[2])
+if not source.endswith("/plugin-packages/forge-guard/index.js"):
+    raise SystemExit(1)
+' >/dev/null 2>&1; then
+    rm -rf -- "$_root"
+    printf 'OK|plugin-runtime|plugin list: enumeración runtime exacta de forge-guard sobre copia aislada de la instalación (plugins; sin validar MCP/proveedores)|\n'
+  elif [ "$_rc" -eq 124 ]; then
+    rm -rf -- "$_root"
+    printf 'INVALID|plugin-runtime|plugin list: presupuesto runtime agotado (RC=124)|%s\n' "$_hint"
+  elif [ "$_rc" -ne 0 ]; then
+    rm -rf -- "$_root"
+    printf 'INVALID|plugin-runtime|plugin list falló en la sonda runtime (RC=%s)|%s\n' "$_rc" "$_hint"
+  else
+    rm -rf -- "$_root"
+    printf 'MISMATCH|plugin-runtime|plugin list no enumeró exactamente forge-guard en el runtime real|%s\n' "$_hint"
+  fi
+}
+
 # _forge_opencode_check_launcher <hint>
 # The launcher is the only global artifact of the overlay: it must be a
 # symlink to the launcher script of this checkout, and it must enforce the
@@ -1303,45 +1449,273 @@ _forge_opencode_check_binary() {
   printf 'MISMATCH|binary|opencode pinado %s (se esperaba %s)|reinstala el binario pinado %s: bash install.sh install --target=opencode (Omarchy puede haber reintroducido OpenCode 1 en el PATH; forge no lo usa)\n' "$_version" "$FORGE_OPENCODE_VERSION" "$FORGE_OPENCODE_PACKAGE"
 }
 
-# _forge_opencode_check_auth <hint>
-# The auth probe uses the OpenCode 2 JSON contract
-# (`auth list --standalone --format json`) and an ISOLATED database, so a
-# diagnostic run can never migrate the productive data.
-_forge_opencode_check_auth() {
-  local _hint="$1"
-  local _bin="$FORGE_OPENCODE_BIN"
+# _forge_opencode_probe_json_list <family> <display command> <launcher>
+#   <probe home> <probe XDG root> <probe config dir> <probe config>
+#   <probe DB> <probe cwd> <stderr file> <launcher args...>
+# The launcher runs in a fresh private HOME/config/XDG tree and a private DB.
+# Only the parsed array length is emitted; auth/session payloads and stderr are
+# never printed, since either may contain user-specific data.
+_forge_opencode_probe_json_list() {
+  local _family="$1" _display="$2" _launcher="$3" _home="$4"
+  local _xdg_root="$5" _config_dir="$6" _config="$7" _db="$8"
+  local _cwd="$9" _stderr="${10}"
+  shift 10
 
-  if [ ! -x "$_bin" ]; then
-    printf 'OK|auth|no se pudo sondear la autenticacion (sin binario pinado)|\n'
+  local _out _rc=0 _json_count _json_rc=0 _why
+  _out="$(
+    cd "$_cwd" && env -i \
+      HOME="$_home" \
+      XDG_CONFIG_HOME="$_xdg_root/config" \
+      XDG_DATA_HOME="$_xdg_root/data" \
+      XDG_STATE_HOME="$_xdg_root/state" \
+      XDG_CACHE_HOME="$_xdg_root/cache" \
+      OPENCODE_CONFIG_DIR="$_config_dir" \
+      OPENCODE_CONFIG="$_config" \
+      OPENCODE_DB="$_db" \
+      OPENCODE_DISABLE_AUTOUPDATE=1 \
+      OPENCODE_DISABLE_MODELS_FETCH=1 \
+      OPENCODE_DISABLE_CHANNEL_DB=1 \
+      OPENCODE_DISABLE_FILEWATCHER=1 \
+      PYTHONDONTWRITEBYTECODE=1 \
+      TMPDIR="$_xdg_root/tmp" \
+      PATH=/usr/bin:/bin \
+      "$_launcher" "$@" 2>"$_stderr"
+  )" || _rc=$?
+
+  if [ "$_rc" -ne 0 ]; then
+    _why="fallo con RC=$_rc"
+    if grep -qF 'Unrecognized flag: --standalone' "$_stderr" 2>/dev/null; then
+      _why="el launcher rechazo --standalone (RC=$_rc)"
+    fi
+    unset _out
+    printf 'INVALID|%s|%s fallo: %s|bash install.sh install --target=opencode\n' \
+      "$_family" "$_display" "$_why"
     return 0
   fi
-
-  local _tmp_db _out
-  _tmp_db="$(mktemp -u "${TMPDIR:-/tmp}/forge-auth-probe.XXXXXX.db")"
-
-  _out="$(OPENCODE_DB="$_tmp_db" "$_bin" auth list --standalone --format json 2>/dev/null || true)"
-  rm -f "$_tmp_db" "$_tmp_db-wal" "$_tmp_db-shm"
 
   if [ -z "$_out" ]; then
-    printf 'OK|auth|la sonda de autenticacion no devolvio salida (se omite)|\n'
+    printf 'INVALID|%s|%s devolvio salida vacia con RC=0|bash install.sh install --target=opencode\n' \
+      "$_family" "$_display"
+    unset _out
     return 0
   fi
 
-  if printf '%s' "$_out" | python3 -c '
+  _json_count="$(printf '%s' "$_out" | PYTHONDONTWRITEBYTECODE=1 python3 -c '
 import json
 import sys
 
-raw = sys.stdin.read().strip()
 try:
-    data = json.loads(raw)
-except json.JSONDecodeError:
+    value = json.load(sys.stdin)
+except Exception:
     raise SystemExit(1)
-raise SystemExit(0 if isinstance(data, list) else 1)
-'; then
-    printf 'OK|auth|auth list --standalone --format json devuelve JSON valido (base aislada)|\n'
-  else
-    printf 'INVALID|auth|auth list --standalone --format json no devuelve un JSON valido|%s\n' "$_hint"
+if not isinstance(value, list):
+    raise SystemExit(2)
+print(len(value))
+' 2>/dev/null)" || _json_rc=$?
+  unset _out
+
+  if [ "$_json_rc" -ne 0 ] || [ -z "$_json_count" ]; then
+    printf 'INVALID|%s|%s no devolvio un array JSON valido con RC=0|bash install.sh install --target=opencode\n' \
+      "$_family" "$_display"
+    return 0
   fi
+
+  printf 'OK|%s|%s operativo: array JSON valido (%s elementos; contenido omitido)|\n' \
+    "$_family" "$_display" "$_json_count"
+}
+
+# _forge_opencode_resolve_db_path
+# Resolve OPENCODE_DB with the pinned CLI before any sandbox XDG values apply.
+_forge_opencode_resolve_db_path() {
+  local _resolved
+  _resolved="$(
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    OPENCODE_DISABLE_MODELS_FETCH=1 \
+    OPENCODE_DISABLE_CHANNEL_DB=1 \
+    "$FORGE_OPENCODE_BIN" debug paths db 2>/dev/null
+  )" || return 1
+  case "$_resolved" in
+    :memory:|/*) printf '%s\n' "$_resolved" ;;
+    *) return 1 ;;
+  esac
+}
+
+# _forge_opencode_snapshot_db <helper> <resolved source> <destination> <stderr>
+# Keep all SQLite snapshot semantics in plugin-sync.py.
+_forge_opencode_snapshot_db() {
+  local _helper="$1" _source="$2" _destination="$3" _stderr="$4" _rc=0 _result
+  _result="$(PYTHONDONTWRITEBYTECODE=1 python3 "$_helper" snapshot-db \
+    --source "$_source" --destination "$_destination" 2>"$_stderr")" || _rc=$?
+  [ "$_rc" -eq 0 ] && [ -n "$_result" ] || return 1
+  printf '%s\n' "$_result"
+}
+
+# _forge_opencode_private_tempdir <prefix> <resolved source DB or :memory:>
+# Select a writable private temporary filesystem with room for one coherent
+# snapshot, its WAL/SHM contents, and bounded SQLite/runtime overhead.
+# The global verifier's sandbox can itself live on a small tmpfs while its
+# coherent source DB is larger than the remaining free space; in that case use
+# the invoking OS user's home as a mode-0700 temporary parent, still keeping
+# every mutable runtime/XDG path inside the returned private directory.
+_forge_opencode_private_tempdir() {
+  PYTHONDONTWRITEBYTECODE=1 python3 - "$1" "${2:-0}" <<'PY'
+import os
+import pwd
+import shutil
+import sys
+import tempfile
+
+prefix, source = sys.argv[1:]
+required = 0
+if source != ":memory:" and os.path.isfile(source):
+    required = os.path.getsize(source)
+    for suffix in ("-wal", "-shm"):
+        try:
+            required += os.path.getsize(source + suffix)
+        except FileNotFoundError:
+            pass
+    required += max(64 * 1024 * 1024, required // 20)
+candidates = [os.environ.get("TMPDIR"), os.environ.get("XDG_CACHE_HOME"), "/tmp", "/var/tmp"]
+try:
+    candidates.append(pwd.getpwuid(os.getuid()).pw_dir)
+except Exception:
+    pass
+seen = set()
+for candidate in candidates:
+    if not candidate:
+        continue
+    candidate = os.path.realpath(candidate)
+    if candidate in seen or not os.path.isdir(candidate) or not os.access(candidate, os.W_OK | os.X_OK):
+        continue
+    seen.add(candidate)
+    try:
+        # One DB snapshot at most; 32 MiB beyond the already conservative
+        # source+WAL+SHM estimate covers private runtime metadata.
+        if shutil.disk_usage(candidate).free < required + 32 * 1024 * 1024:
+            continue
+        path = tempfile.mkdtemp(prefix=prefix + ".", dir=candidate)
+        os.chmod(path, 0o700)
+        print(path)
+        raise SystemExit(0)
+    except OSError:
+        continue
+raise SystemExit(1)
+PY
+}
+
+# _forge_opencode_check_runtime <hint>
+# Copy the selected source DB read-only into a fresh private directory, then
+# execute both operational list commands THROUGH the installed Forge launcher.
+# A temporary HOME and empty config prevent project/global MCP or credentials
+# from being loaded. If any isolation prerequisite fails, report UNAVAILABLE;
+# never fall back to the source database or invoke the pinned binary directly.
+_forge_opencode_check_runtime() {
+  local _hint="$1"
+  local _launcher="$HOME/.local/bin/forge-opencode"
+  local _helper="$FORGE_ROOT/open-code/lib/plugin-sync.py"
+  local _source_db=""
+  local _probe_root _probe_home _probe_xdg _probe_overlay _probe_config
+  local _probe_manifest _probe_db _probe_cwd _auth_err _session_err _snapshot_err _snapshot_rc=0
+
+  if [ ! -x "$_launcher" ]; then
+    printf 'UNAVAILABLE|auth|auth list no ejecutada: launcher instalado ausente o no ejecutable|%s\n' "$_hint"
+    printf 'UNAVAILABLE|sessions|session list no ejecutada: launcher instalado ausente o no ejecutable|%s\n' "$_hint"
+    return 0
+  fi
+  if [ ! -x "$FORGE_OPENCODE_BIN" ]; then
+    printf 'UNAVAILABLE|auth|auth list no ejecutada: binario pinado ausente o no ejecutable|%s\n' "$_hint"
+    printf 'UNAVAILABLE|sessions|session list no ejecutada: binario pinado ausente o no ejecutable|%s\n' "$_hint"
+    return 0
+  fi
+  if [ ! -f "$_helper" ] || ! command -v python3 >/dev/null 2>&1 \
+      || ! command -v jq >/dev/null 2>&1 || ! command -v env >/dev/null 2>&1; then
+    printf 'UNAVAILABLE|auth|auth list no ejecutada: falta una dependencia para preparar la sonda aislada|%s\n' "$_hint"
+    printf 'UNAVAILABLE|sessions|session list no ejecutada: falta una dependencia para preparar la sonda aislada|%s\n' "$_hint"
+    return 0
+  fi
+
+  _source_db="$(_forge_opencode_resolve_db_path)" || _source_db=""
+  if [ -z "$_source_db" ]; then
+    printf 'UNAVAILABLE|auth|auth list no ejecutada: el binario pinado no pudo resolver OPENCODE_DB antes del aislamiento|%s\n' "$_hint"
+    printf 'UNAVAILABLE|sessions|session list no ejecutada: el binario pinado no pudo resolver OPENCODE_DB antes del aislamiento|%s\n' "$_hint"
+    return 0
+  fi
+  _probe_root="$(_forge_opencode_private_tempdir forge-opencode-diagnostic "$_source_db")" || _probe_root=""
+  if [ -z "$_probe_root" ] || [ ! -d "$_probe_root" ]; then
+    printf 'UNAVAILABLE|auth|auth list no ejecutada: no se pudo crear aislamiento privado|%s\n' "$_hint"
+    printf 'UNAVAILABLE|sessions|session list no ejecutada: no se pudo crear aislamiento privado|%s\n' "$_hint"
+    return 0
+  fi
+  chmod 700 "$_probe_root" 2>/dev/null || true
+
+  _probe_home="$_probe_root/home"
+  _probe_xdg="$_probe_root/xdg"
+  _probe_overlay="$_probe_root/config/opencode-forge"
+  _probe_config="$_probe_overlay/opencode.jsonc"
+  _probe_manifest="$_probe_home/.forge-state.json"
+  _probe_db="$_probe_root/data/opencode/opencode.db"
+  _probe_cwd="$_probe_root/work"
+  _auth_err="$_probe_root/auth.stderr"
+  _session_err="$_probe_root/session.stderr"
+  _snapshot_err="$_probe_root/snapshot.stderr"
+
+  if ! mkdir -p "$_probe_home/.local/bin" "$_probe_xdg/config" "$_probe_xdg/data" \
+      "$_probe_xdg/state" "$_probe_xdg/cache" "$_probe_xdg/tmp" \
+      "$_probe_overlay" "$(dirname "$_probe_db")" "$_probe_cwd" 2>/dev/null; then
+    rm -rf -- "$_probe_root"
+    printf 'UNAVAILABLE|auth|auth list no ejecutada: no se pudo preparar el HOME aislado|%s\n' "$_hint"
+    printf 'UNAVAILABLE|sessions|session list no ejecutada: no se pudo preparar el HOME aislado|%s\n' "$_hint"
+    return 0
+  fi
+  chmod 700 "$_probe_home" "$_probe_xdg" "$_probe_overlay" "$_probe_cwd" 2>/dev/null || true
+  printf '{}\n' > "$_probe_config"
+  chmod 600 "$_probe_config" 2>/dev/null || true
+
+  case "$_launcher" in
+    /*) ;;
+    *) _launcher="$PWD/$_launcher" ;;
+  esac
+  if ! ln -s "$_launcher" "$_probe_home/.local/bin/forge-opencode" 2>/dev/null; then
+    rm -rf -- "$_probe_root"
+    printf 'UNAVAILABLE|auth|auth list no ejecutada: no se pudo aislar el launcher|%s\n' "$_hint"
+    printf 'UNAVAILABLE|sessions|session list no ejecutada: no se pudo aislar el launcher|%s\n' "$_hint"
+    return 0
+  fi
+
+  if ! jq -n \
+      --arg dir "$_probe_overlay" \
+      --arg config_file "$_probe_config" \
+      --arg binary "$FORGE_OPENCODE_BIN" \
+      '{targets_manifest:[{name:"opencode",dir:$dir,config_file:$config_file,binary:$binary}]}' \
+      > "$_probe_manifest" 2>/dev/null; then
+    rm -rf -- "$_probe_root"
+    printf 'UNAVAILABLE|auth|auth list no ejecutada: no se pudo crear el manifest aislado|%s\n' "$_hint"
+    printf 'UNAVAILABLE|sessions|session list no ejecutada: no se pudo crear el manifest aislado|%s\n' "$_hint"
+    return 0
+  fi
+  chmod 600 "$_probe_manifest" 2>/dev/null || true
+
+  _probe_db="$(_forge_opencode_snapshot_db "$_helper" "$_source_db" "$_probe_db" "$_snapshot_err")" || _snapshot_rc=$?
+  if [ "$_snapshot_rc" -ne 0 ]; then
+    local _snapshot_detail
+    _snapshot_detail="$(head -n 1 "$_snapshot_err" 2>/dev/null | tr '\n|' '  ' | tr -s ' ')"
+    [ -n "$_snapshot_detail" ] || _snapshot_detail="no se pudo crear una copia privada de la DB"
+    rm -rf -- "$_probe_root"
+    printf 'UNAVAILABLE|auth|auth list no ejecutada: snapshot aislado no disponible (%s)|%s\n' "$_snapshot_detail" "$_hint"
+    printf 'UNAVAILABLE|sessions|session list no ejecutada: snapshot aislado no disponible (%s)|%s\n' "$_snapshot_detail" "$_hint"
+    return 0
+  fi
+
+  _forge_opencode_probe_json_list auth 'auth list --format json' \
+    "$_probe_home/.local/bin/forge-opencode" "$_probe_home" "$_probe_xdg" \
+    "$_probe_overlay" "$_probe_config" "$_probe_db" "$_probe_cwd" "$_auth_err" \
+    auth list --format json
+  _forge_opencode_probe_json_list sessions 'session list --format json' \
+    "$_probe_home/.local/bin/forge-opencode" "$_probe_home" "$_probe_xdg" \
+    "$_probe_overlay" "$_probe_config" "$_probe_db" "$_probe_cwd" "$_session_err" \
+    session list --format json
+
+  rm -rf -- "$_probe_root"
 }
 
 # _forge_opencode_diagnostics <tgt_dir> <config_file>
@@ -1357,7 +1731,8 @@ _forge_opencode_diagnostics() {
   _forge_opencode_check_plugins "$_tgt_dir" "$_cfg" "$_hint"
   _forge_opencode_check_launcher "$_hint"
   _forge_opencode_check_binary "$_hint"
-  _forge_opencode_check_auth "$_hint"
+  _forge_opencode_check_runtime "$_hint"
+  _forge_opencode_check_plugin_inventory "$_tgt_dir" "$_cfg" "$_hint"
 }
 
 # _forge_opencode_render <mode> <tgt_dir> <config_file>

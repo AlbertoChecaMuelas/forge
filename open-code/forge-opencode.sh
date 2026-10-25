@@ -7,8 +7,8 @@
 #   * the OpenCode binary is the Forge-managed PINNED build, invoked by
 #     ABSOLUTE path (never through the system PATH), so an Omarchy upgrade
 #     that reinstalls OpenCode 1 cannot change what Forge runs;
-#   * `--standalone` is ALWAYS passed: OpenCode 2 shares a background server
-#     by default and that would break the isolation Forge relies on;
+#   * `--standalone` is passed only at positions declared by the pinned CLI;
+#     commands without that flag are left unchanged;
 #   * `--server` / `--server=<url>` is REJECTED explicitly before OpenCode
 #     runs, because attaching to a shared server is exactly what the
 #     isolation forbids;
@@ -108,13 +108,21 @@ if [ -z "$forge_bin" ]; then
 fi
 
 # A shared server would break the isolation this launcher guarantees, so the
-# flag is rejected instead of being forwarded.
+# flag is rejected instead of being forwarded. Stop at `--`: later arguments
+# belong to the command being launched, not to the OpenCode CLI.
+forge_has_standalone=no
 for forge_arg in "$@"; do
+  if [ "$forge_arg" = "--" ]; then
+    break
+  fi
   case "$forge_arg" in
     --server|--server=*)
       printf 'forge: ERROR: --server no se admite (OpenCode 2 comparte servidor por defecto y romperia el aislamiento)\n' >&2
-      printf 'forge: forge-opencode siempre arranca con --standalone (servidor privado).\n' >&2
+      printf 'forge: forge-opencode no permite adjuntar a servidores compartidos.\n' >&2
       exit 2
+      ;;
+    --standalone)
+      forge_has_standalone=yes
       ;;
   esac
 done
@@ -130,28 +138,153 @@ elif [ ! -x "$forge_bin" ]; then
   exit 1
 fi
 
-# `--standalone` asks OpenCode 2 for a private server instead of the shared
-# background service. The CLI only accepts it AFTER the subcommand, and a few
-# leaf subcommands do not offer it at all (they print their help and do
-# nothing when it is present): `plugin`, `mcp`, `debug` and `service`. Those
-# commands run inside the CLI process and never attach to the shared server,
-# so the launcher does not add the flag for them.
+# OpenCode 2.1.4 declares --standalone on specific command leaves, not at a
+# universal position. Keep this routing explicit to that grammar: auth/session
+# leaves accept it after the leaf name; these root commands accept it after
+# their command name. Other commands (including serve, plugin, mcp, debug and
+# service) do not declare it and must receive no injected flag.
 forge_sub="${1:-}"
-case "$forge_sub" in
-  plugin|mcp|debug|service)
-    # No flag: these leaf subcommands do not offer it.
-    ;;
-  *)
-    if [ -z "$forge_sub" ] || [ "${forge_sub#-}" != "$forge_sub" ]; then
-      # No subcommand (interactive session) or only flags: the flag goes first.
-      set -- --standalone "$@"
-    else
-      # Subcommand: the flag goes right after it.
-      forge_sub_name="$forge_sub"
+forge_leaf="${2:-}"
+if [ "$forge_has_standalone" = yes ]; then
+  case "$forge_sub/$forge_leaf" in
+    auth/--standalone)
+      forge_leaf="${3:-}"
+      case "$forge_leaf" in
+        list|login|logout|export|import|switch)
+          shift 3
+          set -- auth "$forge_leaf" --standalone "$@"
+          ;;
+      esac
+      ;;
+    session/--standalone)
+      forge_leaf="${3:-}"
+      case "$forge_leaf" in
+        list|delete|export|import)
+          shift 3
+          set -- session "$forge_leaf" --standalone "$@"
+          ;;
+      esac
+      ;;
+  esac
+fi
+
+if [ "$forge_has_standalone" != yes ]; then
+  forge_sub="${1:-}"
+  forge_leaf="${2:-}"
+  case "$forge_sub" in
+    auth)
+      case "$forge_leaf" in
+        list|login|logout|export|import|switch)
+          shift 2
+          set -- "$forge_sub" "$forge_leaf" --standalone "$@"
+          ;;
+      esac
+      ;;
+    session)
+      case "$forge_leaf" in
+        list|delete|export|import)
+          shift 2
+          set -- "$forge_sub" "$forge_leaf" --standalone "$@"
+          ;;
+      esac
+      ;;
+    api|models|mini|reload|run|stats)
       shift
-      set -- "$forge_sub_name" --standalone "$@"
-    fi
+      set -- "$forge_sub" --standalone "$@"
+      ;;
+    '')
+      # No subcommand: start the interactive UI with the root-level flag.
+      set -- --standalone "$@"
+      ;;
+    -*)
+      # Root-level options only (for example --help/--version) use the root
+      # grammar. Preserve their order after the standalone option.
+      set -- --standalone "$@"
+      ;;
+  esac
+fi
+
+# OpenCode 2.1.4's `plugin list` can race the managed server's loading of
+# config-declared local plugins. Give this command its own disposable service
+# and have the Python supervisor poll the real CLI output until it is exact.
+# Help paths remain ordinary CLI help and never start a backend.
+forge_plugin_help=no
+case "${1:-}/${2:-}" in
+  plugin/--help|plugin/-h|plugin/list)
+    forge_before_end=yes
+    for forge_arg in "$@"; do
+      [ "$forge_before_end" = yes ] || break
+      if [ "$forge_arg" = "--" ]; then
+        forge_before_end=no
+        continue
+      fi
+      case "$forge_arg" in
+        --help|-h) forge_plugin_help=yes ;;
+      esac
+    done
     ;;
 esac
+
+if [ "${1:-}" = plugin ] && { [ "${2:-}" = list ] || [ "${2:-}" = --help ] || [ "${2:-}" = -h ]; }; then
+  if [ "$forge_plugin_help" = yes ] || [ "${2:-}" != list ]; then
+    exec "$forge_bin" "$@"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf 'forge: ERROR: python3 es necesario para aislar y supervisar la enumeracion runtime de plugins\n' >&2
+    exit 1
+  fi
+
+  forge_runtime_bin="$forge_bin"
+  if [ "$forge_runtime_bin" = opencode ]; then
+    forge_runtime_bin="$(command -v opencode)"
+  fi
+  case "$forge_runtime_bin" in
+    /*) ;;
+    *) forge_runtime_bin="$(CDPATH='' cd -- "$(dirname "$forge_runtime_bin")" && pwd -P)/$(basename "$forge_runtime_bin")" ;;
+  esac
+
+  # Detach the supervisor from the caller's process group. Terminals and
+  # service managers commonly signal the whole foreground group; if the
+  # supervisor shared it, the shell could die before it waited for the
+  # supervisor's cleanup and would expose RC=-SIGTERM instead of 143.
+  forge_runtime_pid=
+  forge_runtime_handle_signal() {
+    forge_signal="$1"
+    trap - INT TERM
+    if [ -n "$forge_runtime_pid" ]; then
+      kill -s "$forge_signal" "$forge_runtime_pid" 2>/dev/null || true
+      set +e
+      wait "$forge_runtime_pid"
+      set -e
+    fi
+    case "$forge_signal" in
+      INT) exit 130 ;;
+      TERM) exit 143 ;;
+    esac
+  }
+  trap 'forge_runtime_handle_signal INT' INT
+  trap 'forge_runtime_handle_signal TERM' TERM
+
+  forge_runtime_private_db_args=()
+  if [ "${FORGE_OPENCODE_PRIVATE_DB:-}" = "1" ]; then
+    forge_runtime_private_db_args+=(--database-private)
+  fi
+
+  set +e
+  python3 -c 'import os, sys; os.setsid(); os.execvp("python3", ["python3", *sys.argv[1:]])' \
+    "$SCRIPT_DIR/lib/plugin-sync.py" runtime-list \
+    --binary "$forge_runtime_bin" \
+    --config-dir "$OPENCODE_CONFIG_DIR" \
+    --config "$OPENCODE_CONFIG" \
+    "${forge_runtime_private_db_args[@]}" \
+    -- "$@" &
+  forge_runtime_pid=$!
+  wait "$forge_runtime_pid"
+  forge_runtime_rc=$?
+  trap - INT TERM
+  set -e
+  exit "$forge_runtime_rc"
+fi
 
 exec "$forge_bin" "$@"
