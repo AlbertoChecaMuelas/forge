@@ -14,23 +14,35 @@ de CI; la acreditación hospedada de CI está documentada por separado en el
 
 ## Follow-up 2 — observación de tamaño SQLite
 
-**Disposición:** se conserva la comprobación `size` existente de SQLite, sin
-cambiar su lógica. En `cutover.sh`, el control del backup en `preflight/1.2`
-compara el tamaño en bytes de `$BACKUP_DB` obtenido con `stat` con el valor
-`size` de `MANIFEST.tsv`; la comprobación de hash existente es separada.
+**Disposición:** se conserva, sin cambiar su lógica, la comprobación
+`real_db_state()` de `tests/opencode_real_runtime_integration.sh`. Captura
+`REAL_DB_BEFORE` antes del escenario y `REAL_DB_AFTER` al terminar, y compara
+ambos valores en la sección `# 6. the real installation and the real database
+were not touched`. `REAL_DB` apunta a la base ORIGINAL ACTIVA:
+`~/.local/share/opencode/opencode.db` por defecto (a través de
+`$FORGE_TEST_REAL_HOME`; puede configurarse explícitamente con
+`FORGE_V2_REAL_DB`). La función usa `stat -c '%d:%i:%s'` y la comparación observa
+device, inode y tamaño de esa ruta.
+
+Esto es distinto del control del respaldo en
+`tools/cutover/forge-v2/cutover.sh`, `preflight/1.2`, que compara el tamaño en
+bytes de `$BACKUP_DB` obtenido con `stat` con el valor `size` de
+`MANIFEST.tsv`; la comprobación de hash existente es separada. Son recursos y
+comprobaciones distintos: este follow-up se refiere a la observación de la base
+ORIGINAL ACTIVA mediante `real_db_state()`, no al control de `$BACKUP_DB`.
 
 El tamaño observado de una base SQLite activa es **semivolátil**. Un checkpoint
 puede cambiar el tamaño del fichero y producir un falso positivo al atribuir ese
 cambio a la actividad investigada. A la inversa, tamaño estable no demuestra
-que no hubiera escrituras que conservaron el mismo tamaño. La comprobación
-conservada del backup solo acredita que su tamaño coincide con el manifest en
-esa comparación concreta; no es una garantía indefinida de estabilidad ni
-prueba de inmutabilidad.
+que no hubiera escrituras que conservaron el mismo tamaño. Esta comparación
+solo observa device, inode y tamaño en sus capturas concretas; no es una garantía
+indefinida de estabilidad ni prueba de inmutabilidad.
 
 **Reapertura:** reconsiderar este follow-up únicamente ante fallos locales
 reproducibles que puedan atribuirse a checkpoints. Una variación aislada de
-tamaño, por sí sola, no satisface ese criterio. No se cambia la comprobación ni
-se accede a una base original como parte de este cierre documental.
+tamaño, por sí sola, no satisface ese criterio. No se cambia ni se ejecuta la
+comprobación como parte de este cierre documental, ni se abre o lee contenido
+SQLite; la evidencia de fase 3 es exclusivamente `stat()` de solo lectura.
 
 ## Follow-up 4 — PID 530393 histórico
 
