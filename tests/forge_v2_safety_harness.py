@@ -57,7 +57,16 @@ safety-results.md belong to the batch that produced them). A caller that owns
 a batch root exports FORGE_V2_BATCH_ROOT; only then the synthetic root and the
 default report path move under it.
 """
-DEFAULT_EXTERNAL_ROOT = "/home/espinilleitor/forge-v2-cutover-20261024"
+# The canonical source of the real component is versioned IN this repository
+# (tools/cutover/forge-v2/), so the default resolution follows the checkout
+# and works in a clean clone and in CI. The external copy of the laboratory
+# (/home/espinilleitor/forge-v2-cutover-20261024) is a frozen historical
+# backup, NOT an active source: it is never consulted by default. A caller
+# that wants another tree states it explicitly (FORGE_V2_EXTERNAL_ROOT, which
+# the supervisor forwards as --external-root); that override is NOT needed in
+# CI.
+CHECKOUT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_EXTERNAL_ROOT = os.path.join(CHECKOUT_ROOT, "tools", "cutover", "forge-v2")
 PLUGIN_SYNC_REL = "open-code/lib/plugin-sync.py"
 CUTOVER_SAFETY_REL = "lib/cutover_safety.py"
 
@@ -1954,17 +1963,26 @@ class Suite(object):
             % "; ".join("%s@%s" % (item["name"], item["path"]) for item in loaded),
         )
 
+        # The canonical source of the real component is versioned IN this
+        # repository (tools/cutover/forge-v2/), so the invariant is not "no
+        # copy at all" but "EXACTLY ONE copy, and it is the canonical one this
+        # bench loaded": any OTHER copy of the implementation inside the
+        # repository would be a duplicated implementation, which is what this
+        # inspection has always forbidden.
         copies = []
         for base, dirs, files in os.walk(self.repo_root):
             dirs[:] = [name for name in dirs if name not in (".git", "node_modules")]
             for name in files:
                 if name == "cutover_safety.py":
                     copies.append(os.path.join(base, name))
+        canonical = os.path.realpath(safety_path)
+        copies_real = sorted(os.path.realpath(copy) for copy in copies)
         self.report.record(
             "INSP-3",
             KIND_INSPECTION,
-            not copies,
-            "copias_de_cutover_safety_en_el_repo=%s (esperado [])" % (copies,),
+            copies_real == [canonical],
+            "copias_de_cutover_safety_en_el_repo=%s (esperado exactamente la canonica %s)"
+            % (copies_real, canonical),
         )
 
         executed = []

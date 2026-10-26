@@ -35,7 +35,12 @@
 #       INCOMPLETE (some own resource survived). Harder failure than 14.
 #
 # Environment:
-#   FORGE_V2_EXTERNAL_ROOT   default /home/espinilleitor/forge-v2-cutover-20261024
+#   FORGE_V2_EXTERNAL_ROOT   default: the canonical component versioned in
+#                             this checkout (tools/cutover/forge-v2/). The
+#                             external copy of the laboratory is a frozen
+#                             historical backup and is NEVER consulted by
+#                             default; this override is only for a developer
+#                             that wants another tree and is NOT needed in CI.
 #   FORGE_V2_REAL_DB         default $HOME/.local/share/opencode/opencode.db
 #                             (the real DB is only stat()'ed, never opened)
 #   FORGE_V2_HANG_TIMEOUT    default 20 (supervisor --timeout of the hang
@@ -80,7 +85,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HARNESS="$SCRIPT_DIR/forge_v2_safety_harness.py"
 
-EXTERNAL_ROOT="${FORGE_V2_EXTERNAL_ROOT:-/home/espinilleitor/forge-v2-cutover-20261024}"
+# The real component is consumed from the CANONICAL source versioned in this
+# repository (tools/cutover/forge-v2/), resolved RELATIVE TO THE CHECKOUT, so
+# the scenarios work in a clean clone and in CI. The external copy of the
+# laboratory (/home/espinilleitor/forge-v2-cutover-20261024) is a frozen
+# historical backup, not an active source: it is never consulted by default.
+EXTERNAL_ROOT="${FORGE_V2_EXTERNAL_ROOT:-$REPO_ROOT/tools/cutover/forge-v2}"
 REAL_DB="${FORGE_V2_REAL_DB:-$HOME/.local/share/opencode/opencode.db}"
 HANG_TIMEOUT="${FORGE_V2_HANG_TIMEOUT:-20}"
 # The temporal guard of THIS interface. It must stay ABOVE the supervisor's

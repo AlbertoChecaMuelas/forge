@@ -46,7 +46,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HARNESS="$SCRIPT_DIR/forge_v2_safety_harness.py"
 
-EXTERNAL_ROOT="${FORGE_V2_EXTERNAL_ROOT:-/home/espinilleitor/forge-v2-cutover-20261024}"
+# The real component is consumed from the CANONICAL source versioned in this
+# repository (tools/cutover/forge-v2/), resolved RELATIVE TO THE CHECKOUT, so
+# the suite works in a clean clone and in CI. The external copy of the
+# laboratory (/home/espinilleitor/forge-v2-cutover-20261024) is a frozen
+# historical backup, not an active source: it is never consulted by default.
+# FORGE_V2_EXTERNAL_ROOT stays as an explicit override for a developer that
+# wants to point the suite at another tree; it is NOT needed in CI.
+EXTERNAL_ROOT="${FORGE_V2_EXTERNAL_ROOT:-$REPO_ROOT/tools/cutover/forge-v2}"
 PLUGIN_SYNC="$REPO_ROOT/open-code/lib/plugin-sync.py"
 CUTOVER_SAFETY="$EXTERNAL_ROOT/lib/cutover_safety.py"
 
