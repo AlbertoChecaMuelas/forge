@@ -147,35 +147,35 @@ evidencia incompleta o teardown no acreditado hace fallar el job.
 
 ### Acreditación hospedada y preflight negativo (2026-10-26)
 
-El workflow se ejecutó tres veces como intentos independientes del run
-`40399577224`, siempre sobre el SHA
-`2c9af458045387080d192f21a24ba36ecac1af7f`, con conclusión global `success`.
-Los jobs `v2-safety` y `test` finalizaron correctamente en cada intento; el
-timeout configurado para `v2-safety` es 660 s (11 min).
+La acreditación hospedada consta de cuatro ejecuciones independientes, cada una
+con run ID y artefacto propio no expirado. En todas, `test` y `v2-safety`
+concluyeron `success` (RC 0); el timeout de `v2-safety` es 660 s (11 min).
 
-| Intento | `v2-safety` | `test` | margen real del job de 660 s | tiempos de escenarios (`normal` / `no-pidfd` / `no-pidfd-hang`) |
-| ---: | ---: | ---: | ---: | ---: |
-| 1 | 140 s | 129 s | 520 s | 112 / 0 / 21 s |
-| 2 | 145 s | 119 s | 515 s | 113 / 0 / 20 s |
-| 3 | 140 s | 109 s | 520 s | 113 / 0 / 20 s |
+| Run | Evento / SHA de cabecera | `v2-safety` | Margen frente a 660 s | Tiempos de escenarios (`normal` / `no-pidfd` / `no-pidfd-hang`) |
+| ---: | --- | ---: | ---: | ---: |
+| `40399577224` | push / `2c9af458` | 140 s | 520 s | 113 / 0 / 20 s |
+| `40403682427` | push / `c86b915` | 140 s | 520 s | 112 / 0 / 21 s |
+| `40404048071` | push / `848ba08` | 139 s | 521 s | 112 / 0 / 21 s |
+| `40404257145` | pull_request #54 / `848ba08` | 139 s | 521 s | 112 / 0 / 21 s |
 
-En los tres intentos, los logs registran los contratos internos esperados y RC
-del ejecutor 0: `normal` supervisor/suite `0/0` con autorización concedida;
-`no-pidfd` `6/4` con autorización denegada; `no-pidfd-hang` `6/-9` con timeout
-real. Los resúmenes de cada escenario acreditan init de namespace eliminado,
-ningún superviviente en el namespace, ningún miembro del grupo propio y raíz
-sintética eliminada. En el intento 3, el artefacto acredita además el preflight
-funcional con 8/8 checks, incluyendo namespace PID privado, `/proc` privado y
-señal pidfd funcional sobre un hijo propio, recogido con RC `-9` tras escalada.
-Los escenarios solo aparecen después de superar el preflight estricto; para los
-intentos 1 y 2 se conservan los logs de job, no el JSON por check del preflight.
+El run de pull request evaluó el merge ref sintético
+`2add2c018b7013fad5172a0c7ef1f1872fb329cd`; el SHA de cabecera de la PR es
+`848ba08b1dcd7ecccd7839039b7854d33001dd99`. Los cuatro artefactos contienen
+`preflight.json`, `job-summary.json`, `scenario-results.json`, los tres
+`verdict.json`, los tres `supervisor.stdout.tsv` y `timeout-calculation.txt`.
+La matriz de aislamiento, estabilidad y puerta efectiva, con las fuentes de
+cada celda y los metadatos/logs de las ejecuciones, está en
+`/tmp/opencode/v2-safety-ci-runner-provenance/hosted-four-runs-20261026-848ba08/hosted-matrix.md`.
 
-GitHub eliminó los artefactos de los intentos 1 y 2 al re-ejecutar el run. Los
-logs aún conservan sus resúmenes JSON por escenario, pero los artefactos
-primarios recuperables (`preflight.json`, `job-summary.json`,
-`scenario-results.json`, veredictos y `supervisor.stdout.tsv`) corresponden al
-intento 3. La matriz consolidada, sus fuentes por intento y esta limitación
-están en `/tmp/opencode/v2-safety-ci-runner-provenance/hosted-40399577224-20261026-2c9af45/hosted-matrix.md`.
+En los cuatro runs, el preflight funcional obtuvo 8/8 checks correctos,
+incluidos namespace PID y `/proc` privados y una señal pidfd observada sobre un
+hijo propio; `SIGTERM` escaló a `SIGKILL`, el hijo terminó con RC `-9` y fue
+recogido. Los contratos fueron `normal` supervisor/suite `0/0` con autorización
+concedida, `no-pidfd` `6/4` con denegación y `no-pidfd-hang` `6/-9` con timeout
+real; cada RC del ejecutor fue 0. El teardown confirmó init eliminado, cero
+supervivientes en el namespace y en el grupo propio, raíz sintética eliminada y
+recursos propios ausentes o recogidos. En el caso `normal`, `DEAD-6` acredita
+`os._exit(124)` dentro del hijo aislado.
 
 También se verificó el rechazo negativo del preflight existente en un proceso
 desechable con seccomp: un filtro heredado solo por ese proceso y sus
@@ -184,20 +184,21 @@ entrypoint terminó con RC 2; `preflight.json` registró RC 1 y la causa
 `unshare: ... Operación no permitida`. No se lanzó la sonda y no quedaron
 procesos hijos en la sesión restringida. La implementación del filtro y sus
 evidencias están bajo
-`/tmp/opencode/v2-safety-ci-runner-provenance/hosted-40399577224-20261026-2c9af45/preflight-negative-seccomp/`.
+`/tmp/opencode/v2-safety-ci-runner-provenance/hosted-four-runs-20261026-848ba08/local-verifications/preflight-negative-seccomp/`.
 
-La suite local heredada se ejecutó con el override documentado
-`FORGE_TEST_REAL_OPENCODE_BIN` apuntando al binario local real `opencode v2.1.4`:
-`bash tests/run-all.sh` terminó RC 0, con 28/28 suites aprobadas en 109 s. La
-salida de los 28 resúmenes de suite suma 1100 checks/aserciones aprobadas y 0
-fallidas (sin contar el footer global, que cuenta suites). La integración de
-runtime real usa un sandbox y declara explícitamente que no contacta
-proveedores. El ShellCheck global heredado mantuvo
-`--severity=warning` y terminó RC 0, sin salida.
+La suite local se ejecutó con
+`FORGE_TEST_REAL_OPENCODE_BIN=/home/espinilleitor/.local/share/forge/opencode-v2/node_modules/.bin/opencode`:
+`bash tests/run-all.sh` terminó RC 0, con 28/28 suites y 1100 checks/aserciones
+aprobados, 0 fallidos (106 s). El override usa el runtime real local y la suite
+no contacta proveedores. La invocación global literal de ShellCheck,
+`find . -name "*.sh" -not -path "./.git/*" | xargs shellcheck --severity=warning`,
+terminó RC 0, sin salida.
 
-El workflow declara `release.needs: [test, v2-safety]`; la protección de merge
-separada aún requiere que el administrador registre `v2-safety` como check
-obligatorio. Esa política administrativa no se considera activa por esta
+El workflow declara `release.needs: [test, v2-safety]` y no tiene una condición
+que salte esa dependencia; los cuatro jobs `release` quedaron `skipped` por
+evento/rama, sin publicación. Separadamente, la protección de merge de `master`
+exige actualmente solo `test`; queda pendiente que el administrador registre
+`v2-safety` como check requerido. Esa acción no se considera activa por esta
 acreditación.
 
 ## Procedencia de `cutover.sh` — excepción autorizada (2026-10-26)
