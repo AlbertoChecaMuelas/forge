@@ -57,9 +57,26 @@ safety-results.md belong to the batch that produced them). A caller that owns
 a batch root exports FORGE_V2_BATCH_ROOT; only then the synthetic root and the
 default report path move under it.
 """
-DEFAULT_EXTERNAL_ROOT = "/home/espinilleitor/forge-v2-cutover-20261024"
+# The canonical source of the real component is versioned IN this repository
+# (tools/cutover/forge-v2/), so the default resolution follows the checkout
+# and works in a clean clone and in CI. The external copy of the laboratory
+# (/home/espinilleitor/forge-v2-cutover-20261024) is a frozen historical
+# backup, NOT an active source: it is never consulted by default. A caller
+# that wants another tree states it explicitly (FORGE_V2_EXTERNAL_ROOT, which
+# the supervisor forwards as --external-root); that override is NOT needed in
+# CI.
+CHECKOUT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_EXTERNAL_ROOT = os.path.join(CHECKOUT_ROOT, "tools", "cutover", "forge-v2")
 PLUGIN_SYNC_REL = "open-code/lib/plugin-sync.py"
 CUTOVER_SAFETY_REL = "lib/cutover_safety.py"
+CANONICAL_COMPONENT_REL = os.path.join("tools", "cutover", "forge-v2", CUTOVER_SAFETY_REL)
+"""The canonical, versioned copy of the component INSIDE this repository.
+
+It is the single copy the checkout may contain: any other copy of the
+implementation inside the checkout would be a duplicated implementation. It is
+independent of the tree the bench is pointed at (FORGE_V2_EXTERNAL_ROOT), which
+only decides WHICH copy is loaded and exercised.
+"""
 
 KIND_DYNAMIC = "dinamica"
 KIND_SIMULATION = "simulacion"
@@ -1081,24 +1098,53 @@ class Suite(object):
                 "register_server_child devolvio None (identidad no verificable)",
             )
         else:
-            rc = safety.pidfd_stop_registered_server(
-                child.pid,
-                registration["start_ticks"],
-                registration["exe_normalized"],
-                registration["exe_dev_inode"],
-                registration["parent"],
-            )
+            # The production routine reports, on its own stdout, WHICH
+            # delivery ended the child ("... exited after pidfd SIGTERM" /
+            # "... after pidfd SIGKILL"). Capturing that report is what proves
+            # the signal was delivered THROUGH THE VERIFIED HANDLE and not by
+            # any other route.
+            stop_report = io.StringIO()
+            with contextlib.redirect_stdout(stop_report):
+                rc = safety.pidfd_stop_registered_server(
+                    child.pid,
+                    registration["start_ticks"],
+                    registration["exe_normalized"],
+                    registration["exe_dev_inode"],
+                    registration["parent"],
+                )
+            stop_output = stop_report.getvalue()
             child.wait(timeout=10)
             status = child.returncode
-            ok = rc == 0 and status == -signal.SIGTERM
+            # The child is a 3600 s sleeper: it cannot finish by itself, so a
+            # negative return code proves it was terminated by a signal. The
+            # production routine always delivers SIGTERM through the verified
+            # pidfd and escalates to SIGKILL through the SAME handle when the
+            # child does not honour SIGTERM, which is what happens to a child
+            # of the namespace init in some runners. The property under test
+            # is the EFFECTIVE DELIVERY THROUGH THE HANDLE, not the concrete
+            # signal number, so the observed signal is recorded and either one
+            # is accepted. The escalation to SIGKILL through the same handle
+            # stays pinned by PIDFD-3, whose fixture ignores SIGTERM on purpose.
+            delivered = (
+                "after pidfd SIGTERM" in stop_output or "after pidfd SIGKILL" in stop_output
+            )
+            signal_name = {
+                -signal.SIGTERM: "SIGTERM",
+                -signal.SIGKILL: "SIGKILL",
+            }.get(status, "otra senal")
+            ok = rc == 0 and status < 0 and delivered
             self.report.record(
                 "PIDFD-2",
                 KIND_DYNAMIC,
                 ok,
-                "rc=%d (esperado 0) senal_observada=%s (esperado -15) exe=%s inode=%s"
+                "rc=%d (esperado 0) senal_observada=%s (%s) (esperado: terminacion por senal; "
+                "-15 = SIGTERM por el handle, -9 = escalado por SIGKILL por el MISMO handle) "
+                "entrega_por_handle=%s exe=%s inode=%s"
                 % (
                     rc,
                     status,
+                    signal_name,
+                    delivered,
                     registration["exe_normalized"],
                     registration["exe_dev_inode"],
                 ),
@@ -1259,19 +1305,36 @@ class Suite(object):
             ),
         )
 
+        # The holder of this fixture is this suite's OWN interpreter, so the
+        # executable the scanner records is the interpreter of the CURRENT
+        # runtime, wherever it is installed. The expectation is therefore
+        # derived from the runtime itself (the production normalisation only
+        # strips the " (deleted)" suffix), NEVER from a hardcoded path of a
+        # developer's machine: the case must behave the same in a clean
+        # runner, where the interpreter lives in another prefix.
+        expected_exes = set()
+        for candidate in (sys.executable, os.path.realpath(sys.executable)):
+            if candidate.endswith(" (deleted)"):
+                candidate = candidate[:-10]
+            expected_exes.add(candidate)
+        holder_exes = set(re.findall(r"exe_normalizado=(\S+)", holders))
+        exe_matches = bool(holder_exes & expected_exes)
         ok = (
             opencode_processes.strip() == ""
             and "propiedad=ajeno_o_no_atribuible" in holders
-            and "exe_normalizado=/usr/bin/python" in holders
+            and exe_matches
         )
         self.report.record(
             "HOLD-2",
             KIND_DYNAMIC,
             ok,
-            "procesos_opencode=%r | ejecutable_distinto=ajeno_o_no_atribuible:%s"
+            "procesos_opencode=%r | ejecutable_distinto=ajeno_o_no_atribuible:%s | "
+            "ejecutable_del_holder=%s (esperado uno de %s)"
             % (
                 opencode_processes.strip()[:60],
                 "propiedad=ajeno_o_no_atribuible" in holders,
+                sorted(holder_exes),
+                sorted(expected_exes),
             ),
         )
 
@@ -1954,17 +2017,53 @@ class Suite(object):
             % "; ".join("%s@%s" % (item["name"], item["path"]) for item in loaded),
         )
 
+        # TWO DIFFERENT PROPERTIES, verified separately:
+        #
+        #   (1) UNIQUENESS INSIDE THE CHECKOUT. The repository holds
+        #       EXACTLY ONE copy of lib/cutover_safety.py and it is the
+        #       canonical versioned one
+        #       (tools/cutover/forge-v2/lib/cutover_safety.py). This is
+        #       ALWAYS checked, with or without an override: a second copy of
+        #       the implementation inside the checkout is a duplicated
+        #       implementation, which this inspection has always forbidden.
+        #       The canonical path is derived from the REPOSITORY, never from
+        #       the component that was selected to run.
+        #
+        #   (2) PROVENANCE of the module actually loaded. The bench may be
+        #       pointed at another tree with FORGE_V2_EXTERNAL_ROOT (an
+        #       explicit, documented option that stays supported). The
+        #       evidence then shows the loaded module, its path and its hash,
+        #       WITHOUT requiring it to be the canonical copy of the checkout.
+        canonical_path = os.path.join(self.repo_root, CANONICAL_COMPONENT_REL)
         copies = []
         for base, dirs, files in os.walk(self.repo_root):
             dirs[:] = [name for name in dirs if name not in (".git", "node_modules")]
             for name in files:
                 if name == "cutover_safety.py":
                     copies.append(os.path.join(base, name))
+        copies_real = sorted(os.path.realpath(copy) for copy in copies)
+        canonical_real = os.path.realpath(canonical_path)
+        unique_ok = copies_real == [canonical_real]
+
+        loaded_real = os.path.realpath(self.cutover_safety.__file__)
+        if loaded_real == canonical_real:
+            provenance = "copia_canonica_del_checkout"
+        else:
+            provenance = "override_externo:%s" % loaded_real
         self.report.record(
             "INSP-3",
             KIND_INSPECTION,
-            not copies,
-            "copias_de_cutover_safety_en_el_repo=%s (esperado [])" % (copies,),
+            unique_ok,
+            "unicidad_en_el_checkout=%s copias=%s (esperado exactamente [%s]) "
+            "sha256_canonica=%s | procedencia_del_modulo_cargado=%s sha256_cargado=%s"
+            % (
+                unique_ok,
+                copies_real,
+                canonical_real,
+                sha256_file(canonical_path) if os.path.isfile(canonical_path) else "-",
+                provenance,
+                sha256_file(loaded_real),
+            ),
         )
 
         executed = []

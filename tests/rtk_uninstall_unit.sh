@@ -250,6 +250,7 @@ test_tc1_marker_block_removed_preserves_context() {
   trap 'rm -rf "$tmpdir"' EXIT
 
   # Create .zshrc with content before and after the marker block
+  # shellcheck disable=SC2016  # literal: es el TEXTO/FORMATO que el fixture escribe o busca tal cual; pasarlo a comillas dobles cambiaria su semantica
   printf '%s\n' \
     '# pre-existing' \
     '# >>> forge rtk path >>>' \
@@ -331,6 +332,7 @@ test_tc3_uninstall_idempotent() {
   trap 'rm -rf "$tmpdir"' EXIT
 
   # Set up .zshrc with marker block
+  # shellcheck disable=SC2016  # literal: es el TEXTO/FORMATO que el fixture escribe o busca tal cual; pasarlo a comillas dobles cambiaria su semantica
   printf '%s\n' \
     '# >>> forge rtk path >>>' \
     'case ":$PATH:" in *":$HOME/.forge/bin:"*) ;; *) export PATH="$HOME/.forge/bin:$PATH" ;; esac' \
@@ -390,6 +392,7 @@ test_tc4_new_forge_marker_removed() {
   trap 'rm -rf "$tmpdir"' EXIT
 
   # Create .zshrc with the new forge marker block
+  # shellcheck disable=SC2016  # literal: es el TEXTO/FORMATO que el fixture escribe o busca tal cual; pasarlo a comillas dobles cambiaria su semantica
   printf '%s\n' \
     '# pre-existing' \
     '# >>> forge rtk path >>>' \

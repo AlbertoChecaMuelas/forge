@@ -145,9 +145,10 @@ _make_curl_shim() {
 
   # Write header with embedded paths (interpolated now), then body (single-quoted)
   printf '#!/bin/sh\n' > "$shim"
-  printf '_ASSET_PATH=%s\n' "$asset_path" >> "$shim"
-  printf '_CHECKSUMS_PATH=%s\n' "$checksums_path" >> "$shim"
-  cat >> "$shim" <<'CURLBODY'
+  {
+    printf '_ASSET_PATH=%s\n' "$asset_path"
+    printf '_CHECKSUMS_PATH=%s\n' "$checksums_path"
+    cat <<'CURLBODY'
 # Parse -o <dest> and URL from args
 _dest=""
 _url=""
@@ -173,6 +174,7 @@ case "$_url" in
 esac
 exit 0
 CURLBODY
+  } >> "$shim"
   chmod +x "$shim"
 }
 
@@ -185,15 +187,17 @@ _make_uname_shims() {
   local shim="$bin_dir/uname"
 
   printf '#!/bin/sh\n' > "$shim"
-  printf '_OS=%s\n' "$os" >> "$shim"
-  printf '_ARCH=%s\n' "$arch" >> "$shim"
-  cat >> "$shim" <<'UNAMEBODY'
+  {
+    printf '_OS=%s\n' "$os"
+    printf '_ARCH=%s\n' "$arch"
+    cat <<'UNAMEBODY'
 case "$1" in
   -s) echo "$_OS" ;;
   -m) echo "$_ARCH" ;;
   *)  echo "$_OS" ;;
 esac
 UNAMEBODY
+  } >> "$shim"
   chmod +x "$shim"
 }
 
@@ -214,8 +218,9 @@ _make_shasum_shim() {
     printf 'exec %s "$@"\n' "$real_shasum" >> "$shim"
   elif [ -n "$real_sha256sum" ]; then
     # sha256sum doesn't support -a flag; strip it and delegate
-    printf '# strip -a <algo> flags\n' >> "$shim"
-    cat >> "$shim" <<'SHASUMBODY'
+    {
+      printf '# strip -a <algo> flags\n'
+      cat <<'SHASUMBODY'
 _args=""
 _skip=0
 for _a in "$@"; do
@@ -226,7 +231,9 @@ for _a in "$@"; do
   esac
 done
 SHASUMBODY
-    printf 'exec %s $_args\n' "$real_sha256sum" >> "$shim"
+      # shellcheck disable=SC2016  # literal: es el TEXTO/FORMATO que el fixture escribe o busca tal cual; pasarlo a comillas dobles cambiaria su semantica
+      printf 'exec %s $_args\n' "$real_sha256sum"
+    } >> "$shim"
   else
     printf 'echo "shasum: not available" >&2; exit 1\n' >> "$shim"
   fi
@@ -613,6 +620,7 @@ SCRIPTEOF
   # At least one should contain the snippet body
   local body_found=0
   for profile in "$tmphome/.zshrc" "$tmphome/.bashrc" "$tmphome/.zprofile" "$tmphome/.bash_profile"; do
+    # shellcheck disable=SC2016  # literal: es el TEXTO del perfil que se busca con grep -F ($PATH debe permanecer literal)
     if grep -qF 'case ":$PATH:"' "$profile"; then
       body_found=1
       break

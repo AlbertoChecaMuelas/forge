@@ -823,6 +823,7 @@ test_overlay_installer_does_not_consume_caller_stdin() {
   installer="$fixture_repo/open-code/install-opencode.sh"
   create_fake_opencode "$home"
 
+  # shellcheck disable=SC2016  # literal: es el SCRIPT del bash interno; $1 debe expandirlo ese shell, no el actual
   leftover="$(printf 'L1\nL2\nL3\n' | run_isolated "$home" \
     PATH="$home/fakebin:$PATH" OPENAI_API_KEY=test-openai-key \
     bash -c 'bash "$1" >/dev/null 2>&1; cat' _ "$installer")"
@@ -849,6 +850,7 @@ test_install_does_not_consume_caller_stdin() {
   fixture_repo="$(create_repo_fixture "$sandbox/repo")"
   create_fake_opencode "$home"
 
+  # shellcheck disable=SC2016  # literal: es el SCRIPT del bash interno; $1 debe expandirlo ese shell, no el actual
   leftover="$(printf 'L1\nL2\nL3\n' | run_isolated "$home" \
     PATH="$home/fakebin:$PATH" OPENAI_API_KEY=test-openai-key \
     bash -c 'bash "$1" install --target=opencode >/dev/null 2>&1; cat' _ \

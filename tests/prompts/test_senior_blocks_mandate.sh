@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329  # test functions invoked indirectly via run_test "$name"
 # tests/prompts/test_senior_blocks_mandate.sh — senior mandate-boundary contract:
 #   senior must emit BLOCKED_SENIOR on a product/policy decision beyond its mandate.
 # Opt-in: invokes a real model and consumes tokens. Not part of tests/run-all.sh.
 set -euo pipefail
 cd "$(dirname "$0")"
+# shellcheck source=tests/prompts/helpers.sh
 source ./helpers.sh
 
 SENIOR_FILE="$FORGE_ROOT/agents/senior.md"

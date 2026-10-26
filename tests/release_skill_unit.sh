@@ -33,7 +33,7 @@
 # Compatible with bash 3.2+. No associative arrays, no mapfile.
 set -euo pipefail
 
-# shellcheck source=release_fixtures.sh
+# shellcheck source=tests/release_fixtures.sh
 . "$(dirname "$0")/release_fixtures.sh"
 
 FORGE_ROOT="$FORGE_TEST_ROOT"

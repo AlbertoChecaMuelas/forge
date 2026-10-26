@@ -509,6 +509,7 @@ test_rereview_uses_sonnet_in_reviewer_ref() {
 
 # T7.9 — review_rounds reset to 0 on checkpoint close documented
 test_review_rounds_reset_on_checkpoint_close_in_reviewer_ref() {
+  # shellcheck disable=SC2016  # literal: es el TEXTO/FORMATO que el fixture escribe o busca tal cual; pasarlo a comillas dobles cambiaria su semantica
   if grep -qF 'reset `review_rounds` to 0' "$REVIEWER_REF"; then
     pass "review_rounds_reset_on_checkpoint_close: 'reset \`review_rounds\` to 0' found in reviewer-and-close.md"
   else
@@ -620,9 +621,9 @@ test_escalation_codes_emitter_crosscheck() {
       local f
       for f in "${files[@]}"; do
         if grep -qF -- "$token" "$f"; then
-          pass "escalation_codes_emitter_crosscheck: '$token' found in ${f#$FORGE_ROOT/}"
+          pass "escalation_codes_emitter_crosscheck: '$token' found in ${f#"$FORGE_ROOT"/}"
         else
-          fail "escalation_codes_emitter_crosscheck: '$token' NOT found in ${f#$FORGE_ROOT/}"
+          fail "escalation_codes_emitter_crosscheck: '$token' NOT found in ${f#"$FORGE_ROOT"/}"
         fi
       done
     done

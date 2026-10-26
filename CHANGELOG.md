@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- registra la acreditacion hospedada del banco V2
+
 ## [0.8.2] - 2026-10-26
 
 ### Fixed

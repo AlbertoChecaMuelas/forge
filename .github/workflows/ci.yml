@@ -98,9 +98,37 @@ jobs:
       - name: 8 KB guard for shared/CLAUDE-shared.md
         run: test $(wc -c < shared/CLAUDE-shared.md) -le 8192
 
+  v2-safety:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run V2 safety scenarios
+        run: bash tools/ci/v2-safety.sh --all --artifacts-dir "$RUNNER_TEMP/v2-safety-evidence"
+
+      - name: Upload V2 safety evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2-safety-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/v2-safety-evidence/
+            !${{ runner.temp }}/v2-safety-evidence/**/work/**
+            !${{ runner.temp }}/v2-safety-evidence/**/*.db
+            !${{ runner.temp }}/v2-safety-evidence/**/*.sqlite
+            !${{ runner.temp }}/v2-safety-evidence/**/*.sqlite3
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, v2-safety]
     if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     permissions:
       contents: write
