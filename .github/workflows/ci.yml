@@ -100,6 +100,7 @@ jobs:
 
   v2-safety:
     runs-on: ubuntu-22.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -109,7 +110,6 @@ jobs:
           python-version: '3.12'
 
       - name: Run V2 safety scenarios
-        timeout-minutes: 11
         run: bash tools/ci/v2-safety.sh --all --artifacts-dir "$RUNNER_TEMP/v2-safety-evidence"
 
       - name: Upload V2 safety evidence

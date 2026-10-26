@@ -97,6 +97,10 @@ fallo de la operación pidfd en éxito. La evidencia incluye versiones, SHA del
 checkout, estado funcional, RC y tiempos; cada escenario tiene su propio
 directorio con resultado semántico y verificación de teardown. El resumen está
 en `job-summary.json` y los resultados agregados en `scenario-results.json`.
+Si `unshare` no está disponible, el entrypoint crea igualmente ambos archivos
+de salida del preflight y emite `preflight.json` estructurado con `ok: false`,
+RC 127 y una causa explícita que indica que no se encontró `unshare`; no se
+lanza la sonda ni se intenta degradar el aislamiento.
 
 ### Observación de la sonda pidfd en kernels distintos (2026-10-26)
 
@@ -117,17 +121,28 @@ y no afirma un mecanismo causal específico.
 
 ### Presupuesto del job
 
-Los límites de las rutas esperadas son aproximadamente 99 s para `normal`, 0 s
-para el rechazo inmediato `no-pidfd` y 21 s para `no-pidfd-hang` (timeout de
-20 s más detección). Su suma es 120 s; con hasta 50 s reservados para la cadena
-de limpieza y 60 s de preparación, el presupuesto de una ejecución normal es
-230 s. Para preservar también el guard de escenario ya existente (420 s) y sus
-esperas de limpieza (20 s de gracia y hasta dos esperas de 15 s), el peor caso
-secuencial con un guard vencido queda acotado conservadoramente por
-`99 + 0 + 420 + 50 + 60 = 629 s`. El timeout operativo se redondea hacia arriba
-a **11 minutos (660 s)**. No se reducen los plazos originales ni se añaden
-reintentos; un guard vencido sigue siendo fallo, incluso si su limpieza quedó
-acreditada.
+El presupuesto cubre los límites efectivos, no solo los tiempos observados o
+los caminos esperados. En `normal`, el supervisor conserva su timeout interno
+de 300 s y el escenario su guard exterior de 420 s para toda la ejecución; si
+vence el guard, la limpieza puede consumir hasta 50 s (20 s de gracia, espera
+de 15 s y recuperación final de hasta 15 s). El límite efectivo es, por tanto,
+`420 + 50 = 470 s`: los 300 s internos están dentro del guard y no se suman de
+nuevo. `no-pidfd` espera rechazar inmediatamente (0 s), pero si falla su
+contrato también queda limitado por el guard de 420 s y los mismos 50 s de
+limpieza: 470 s. `no-pidfd-hang` espera timeout de 20 s más hasta 1 s de
+detección (21 s), pero su límite de fallo efectivo también es 420 + 50 = 470 s.
+
+La política de secuencia es continuar después de un fallo contractual solo si
+el teardown y su evidencia están completos; ante teardown incompleto o no
+acreditado se detiene la secuencia. Así que el peor caso alcanzable incluye los
+tres escenarios: `470 + 470 + 470 = 1410 s`. Se añaden 60 s de preparación y
+preflight, 60 s para agregación/cierre de evidencias y 300 s para publicar el
+artefacto: `1410 + 60 + 60 + 300 = 1830 s`. El job `v2-safety` tiene un timeout
+de **35 minutos (2100 s)**, con 270 s de margen adicional y cobertura también
+para la publicación posterior al paso. El cálculo del entrypoint y esta sección
+coinciden con el `timeout-minutes: 35` del workflow. No se reducen los plazos
+originales ni se añaden reintentos; un guard vencido sigue siendo fallo, incluso
+si su limpieza quedó acreditada.
 
 ### Códigos de salida de los escenarios
 
@@ -149,7 +164,9 @@ evidencia incompleta o teardown no acreditado hace fallar el job.
 
 La acreditación hospedada consta de cuatro ejecuciones independientes, cada una
 con run ID y artefacto propio no expirado. En todas, `test` y `v2-safety`
-concluyeron `success` (RC 0); el timeout de `v2-safety` es 660 s (11 min).
+concluyeron `success` (RC 0); en esas ejecuciones el timeout configurado era
+660 s (11 min), valor histórico sustituido por el presupuesto actualizado de
+35 minutos detallado en «Presupuesto del job».
 
 | Run | Evento / SHA de cabecera | `v2-safety` | Margen frente a 660 s | Tiempos de escenarios (`normal` / `no-pidfd` / `no-pidfd-hang`) |
 | ---: | --- | ---: | ---: | ---: |

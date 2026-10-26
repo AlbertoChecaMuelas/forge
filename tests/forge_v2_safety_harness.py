@@ -69,6 +69,14 @@ CHECKOUT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_EXTERNAL_ROOT = os.path.join(CHECKOUT_ROOT, "tools", "cutover", "forge-v2")
 PLUGIN_SYNC_REL = "open-code/lib/plugin-sync.py"
 CUTOVER_SAFETY_REL = "lib/cutover_safety.py"
+CANONICAL_COMPONENT_REL = os.path.join("tools", "cutover", "forge-v2", CUTOVER_SAFETY_REL)
+"""The canonical, versioned copy of the component INSIDE this repository.
+
+It is the single copy the checkout may contain: any other copy of the
+implementation inside the checkout would be a duplicated implementation. It is
+independent of the tree the bench is pointed at (FORGE_V2_EXTERNAL_ROOT), which
+only decides WHICH copy is loaded and exercised.
+"""
 
 KIND_DYNAMIC = "dinamica"
 KIND_SIMULATION = "simulacion"
@@ -2009,26 +2017,53 @@ class Suite(object):
             % "; ".join("%s@%s" % (item["name"], item["path"]) for item in loaded),
         )
 
-        # The canonical source of the real component is versioned IN this
-        # repository (tools/cutover/forge-v2/), so the invariant is not "no
-        # copy at all" but "EXACTLY ONE copy, and it is the canonical one this
-        # bench loaded": any OTHER copy of the implementation inside the
-        # repository would be a duplicated implementation, which is what this
-        # inspection has always forbidden.
+        # TWO DIFFERENT PROPERTIES, verified separately:
+        #
+        #   (1) UNIQUENESS INSIDE THE CHECKOUT. The repository holds
+        #       EXACTLY ONE copy of lib/cutover_safety.py and it is the
+        #       canonical versioned one
+        #       (tools/cutover/forge-v2/lib/cutover_safety.py). This is
+        #       ALWAYS checked, with or without an override: a second copy of
+        #       the implementation inside the checkout is a duplicated
+        #       implementation, which this inspection has always forbidden.
+        #       The canonical path is derived from the REPOSITORY, never from
+        #       the component that was selected to run.
+        #
+        #   (2) PROVENANCE of the module actually loaded. The bench may be
+        #       pointed at another tree with FORGE_V2_EXTERNAL_ROOT (an
+        #       explicit, documented option that stays supported). The
+        #       evidence then shows the loaded module, its path and its hash,
+        #       WITHOUT requiring it to be the canonical copy of the checkout.
+        canonical_path = os.path.join(self.repo_root, CANONICAL_COMPONENT_REL)
         copies = []
         for base, dirs, files in os.walk(self.repo_root):
             dirs[:] = [name for name in dirs if name not in (".git", "node_modules")]
             for name in files:
                 if name == "cutover_safety.py":
                     copies.append(os.path.join(base, name))
-        canonical = os.path.realpath(safety_path)
         copies_real = sorted(os.path.realpath(copy) for copy in copies)
+        canonical_real = os.path.realpath(canonical_path)
+        unique_ok = copies_real == [canonical_real]
+
+        loaded_real = os.path.realpath(self.cutover_safety.__file__)
+        if loaded_real == canonical_real:
+            provenance = "copia_canonica_del_checkout"
+        else:
+            provenance = "override_externo:%s" % loaded_real
         self.report.record(
             "INSP-3",
             KIND_INSPECTION,
-            copies_real == [canonical],
-            "copias_de_cutover_safety_en_el_repo=%s (esperado exactamente la canonica %s)"
-            % (copies_real, canonical),
+            unique_ok,
+            "unicidad_en_el_checkout=%s copias=%s (esperado exactamente [%s]) "
+            "sha256_canonica=%s | procedencia_del_modulo_cargado=%s sha256_cargado=%s"
+            % (
+                unique_ok,
+                copies_real,
+                canonical_real,
+                sha256_file(canonical_path) if os.path.isfile(canonical_path) else "-",
+                provenance,
+                sha256_file(loaded_real),
+            ),
         )
 
         executed = []

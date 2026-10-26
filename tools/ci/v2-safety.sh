@@ -85,21 +85,29 @@ JOB_STATE="running"
 PRECHECK_STATE="not-run"
 
 cat >"$ARTIFACTS_DIR/timeout-calculation.txt" <<'EOF'
-Timeout de job conservador (sin reducir los guards del bench):
-  ruta normal efectiva: 99 s
-  no-pidfd (rechazo inmediato): 0 s
-  no-pidfd-hang en su ruta esperada: 21 s (20 s de timeout + hasta 1 s de deteccion)
-  suma de ejecucion esperada: 99 + 0 + 21 = 120 s
-  limpieza normal/expirada: hasta 50 s (gracia 20 s + waits de 15 s + 15 s
-    de recuperacion final, segun las ramas existentes del runner)
-  margen explicito de preparacion: 60 s
-  peor caso protegido cuando el guard de un escenario expira: 99 + 0 + 420 s
-    de guard + 50 s de limpieza + 60 s de preparacion = 629 s
-  timeout operativo redondeado hacia arriba: 11 minutos (660 s)
+Presupuesto conservador para la secuencia completa (sin reducir los guards):
+  normal: timeout interno del supervisor 300 s; guard exterior de escenario
+    420 s para la ejecucion completa; hasta 50 s de cleanup del guard
+    (gracia 20 s + waits de 15 s + 15 s de recuperacion). Limite: 420 + 50 = 470 s.
+  no-pidfd: contrato esperado 0 s, pero el limite efectivo de fallo sigue siendo
+    guard 420 s + hasta 50 s de cleanup = 470 s.
+  no-pidfd-hang: timeout interno esperado 20 s + hasta 1 s de deteccion = 21 s,
+    pero su limite efectivo de fallo sigue siendo guard 420 s + hasta 50 s de
+    cleanup = 470 s.
+  limite secuencial de escenarios: 470 + 470 + 470 = 1410 s. El timeout interno
+    de 300 s de normal y los timeouts internos de cada escenario estan dentro
+    del guard de 420 s, no se suman otra vez a ese guard.
+  preparacion/preflight: 60 s; agregacion y cierre de evidencias: 60 s;
+    publicacion de artefactos: 300 s.
+  presupuesto calculado: 1410 + 60 + 60 + 300 = 1830 s.
+  timeout del job redondeado hacia arriba: 35 minutos (2100 s), con 270 s de
+    margen adicional. Este timeout de job tambien cubre la publicacion de
+    evidencias tras el paso de escenarios.
 
-El guard por escenario existente sigue en 420 s; el timeout del supervisor de
-no-pidfd-hang sigue en 20 s. Un guard vencido conserva su RC de fallo y nunca
-se interpreta como exito.
+La secuencia continua tras un fallo contractual solo si el teardown y su
+evidencia estan completos; se detiene ante teardown incompleto o no acreditado.
+Por tanto, el peor caso alcanzable suma los limites de los tres escenarios.
+Un guard vencido conserva su RC de fallo y nunca se interpreta como exito.
 EOF
 
 cat >"$ARTIFACTS_DIR/run.txt" <<EOF
@@ -110,7 +118,7 @@ bash_version=$BASH_VERSION
 python_version=$PYTHON_VERSION
 unshare_version=$UNSHARE_VERSION
 mode=$mode
-expected_job_timeout_seconds=660
+expected_job_timeout_seconds=2100
 EOF
 
 finalize() {
@@ -175,6 +183,7 @@ fi
 preflight_started="$(date +%s)"
 if [[ ! -x "$UNSHARE_BIN" ]]; then
   PRECHECK_STATE="failed-unshare-unavailable"
+  : >"$ARTIFACTS_DIR/preflight.stdout"
   printf 'FALLO: no se encontró unshare ejecutable; no se intenta degradar el aislamiento.\n' \
     >"$ARTIFACTS_DIR/preflight.stderr"
   preflight_rc=127
