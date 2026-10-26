@@ -88,25 +88,34 @@ cat >"$ARTIFACTS_DIR/timeout-calculation.txt" <<'EOF'
 Presupuesto conservador para la secuencia completa (sin reducir los guards):
   normal: timeout interno del supervisor 300 s; guard exterior de escenario
     420 s para la ejecucion completa; hasta 50 s de cleanup del guard
-    (gracia 20 s + waits de 15 s + 15 s de recuperacion). Limite: 420 + 50 = 470 s.
+    (gracia 20 s + waits de 15 s + 15 s de recuperacion). Limite del wrapper:
+    420 + 50 = 470 s.
   no-pidfd: contrato esperado 0 s, pero el limite efectivo de fallo sigue siendo
-    guard 420 s + hasta 50 s de cleanup = 470 s.
+    guard 420 s + hasta 50 s de cleanup = 470 s del wrapper.
   no-pidfd-hang: timeout interno esperado 20 s + hasta 1 s de deteccion = 21 s,
-    pero su limite efectivo de fallo sigue siendo guard 420 s + hasta 50 s de
+    pero su limite de fallo del wrapper tambien es 420 s + hasta 50 s de
     cleanup = 470 s.
-  limite secuencial de escenarios: 470 + 470 + 470 = 1410 s. El timeout interno
-    de 300 s de normal y los timeouts internos de cada escenario estan dentro
-    del guard de 420 s, no se suman otra vez a ese guard.
+  tras volver del wrapper, la interfaz espera hasta 420 s adicionales por
+    procesos propios con --report-path. Si alguno sigue vivo al agotar la espera,
+    el escenario falla con RC 14. Limite efectivo por escenario: 470 + 420 = 890 s.
+  el timeout interno de 300 s de normal y los timeouts internos de cada escenario
+    estan dentro del guard de 420 s; no se suman otra vez a ese guard.
+  la secuencia conserva su politica: continua tras un fallo contractual solo
+    con teardown y evidencia completos; un teardown incompleto detiene el loop.
+    El limite secuencial que cubre ambos caminos es 890 + 890 + 890 = 2670 s.
+    Si el proceso aun vive al agotar la espera, el escenario falla con RC 14 y
+    sin teardown acreditado, asi que el loop se detiene; si el teardown queda
+    acreditado, la secuencia puede continuar y se contabiliza el siguiente
+    limite completo.
   preparacion/preflight: 60 s; agregacion y cierre de evidencias: 60 s;
     publicacion de artefactos: 300 s.
-  presupuesto calculado: 1410 + 60 + 60 + 300 = 1830 s.
-  timeout del job redondeado hacia arriba: 35 minutos (2100 s), con 270 s de
+  presupuesto calculado: 2670 + 60 + 60 + 300 = 3090 s.
+  timeout del job redondeado hacia arriba: 55 minutos (3300 s), con 210 s de
     margen adicional. Este timeout de job tambien cubre la publicacion de
     evidencias tras el paso de escenarios.
 
 La secuencia continua tras un fallo contractual solo si el teardown y su
 evidencia estan completos; se detiene ante teardown incompleto o no acreditado.
-Por tanto, el peor caso alcanzable suma los limites de los tres escenarios.
 Un guard vencido conserva su RC de fallo y nunca se interpreta como exito.
 EOF
 
@@ -118,7 +127,7 @@ bash_version=$BASH_VERSION
 python_version=$PYTHON_VERSION
 unshare_version=$UNSHARE_VERSION
 mode=$mode
-expected_job_timeout_seconds=2100
+expected_job_timeout_seconds=3300
 EOF
 
 finalize() {

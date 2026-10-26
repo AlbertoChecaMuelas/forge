@@ -125,22 +125,33 @@ El presupuesto cubre los límites efectivos, no solo los tiempos observados o
 los caminos esperados. En `normal`, el supervisor conserva su timeout interno
 de 300 s y el escenario su guard exterior de 420 s para toda la ejecución; si
 vence el guard, la limpieza puede consumir hasta 50 s (20 s de gracia, espera
-de 15 s y recuperación final de hasta 15 s). El límite efectivo es, por tanto,
-`420 + 50 = 470 s`: los 300 s internos están dentro del guard y no se suman de
-nuevo. `no-pidfd` espera rechazar inmediatamente (0 s), pero si falla su
-contrato también queda limitado por el guard de 420 s y los mismos 50 s de
+de 15 s y recuperación final de hasta 15 s). El límite del wrapper es, por
+tanto, `420 + 50 = 470 s`: los 300 s internos están dentro del guard y no se
+suman de nuevo. `no-pidfd` espera rechazar inmediatamente (0 s), pero si falla
+su contrato también queda limitado por el guard de 420 s y los mismos 50 s de
 limpieza: 470 s. `no-pidfd-hang` espera timeout de 20 s más hasta 1 s de
-detección (21 s), pero su límite de fallo efectivo también es 420 + 50 = 470 s.
+detección (21 s), pero su límite de fallo del wrapper también es `420 + 50 =
+470 s`.
 
-La política de secuencia es continuar después de un fallo contractual solo si
-el teardown y su evidencia están completos; ante teardown incompleto o no
-acreditado se detiene la secuencia. Así que el peor caso alcanzable incluye los
-tres escenarios: `470 + 470 + 470 = 1410 s`. Se añaden 60 s de preparación y
-preflight, 60 s para agregación/cierre de evidencias y 300 s para publicar el
-artefacto: `1410 + 60 + 60 + 300 = 1830 s`. El job `v2-safety` tiene un timeout
-de **35 minutos (2100 s)**, con 270 s de margen adicional y cobertura también
-para la publicación posterior al paso. El cálculo del entrypoint y esta sección
-coinciden con el `timeout-minutes: 35` del workflow. No se reducen los plazos
+Después de volver del wrapper, la interfaz de escenarios comprueba cada segundo
+si queda algún proceso propio cuyo cmdline contiene `--report-path $REPORT`.
+Esta espera adicional está limitada por el mismo `SCENARIO_GUARD` de 420 s; si
+un proceso sigue vivo al agotarlo, el escenario falla con RC 14. Por ello el
+límite efectivo por escenario es `470 + 420 = 890 s`, no 470 s. La política
+existente continúa tras un fallo contractual solo si el teardown y su evidencia
+están completos; ante teardown incompleto o no acreditado se detiene la
+secuencia. Si un proceso sigue vivo al agotar los 420 s, el escenario falla con
+RC 14 antes de completar esa evidencia y el loop se detiene; si el teardown
+queda acreditado, la secuencia puede continuar. Para cubrir ambos caminos sin
+reducir los límites individuales, el presupuesto secuencial suma los tres
+límites efectivos: `890 + 890 + 890 = 2670 s`.
+
+Se añaden 60 s de preparación y preflight, 60 s para agregación/cierre de
+evidencias y 300 s para publicar el artefacto: `2670 + 60 + 60 + 300 = 3090
+s`. El job `v2-safety` tiene un timeout de **55 minutos (3300 s)**, con 210 s
+de margen sobre el presupuesto calculado y cobertura también para la
+publicación posterior al paso. El cálculo del entrypoint y esta sección
+coinciden con el `timeout-minutes: 55` del workflow. No se reducen los plazos
 originales ni se añaden reintentos; un guard vencido sigue siendo fallo, incluso
 si su limpieza quedó acreditada.
 
@@ -162,11 +173,11 @@ evidencia incompleta o teardown no acreditado hace fallar el job.
 
 ### Acreditación hospedada y preflight negativo (2026-10-26)
 
-La acreditación hospedada consta de cuatro ejecuciones independientes, cada una
-con run ID y artefacto propio no expirado. En todas, `test` y `v2-safety`
-concluyeron `success` (RC 0); en esas ejecuciones el timeout configurado era
-660 s (11 min), valor histórico sustituido por el presupuesto actualizado de
-35 minutos detallado en «Presupuesto del job».
+La acreditación hospedada incluye cuatro ejecuciones históricas independientes,
+cada una con run ID y artefacto propio no expirado. En todas, `test` y
+`v2-safety` concluyeron `success` (RC 0); en esas ejecuciones el timeout
+configurado era 660 s (11 min), sustituido primero por 35 minutos y luego por
+los 55 minutos actuales detallados en «Presupuesto del job».
 
 | Run | Evento / SHA de cabecera | `v2-safety` | Margen frente a 660 s | Tiempos de escenarios (`normal` / `no-pidfd` / `no-pidfd-hang`) |
 | ---: | --- | ---: | ---: | ---: |
@@ -175,16 +186,39 @@ concluyeron `success` (RC 0); en esas ejecuciones el timeout configurado era
 | `40404048071` | push / `848ba08` | 139 s | 521 s | 112 / 0 / 21 s |
 | `40404257145` | pull_request #54 / `848ba08` | 139 s | 521 s | 112 / 0 / 21 s |
 
-El run de pull request evaluó el merge ref sintético
+Los runs `40409247443` (push) y `40409253630` (pull_request) acreditan también
+el contenido final del checkpoint, con SHA de cabecera
+`41f6593f036436c9542f3db00127a83180d76443`. Ambos concluyeron `success` (RC 0)
+en `test` y `v2-safety`; sus artefactos registran que el timeout configurado
+entonces era 2100 s (35 min), anterior a esta corrección. La duración completa
+del job `v2-safety` en GitHub fue 139 s en cada run; los resúmenes del entrypoint
+registran 134 s y 133 s, respectivamente. El margen medido del job frente al
+timeout de aquellos runs fue 1961 s en ambos; frente al presupuesto efectivo
+corregido de 3090 s, el margen observado fue 2951 s en ambos. La configuración
+actual es 3300 s (55 min), 210 s por encima de ese presupuesto. Estos dos runs
+no se presentan como ejecuciones con el nuevo
+timeout de 55 min.
+
+| Run | Evento / SHA de cabecera | Timeout configurado entonces | `v2-safety` job / entrypoint | Margen frente a timeout del run | Margen observado frente al presupuesto actual (3090 s) | Tiempos de escenarios (`normal` / `no-pidfd` / `no-pidfd-hang`) |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| `40409247443` | push / `41f6593` | 2100 s (35 min) | 139 s / 134 s | 1961 s | 2951 s | 112 / 1 / 20 s |
+| `40409253630` | pull_request / `41f6593` | 2100 s (35 min) | 139 s / 133 s | 1961 s | 2951 s | 112 / 0 / 20 s |
+
+El run de pull request `40404257145` evaluó el merge ref sintético
 `2add2c018b7013fad5172a0c7ef1f1872fb329cd`; el SHA de cabecera de la PR es
 `848ba08b1dcd7ecccd7839039b7854d33001dd99`. Los cuatro artefactos contienen
 `preflight.json`, `job-summary.json`, `scenario-results.json`, los tres
 `verdict.json`, los tres `supervisor.stdout.tsv` y `timeout-calculation.txt`.
+En el run de pull request `40409253630`, el artefacto registró el merge ref
+sintético `e2d6de59d5c950cda1a3968b267cd60dd353d7e8`; la cabecera de PR fue
+`41f6593f036436c9542f3db00127a83180d76443`. Sus dos artefactos también
+contienen la evidencia de preflight, los tres contratos, el teardown y el
+cálculo de timeout vigente para el contenido ejecutado.
 La matriz de aislamiento, estabilidad y puerta efectiva, con las fuentes de
 cada celda y los metadatos/logs de las ejecuciones, está en
 `/tmp/opencode/v2-safety-ci-runner-provenance/hosted-four-runs-20261026-848ba08/hosted-matrix.md`.
 
-En los cuatro runs, el preflight funcional obtuvo 8/8 checks correctos,
+En los cuatro runs históricos, el preflight funcional obtuvo 8/8 checks correctos,
 incluidos namespace PID y `/proc` privados y una señal pidfd observada sobre un
 hijo propio; `SIGTERM` escaló a `SIGKILL`, el hijo terminó con RC `-9` y fue
 recogido. Los contratos fueron `normal` supervisor/suite `0/0` con autorización
