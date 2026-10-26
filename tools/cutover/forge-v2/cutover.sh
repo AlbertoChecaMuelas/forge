@@ -98,7 +98,6 @@ launcher_version=""
 PROC_INVENTORY_COMPLETE=1
 PROC_INVENTORY_ERRORS_FILE="$WORKDIR/proc-inventory-errors.txt"
 PROC_SCAN_SEQUENCE=0
-PROC_SCAN_DIR=""
 PROC_DB_HOLDERS_FILE=""
 PROC_DB_BLOCKERS_FILE=""
 PROC_OPENCODE_PROCESSES_FILE=""
@@ -106,12 +105,8 @@ PROC_OPENCODE_WRITERS_FILE=""
 SERVE_PID=""
 SERVE_START_TICKS=""
 SERVE_LAUNCH_EXE_ORIGINAL=""
-SERVE_LAUNCH_EXE_NORMALIZED=""
-SERVE_LAUNCH_EXE_DEV_INODE=""
 SERVE_EXE_NORMALIZED=""
 SERVE_EXE_DEV_INODE=""
-SERVE_EXPECTED_EXE=""
-SERVE_EXPECTED_DEV_INODE=""
 SERVE_REG_VALID=0
 SERVER_STOP_DONE=0
 SERVER_STOP_STATUS=0
@@ -277,7 +272,6 @@ scan_proc_inventory() {
   tag="${tag//[^A-Za-z0-9_.-]/_}"
   scan_dir="$WORKDIR/proc-inventory-${PROC_SCAN_SEQUENCE}-${tag}"
   mkdir -m 700 -- "$scan_dir" || return 2
-  PROC_SCAN_DIR="$scan_dir"
   PROC_INVENTORY_ERRORS_FILE="$scan_dir/inventory-errors.txt"
   PROC_DB_HOLDERS_FILE="$scan_dir/db-holders.txt"
   PROC_DB_BLOCKERS_FILE="$scan_dir/db-blockers.txt"
@@ -375,10 +369,6 @@ register_server_child() {
   fi
   SERVE_START_TICKS="$(json_get "$state_file" "d['start_ticks']")"
   SERVE_LAUNCH_EXE_ORIGINAL="$(json_get "$state_file" "d['launch_exe_original']")"
-  SERVE_LAUNCH_EXE_NORMALIZED="$(json_get "$state_file" "d['launch_exe_normalized']")"
-  SERVE_LAUNCH_EXE_DEV_INODE="$(json_get "$state_file" "d['launch_exe_dev_inode']")"
-  SERVE_EXPECTED_EXE="$(json_get "$state_file" "d['expected_exe']")"
-  SERVE_EXPECTED_DEV_INODE="$(json_get "$state_file" "d['expected_dev_inode']")"
   SERVE_EXE_NORMALIZED="$(json_get "$state_file" "d['exe_normalized']")"
   SERVE_EXE_DEV_INODE="$(json_get "$state_file" "d['exe_dev_inode']")"
   parent="$(json_get "$state_file" "d['parent']")"

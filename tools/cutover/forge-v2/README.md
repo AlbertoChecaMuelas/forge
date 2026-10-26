@@ -13,7 +13,8 @@ versionada en este repositorio.
 
 ## Inventario
 
-- `cutover.sh` — entrypoint de cutover; conservado byte a byte del original.
+- `cutover.sh` — entrypoint de cutover; copia derivada del original externo,
+  con cambios documentados; no es byte-idéntica.
 - `ROLLBACK.sh` — entrypoint de reversión; conservado byte a byte del original.
 - `lib/cutover_safety.py` — primitivas de seguridad compartidas; conservado
   byte a byte del original.
@@ -25,9 +26,9 @@ versionada en este repositorio.
   no ejecución.
 - `README.md` — este índice y contrato de uso del componente versionado.
 
-Los SHA-256 de origen y copia de los cuatro ficheros de implementación se
-registran en las evidencias locales de fase 1 bajo
-`/tmp/opencode/v2-safety-ci-followups/phase-1/`.
+El hash del original externo y el de la copia derivada de `cutover.sh`, así como
+los hashes conservados de los otros tres ficheros de implementación, se
+registran abajo y en `/tmp/opencode/v2-safety-ci-runner-provenance/`.
 
 ## Límites y seguridad
 
@@ -121,3 +122,87 @@ El caso `DEAD-6` conserva `os._exit(124)` dentro de su hijo aislado. El
 entrypoint comprueba los RC y la evidencia de autorización, timeout, limpieza,
 ausencia de supervivientes y eliminación de la raíz sintética; un RC no cero,
 evidencia incompleta o teardown no acreditado hace fallar el job.
+
+## Procedencia de `cutover.sh` — excepción autorizada (2026-10-26)
+
+La copia versionada `tools/cutover/forge-v2/cutover.sh` es una **copia derivada
+con cambios documentados, no byte-idéntica**. El usuario autorizó esta excepción
+el 2026-10-26 para retirar cinco variables sin lecturas que impedían pasar la
+puerta global existente de ShellCheck (`--severity=warning`). Se retiraron solo
+sus declaraciones y escrituras; no se cambió otra lógica.
+
+| Artefacto | SHA-256 | Estado |
+|---|---|---|
+| Original externo `/home/espinilleitor/forge-v2-cutover-20261024/cutover.sh` | `824897d990db781199c5bad26c186b7a2665c9ad167ef9482a44946780a5b613` | Original sin modificar |
+| Copia versionada derivada `tools/cutover/forge-v2/cutover.sh` | `d5249b6d406823c90314aad9599ec444afac0de7077a2f91367be678ca9f11b4` | Derivada; divergencia exacta abajo |
+| `tools/cutover/forge-v2/ROLLBACK.sh` | `f91e7787ce7690fc0d5ec70aaafa5c051acb3b379006214c0e870e84474f8f85` | Byte-idéntico al original |
+| `tools/cutover/forge-v2/lib/cutover_safety.py` | `1e93447968a4f3ddb4395022260c89d643aa696c95edd003f853e79db4378454` | Byte-idéntico al original |
+| `tools/cutover/forge-v2/lib/dbtool.py` | `d15cc6aea6289683b9df7add7fcb82f27ba3eaddcb8368a563f1be8a98ab0db0` | Byte-idéntico al original |
+
+El original externo no se modificó. El diff unificado completo, también
+conservado como `cutover-derived.diff` en el directorio de evidencia indicado,
+es:
+
+```diff
+--- bad47dd4:tools/cutover/forge-v2/cutover.sh
++++ derived:tools/cutover/forge-v2/cutover.sh
+@@ -98,7 +98,6 @@
+ PROC_INVENTORY_COMPLETE=1
+ PROC_INVENTORY_ERRORS_FILE="$WORKDIR/proc-inventory-errors.txt"
+ PROC_SCAN_SEQUENCE=0
+-PROC_SCAN_DIR=""
+ PROC_DB_HOLDERS_FILE=""
+ PROC_DB_BLOCKERS_FILE=""
+ PROC_OPENCODE_PROCESSES_FILE=""
+@@ -106,12 +105,8 @@
+ SERVE_PID=""
+ SERVE_START_TICKS=""
+ SERVE_LAUNCH_EXE_ORIGINAL=""
+-SERVE_LAUNCH_EXE_NORMALIZED=""
+-SERVE_LAUNCH_EXE_DEV_INODE=""
+ SERVE_EXE_NORMALIZED=""
+ SERVE_EXE_DEV_INODE=""
+-SERVE_EXPECTED_EXE=""
+-SERVE_EXPECTED_DEV_INODE=""
+ SERVE_REG_VALID=0
+ SERVER_STOP_DONE=0
+ SERVER_STOP_STATUS=0
+@@ -277,7 +272,6 @@
+   tag="${tag//[^A-Za-z0-9_.-]/_}"
+   scan_dir="$WORKDIR/proc-inventory-${PROC_SCAN_SEQUENCE}-${tag}"
+   mkdir -m 700 -- "$scan_dir" || return 2
+-  PROC_SCAN_DIR="$scan_dir"
+   PROC_INVENTORY_ERRORS_FILE="$scan_dir/inventory-errors.txt"
+   PROC_DB_HOLDERS_FILE="$scan_dir/db-holders.txt"
+   PROC_DB_BLOCKERS_FILE="$scan_dir/db-blockers.txt"
+@@ -375,10 +369,6 @@
+   fi
+   SERVE_START_TICKS="$(json_get "$state_file" "d['start_ticks']")"
+   SERVE_LAUNCH_EXE_ORIGINAL="$(json_get "$state_file" "d['launch_exe_original']")"
+-  SERVE_LAUNCH_EXE_NORMALIZED="$(json_get "$state_file" "d['launch_exe_normalized']")"
+-  SERVE_LAUNCH_EXE_DEV_INODE="$(json_get "$state_file" "d['launch_exe_dev_inode']")"
+-  SERVE_EXPECTED_EXE="$(json_get "$state_file" "d['expected_exe']")"
+-  SERVE_EXPECTED_DEV_INODE="$(json_get "$state_file" "d['expected_dev_inode']")"
+   SERVE_EXE_NORMALIZED="$(json_get "$state_file" "d['exe_normalized']")"
+   SERVE_EXE_DEV_INODE="$(json_get "$state_file" "d['exe_dev_inode']")"
+   parent="$(json_get "$state_file" "d['parent']")"
+```
+
+| Variable | Declaración original | Escritura original | Eliminación y ubicación en el diff | Resultado en la copia derivada |
+|---|---|---|---|---|
+| `PROC_SCAN_DIR` | L101: `PROC_SCAN_DIR=""` | L280: `  PROC_SCAN_DIR="$scan_dir"` | Declaración: `@@ -98,7 +98,6 @@`; escritura: `@@ -277,7 +272,6 @@` | Ambas ausentes; no se añadió asignación sustituta |
+| `SERVE_LAUNCH_EXE_NORMALIZED` | L109: `SERVE_LAUNCH_EXE_NORMALIZED=""` | L378: `  SERVE_LAUNCH_EXE_NORMALIZED="$(json_get "$state_file" "d['launch_exe_normalized']")"` | Declaración: `@@ -106,12 +105,8 @@`; escritura: `@@ -375,10 +369,6 @@` | Ambas ausentes; no se añadió asignación sustituta |
+| `SERVE_LAUNCH_EXE_DEV_INODE` | L110: `SERVE_LAUNCH_EXE_DEV_INODE=""` | L379: `  SERVE_LAUNCH_EXE_DEV_INODE="$(json_get "$state_file" "d['launch_exe_dev_inode']")"` | Declaración: `@@ -106,12 +105,8 @@`; escritura: `@@ -375,10 +369,6 @@` | Ambas ausentes; no se añadió asignación sustituta |
+| `SERVE_EXPECTED_EXE` | L113: `SERVE_EXPECTED_EXE=""` | L380: `  SERVE_EXPECTED_EXE="$(json_get "$state_file" "d['expected_exe']")"` | Declaración: `@@ -106,12 +105,8 @@`; escritura: `@@ -375,10 +369,6 @@` | Ambas ausentes; no se añadió asignación sustituta |
+| `SERVE_EXPECTED_DEV_INODE` | L114: `SERVE_EXPECTED_DEV_INODE=""` | L381: `  SERVE_EXPECTED_DEV_INODE="$(json_get "$state_file" "d['expected_dev_inode']")"` | Declaración: `@@ -106,12 +105,8 @@`; escritura: `@@ -375,10 +369,6 @@` | Ambas ausentes; no se añadió asignación sustituta |
+
+La comprobación estática antes de editar encontró solo esas diez apariciones,
+todas declaraciones o escrituras, sin usos directos ni indirectos por
+`eval`/`export`/`set` ni en subshells. `PROC_SCAN_DIR` se escribía desde
+`scan_dir`, una asignación simple basada en `WORKDIR` y contadores. Las cuatro
+escrituras restantes invocaban `json_get`, cuya implementación solo abre el
+JSON de estado para lectura y evalúa expresiones de búsqueda constantes para
+imprimir campos; no muta archivos ni recursos. Se eliminaron las escrituras y
+las inicializaciones muertas. El motivo es adaptar código muerto que también
+estaba en el original a la puerta global de ShellCheck; no se añadieron
+exclusiones ni supresiones y se mantuvo `--severity=warning`.

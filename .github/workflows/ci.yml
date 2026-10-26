@@ -99,7 +99,7 @@ jobs:
         run: test $(wc -c < shared/CLAUDE-shared.md) -le 8192
 
   v2-safety:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 

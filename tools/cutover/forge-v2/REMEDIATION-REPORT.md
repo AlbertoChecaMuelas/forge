@@ -1623,3 +1623,30 @@ referencias a las evidencias, está en
 `[RUTA DE LABORATORIO REDACTADA]`. Las huellas finales externas
 se verifican con `sha256sum -c` desde la raíz externa; no se copian al cuerpo
 del documento como si este pudiera verificar su propio hash.
+
+## Addendum — procedencia de la copia versionada (2026-10-26)
+
+Esta aclaración complementa el registro histórico, sin reescribirlo. La fila
+`cutover.sh` de «Huellas, versiones y rutas» registra el original externo; no
+representa el hash actual de la copia versionada. Por autorización del usuario
+del 2026-10-26, `tools/cutover/forge-v2/cutover.sh` es una **copia derivada con
+cambios documentados, no byte-idéntica**. Se eliminaron únicamente cinco
+declaraciones/escrituras de variables muertas para pasar la puerta global de
+ShellCheck (`--severity=warning`), sin exclusiones ni supresiones.
+
+El original externo
+`/home/espinilleitor/forge-v2-cutover-20261024/cutover.sh`, SHA-256
+`824897d990db781199c5bad26c186b7a2665c9ad167ef9482a44946780a5b613`, no se
+modificó. La copia derivada tiene SHA-256
+`d5249b6d406823c90314aad9599ec444afac0de7077a2f91367be678ca9f11b4`. Se
+conserva la garantía de byte-identidad de `ROLLBACK.sh`
+(`f91e7787ce7690fc0d5ec70aaafa5c051acb3b379006214c0e870e84474f8f85`),
+`lib/cutover_safety.py`
+(`1e93447968a4f3ddb4395022260c89d643aa696c95edd003f853e79db4378454`) y
+`lib/dbtool.py`
+(`d15cc6aea6289683b9df7add7fcb82f27ba3eaddcb8368a563f1be8a98ab0db0`).
+
+El diff unificado exacto, las líneas originales/resultantes por variable y
+el registro de verificación están en la sección «Procedencia de `cutover.sh`»
+del README y en `/tmp/opencode/v2-safety-ci-runner-provenance/`. El original
+externo permanece sin modificar.
