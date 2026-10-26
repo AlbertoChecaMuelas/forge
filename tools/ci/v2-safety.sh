@@ -201,6 +201,8 @@ result = {"ok": False, "checks": [], "pidfd_child": {}}
 child = None
 pidfd = None
 child_start = None
+pidfd_signals_sent = []
+child_termination_signal = None
 
 
 def add_check(name, ok, detail):
@@ -284,25 +286,41 @@ try:
     add_check("pidfd_child_is_own_live_child", child_is_own, "pid=" + str(child.pid))
     pidfd = pidfd_open(child.pid, 0)
     pidfd_send_signal(pidfd, signal.SIGTERM)
-    child_rc = child.wait(timeout=5)
+    pidfd_signals_sent.append("SIGTERM via pidfd")
+    try:
+        child_rc = child.wait(timeout=1)
+        child_termination_signal = "SIGTERM via pidfd"
+    except subprocess.TimeoutExpired:
+        pidfd_send_signal(pidfd, signal.SIGKILL)
+        pidfd_signals_sent.append("SIGKILL via pidfd")
+        child_rc = child.wait(timeout=5)
+        child_termination_signal = "SIGKILL via pidfd"
+    child_collected = child.poll() is not None
     result["pidfd_child"] = {
         "pid": child.pid,
         "start_ticks": child_start,
-        "signal_sent": "SIGTERM via pidfd",
+        "signals_sent": pidfd_signals_sent,
+        "termination_signal": child_termination_signal,
         "return_code": child_rc,
-        "collected": child.poll() is not None,
+        "collected": child_collected,
     }
     add_check(
         "pidfd_signal_and_wait_functional",
-        child_rc == -signal.SIGTERM and child.poll() is not None,
-        "pidfd signal produced return code " + str(child_rc) + " and the child was collected",
+        child_rc < 0
+        and child_collected
+        and child_termination_signal in ("SIGTERM via pidfd", "SIGKILL via pidfd")
+        and pidfd_signals_sent[0] == "SIGTERM via pidfd",
+        "child terminated by " + str(child_termination_signal)
+        + " with return code " + str(child_rc)
+        + "; signals sent via pidfd: " + ", ".join(pidfd_signals_sent)
+        + "; child collected=" + str(child_collected),
     )
     result["capabilities"] = {
         "pid_namespace": current_pidns,
         "mount_namespace": current_mntns,
         "user_namespace": current_userns,
         "proc_mount": "private proc mounted and visible",
-        "pidfd": "opened on own child, SIGTERM sent through handle, child waited",
+        "pidfd": "opened on own child; SIGTERM via handle, bounded wait, SIGKILL via same handle if needed, then child waited",
     }
     result["ok"] = True
 except BaseException as exc:
@@ -312,17 +330,30 @@ finally:
         try:
             if pidfd is not None:
                 signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                pidfd_signals_sent.append("SIGKILL via pidfd (cleanup)")
+                if child_termination_signal is None:
+                    child_termination_signal = "SIGKILL via pidfd (cleanup)"
             else:
                 current = proc_stat(child.pid)
                 if current["ppid"] == os.getpid() and current["start_ticks"] == child_start:
                     os.kill(child.pid, signal.SIGKILL)
+                    pidfd_signals_sent.append("SIGKILL via verified PID (cleanup only)")
+                    if child_termination_signal is None:
+                        child_termination_signal = "SIGKILL via verified PID (cleanup only)"
             child.wait(timeout=5)
         except BaseException as exc:
             result["ok"] = False
             result["cleanup_failure"] = type(exc).__name__ + ": " + str(exc)
     if child is not None:
         result.setdefault("pidfd_child", {}).update(
-            {"collected": child.poll() is not None, "return_code": child.poll()}
+            {
+                "pid": child.pid,
+                "start_ticks": child_start,
+                "signals_sent": pidfd_signals_sent,
+                "termination_signal": child_termination_signal,
+                "collected": child.poll() is not None,
+                "return_code": child.poll(),
+            }
         )
         if child.poll() is None:
             result["ok"] = False

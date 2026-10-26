@@ -85,13 +85,35 @@ El preflight realiza la operación real
 `unshare --user --map-root-user --pid --fork --mount-proc`, verifica que los
 namespaces PID, user y mount sean privados, que `/proc` esté montado y muestre
 el PID 1 del namespace, y que el Python seleccionado pueda abrir un pidfd,
-enviar `SIGTERM` a un hijo propio por ese descriptor y recogerlo. Una falta de
-capacidad o permiso falla con causa en `preflight.json` y en los logs; no hay
-fallback, sudo, relajación global de seguridad ni skip verde. La evidencia
-incluye versiones, SHA del checkout, estado funcional, RC y tiempos; cada
-escenario tiene su propio directorio con resultado semántico y verificación de
-teardown. El resumen está en `job-summary.json` y los resultados agregados en
-`scenario-results.json`.
+enviar `SIGTERM` a un hijo propio por ese descriptor y esperar hasta un segundo.
+Si el hijo sigue vivo, escala a `SIGKILL` por el mismo pidfd, con espera acotada,
+y recoge al hijo. El check funcional exige que la terminación haya sido por una
+señal (`return_code < 0`) enviada por pidfd y que el hijo esté recogido; el
+informe registra señales intentadas, señal que terminó al hijo y su RC real.
+Una falta de capacidad o permiso falla con causa en `preflight.json` y en los
+logs; no hay fallback que omita aislamiento o permita un resultado verde,
+`sudo`, relajación global ni skip. La limpieza conservadora no convierte un
+fallo de la operación pidfd en éxito. La evidencia incluye versiones, SHA del
+checkout, estado funcional, RC y tiempos; cada escenario tiene su propio
+directorio con resultado semántico y verificación de teardown. El resumen está
+en `job-summary.json` y los resultados agregados en `scenario-results.json`.
+
+### Observación de la sonda pidfd en kernels distintos (2026-10-26)
+
+En el run hospedado `40395931248` sobre `ubuntu-22.04`, todos los checks
+anteriores al wait funcional pasaron, incluido `pidfd_child_is_own_live_child`
+para el PID 2 del namespace. La espera de cinco segundos tras enviar
+`SIGTERM` por pidfd expiró; la limpieza existente envió `SIGKILL` por el mismo
+handle y recogió al hijo con `return_code=-9`. En una ejecución local anterior,
+la misma sonda terminó con `return_code=-15` tras `SIGTERM`. La diferencia
+observada justifica el margen corto seguido de escalada descrito arriba; no
+debilita el requisito de señal real por pidfd, terminación y recogida.
+
+La sonda es PID 1 de su namespace PID. Se consideró la semántica especial de
+señales de un init de namespace como posible explicación, pero no se verificó
+que sea la causa del resultado distinto entre esos kernels; por tanto, el
+informe registra la diferencia observada (`-15` local frente a `-9` hospedado)
+y no afirma un mecanismo causal específico.
 
 ### Presupuesto del job
 
