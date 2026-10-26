@@ -145,6 +145,61 @@ entrypoint comprueba los RC y la evidencia de autorización, timeout, limpieza,
 ausencia de supervivientes y eliminación de la raíz sintética; un RC no cero,
 evidencia incompleta o teardown no acreditado hace fallar el job.
 
+### Acreditación hospedada y preflight negativo (2026-10-26)
+
+El workflow se ejecutó tres veces como intentos independientes del run
+`40399577224`, siempre sobre el SHA
+`2c9af458045387080d192f21a24ba36ecac1af7f`, con conclusión global `success`.
+Los jobs `v2-safety` y `test` finalizaron correctamente en cada intento; el
+timeout configurado para `v2-safety` es 660 s (11 min).
+
+| Intento | `v2-safety` | `test` | margen real del job de 660 s | tiempos de escenarios (`normal` / `no-pidfd` / `no-pidfd-hang`) |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 140 s | 129 s | 520 s | 112 / 0 / 21 s |
+| 2 | 145 s | 119 s | 515 s | 113 / 0 / 20 s |
+| 3 | 140 s | 109 s | 520 s | 113 / 0 / 20 s |
+
+En los tres intentos, los logs registran los contratos internos esperados y RC
+del ejecutor 0: `normal` supervisor/suite `0/0` con autorización concedida;
+`no-pidfd` `6/4` con autorización denegada; `no-pidfd-hang` `6/-9` con timeout
+real. Los resúmenes de cada escenario acreditan init de namespace eliminado,
+ningún superviviente en el namespace, ningún miembro del grupo propio y raíz
+sintética eliminada. En el intento 3, el artefacto acredita además el preflight
+funcional con 8/8 checks, incluyendo namespace PID privado, `/proc` privado y
+señal pidfd funcional sobre un hijo propio, recogido con RC `-9` tras escalada.
+Los escenarios solo aparecen después de superar el preflight estricto; para los
+intentos 1 y 2 se conservan los logs de job, no el JSON por check del preflight.
+
+GitHub eliminó los artefactos de los intentos 1 y 2 al re-ejecutar el run. Los
+logs aún conservan sus resúmenes JSON por escenario, pero los artefactos
+primarios recuperables (`preflight.json`, `job-summary.json`,
+`scenario-results.json`, veredictos y `supervisor.stdout.tsv`) corresponden al
+intento 3. La matriz consolidada, sus fuentes por intento y esta limitación
+están en `/tmp/opencode/v2-safety-ci-runner-provenance/hosted-40399577224-20261026-2c9af45/hosted-matrix.md`.
+
+También se verificó el rechazo negativo del preflight existente en un proceso
+desechable con seccomp: un filtro heredado solo por ese proceso y sus
+descendientes denegó `unshare` con `EPERM`. Sin `sudo` ni cambios globales, el
+entrypoint terminó con RC 2; `preflight.json` registró RC 1 y la causa
+`unshare: ... Operación no permitida`. No se lanzó la sonda y no quedaron
+procesos hijos en la sesión restringida. La implementación del filtro y sus
+evidencias están bajo
+`/tmp/opencode/v2-safety-ci-runner-provenance/hosted-40399577224-20261026-2c9af45/preflight-negative-seccomp/`.
+
+La suite local heredada se ejecutó con el override documentado
+`FORGE_TEST_REAL_OPENCODE_BIN` apuntando al binario local real `opencode v2.1.4`:
+`bash tests/run-all.sh` terminó RC 0, con 28/28 suites aprobadas en 109 s. La
+salida de los 28 resúmenes de suite suma 1100 checks/aserciones aprobadas y 0
+fallidas (sin contar el footer global, que cuenta suites). La integración de
+runtime real usa un sandbox y declara explícitamente que no contacta
+proveedores. El ShellCheck global heredado mantuvo
+`--severity=warning` y terminó RC 0, sin salida.
+
+El workflow declara `release.needs: [test, v2-safety]`; la protección de merge
+separada aún requiere que el administrador registre `v2-safety` como check
+obligatorio. Esa política administrativa no se considera activa por esta
+acreditación.
+
 ## Procedencia de `cutover.sh` — excepción autorizada (2026-10-26)
 
 La copia versionada `tools/cutover/forge-v2/cutover.sh` es una **copia derivada
