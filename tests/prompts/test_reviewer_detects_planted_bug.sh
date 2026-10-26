@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329  # test functions invoked indirectly via run_test "$name"
 # tests/prompts/test_reviewer_detects_planted_bug.sh — a planted SQL injection
 # + cleartext password must produce FINDINGS naming the offending file.
 # Opt-in: invokes a real model and consumes tokens. Not part of tests/run-all.sh.
@@ -9,6 +10,7 @@
 # so the same test works against skills/execute-plan/reference/review-template.md.
 set -euo pipefail
 cd "$(dirname "$0")"
+# shellcheck source=tests/prompts/helpers.sh
 source ./helpers.sh
 
 REVIEWER_PROMPT_FILE="${REVIEWER_PROMPT_FILE:-$FORGE_ROOT/skills/execute-plan/reference/review-template.md}"

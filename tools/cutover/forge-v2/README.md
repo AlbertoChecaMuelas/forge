@@ -24,6 +24,8 @@ versionada en este repositorio.
   ejecución.
 - `REMEDIATION-REPORT.md` — informe histórico con redacciones y advertencia de
   no ejecución.
+- `FOLLOWUPS.md` — referencia operacional única para los cierres documentales
+  de los follow-ups 2 (SQLite) y 4 (PID histórico); no autoriza intervenciones.
 - `README.md` — este índice y contrato de uso del componente versionado.
 
 El hash del original externo y el de la copia derivada de `cutover.sh`, así como
@@ -173,84 +175,100 @@ evidencia incompleta o teardown no acreditado hace fallar el job.
 
 ### Acreditación hospedada y preflight negativo (2026-10-26)
 
-La acreditación hospedada incluye cuatro ejecuciones históricas independientes,
-cada una con run ID y artefacto propio no expirado. En todas, `test` y
-`v2-safety` concluyeron `success` (RC 0); en esas ejecuciones el timeout
-configurado era 660 s (11 min), sustituido primero por 35 minutos y luego por
-los 55 minutos actuales detallados en «Presupuesto del job».
+#### Runs de contenidos anteriores (contexto histórico; no acreditan `e31ded6`)
 
-| Run | Evento / SHA de cabecera | `v2-safety` | Margen frente a 660 s | Tiempos de escenarios (`normal` / `no-pidfd` / `no-pidfd-hang`) |
-| ---: | --- | ---: | ---: | ---: |
-| `40399577224` | push / `2c9af458` | 140 s | 520 s | 113 / 0 / 20 s |
-| `40403682427` | push / `c86b915` | 140 s | 520 s | 112 / 0 / 21 s |
-| `40404048071` | push / `848ba08` | 139 s | 521 s | 112 / 0 / 21 s |
-| `40404257145` | pull_request #54 / `848ba08` | 139 s | 521 s | 112 / 0 / 21 s |
+Los siguientes runs son de contenidos anteriores y conservan los presupuestos
+vigentes en el momento de cada ejecución. No se mezclan con las tres ejecuciones
+del contenido final descritas más abajo.
 
-Los runs `40409247443` (push) y `40409253630` (pull_request) acreditan también
-el contenido final del checkpoint, con SHA de cabecera
-`41f6593f036436c9542f3db00127a83180d76443`. Ambos concluyeron `success` (RC 0)
-en `test` y `v2-safety`; sus artefactos registran que el timeout configurado
-entonces era 2100 s (35 min), anterior a esta corrección. La duración completa
-del job `v2-safety` en GitHub fue 139 s en cada run; los resúmenes del entrypoint
-registran 134 s y 133 s, respectivamente. El margen medido del job frente al
-timeout de aquellos runs fue 1961 s en ambos; frente al presupuesto efectivo
-corregido de 3090 s, el margen observado fue 2951 s en ambos. La configuración
-actual es 3300 s (55 min), 210 s por encima de ese presupuesto. Estos dos runs
-no se presentan como ejecuciones con el nuevo
-timeout de 55 min.
+| Run | Evento / SHA de cabecera | Timeout entonces | `v2-safety` | Margen frente al timeout histórico (660 s) | Tiempos de escenarios (`normal` / `no-pidfd` / `no-pidfd-hang`) |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| `40399577224` | push / `2c9af458` | 660 s (11 min) | 140 s | 520 s | 113 / 0 / 20 s |
+| `40403682427` | push / `c86b915` | 660 s (11 min) | 140 s | 520 s | 112 / 0 / 21 s |
+| `40404048071` | push / `848ba08` | 660 s (11 min) | 139 s | 521 s | 112 / 0 / 21 s |
+| `40404257145` | pull_request #54 / `848ba08` | 660 s (11 min) | 139 s | 521 s | 112 / 0 / 21 s |
 
-| Run | Evento / SHA de cabecera | Timeout configurado entonces | `v2-safety` job / entrypoint | Margen frente a timeout del run | Margen observado frente al presupuesto actual (3090 s) | Tiempos de escenarios (`normal` / `no-pidfd` / `no-pidfd-hang`) |
+Los runs `40409247443` (push) y `40409253630` (pull_request) pertenecen a otro
+contenido anterior, SHA de cabecera
+`41f6593f036436c9542f3db00127a83180d76443`, y se ejecutaron con timeout de
+2100 s (35 min). El job de GitHub duró 139 s en ambos; el entrypoint registró
+134 s y 133 s. Su margen medido frente al presupuesto calculado entonces (y al
+actual, 3090 s) fue 2951 s; no se presentan como ejecuciones del timeout actual
+de 55 min.
+
+| Run | Evento / SHA de cabecera | Timeout entonces | `v2-safety` job / entrypoint | Margen frente al timeout de ese run | Margen frente al presupuesto vigente (3090 s) | Escenarios (s) |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| `40409247443` | push / `41f6593` | 2100 s (35 min) | 139 s / 134 s | 1961 s | 2951 s | 112 / 1 / 20 s |
-| `40409253630` | pull_request / `41f6593` | 2100 s (35 min) | 139 s / 133 s | 1961 s | 2951 s | 112 / 0 / 20 s |
+| `40409247443` | push / `41f6593` | 2100 s (35 min) | 139 / 134 s | 1961 s | 2951 s | 112 / 1 / 20 |
+| `40409253630` | pull_request / `41f6593` | 2100 s (35 min) | 139 / 133 s | 1961 s | 2951 s | 112 / 0 / 20 |
 
-El run de pull request `40404257145` evaluó el merge ref sintético
-`2add2c018b7013fad5172a0c7ef1f1872fb329cd`; el SHA de cabecera de la PR es
-`848ba08b1dcd7ecccd7839039b7854d33001dd99`. Los cuatro artefactos contienen
-`preflight.json`, `job-summary.json`, `scenario-results.json`, los tres
-`verdict.json`, los tres `supervisor.stdout.tsv` y `timeout-calculation.txt`.
-En el run de pull request `40409253630`, el artefacto registró el merge ref
-sintético `e2d6de59d5c950cda1a3968b267cd60dd353d7e8`; la cabecera de PR fue
-`41f6593f036436c9542f3db00127a83180d76443`. Sus dos artefactos también
-contienen la evidencia de preflight, los tres contratos, el teardown y el
-cálculo de timeout vigente para el contenido ejecutado.
-La matriz de aislamiento, estabilidad y puerta efectiva, con las fuentes de
-cada celda y los metadatos/logs de las ejecuciones, está en
-`/tmp/opencode/v2-safety-ci-runner-provenance/hosted-four-runs-20261026-848ba08/hosted-matrix.md`.
+En estas tandas anteriores, los preflights obtuvieron 8/8 checks; los contratos
+fueron `normal` supervisor/suite `0/0`, `no-pidfd` `6/4` y `no-pidfd-hang`
+`6/-9`, con ejecutores públicos en RC 0. Los verdicts acreditan teardown y
+ausencia de supervivientes. Las matrices históricas con fuentes se conservan en
+`/tmp/opencode/v2-safety-ci-runner-provenance/hosted-four-runs-20261026-848ba08/hosted-matrix.md`
+y
+`/tmp/opencode/v2-safety-ci-runner-provenance/hosted-40399577224-20261026-2c9af45/hosted-matrix.md`.
 
-En los cuatro runs históricos, el preflight funcional obtuvo 8/8 checks correctos,
-incluidos namespace PID y `/proc` privados y una señal pidfd observada sobre un
-hijo propio; `SIGTERM` escaló a `SIGKILL`, el hijo terminó con RC `-9` y fue
-recogido. Los contratos fueron `normal` supervisor/suite `0/0` con autorización
-concedida, `no-pidfd` `6/4` con denegación y `no-pidfd-hang` `6/-9` con timeout
-real; cada RC del ejecutor fue 0. El teardown confirmó init eliminado, cero
-supervivientes en el namespace y en el grupo propio, raíz sintética eliminada y
-recursos propios ausentes o recogidos. En el caso `normal`, `DEAD-6` acredita
-`os._exit(124)` dentro del hijo aislado.
-
-También se verificó el rechazo negativo del preflight existente en un proceso
-desechable con seccomp: un filtro heredado solo por ese proceso y sus
-descendientes denegó `unshare` con `EPERM`. Sin `sudo` ni cambios globales, el
-entrypoint terminó con RC 2; `preflight.json` registró RC 1 y la causa
-`unshare: ... Operación no permitida`. No se lanzó la sonda y no quedaron
-procesos hijos en la sesión restringida. La implementación del filtro y sus
-evidencias están bajo
+El preflight negativo previo se ejecutó en un proceso desechable con seccomp:
+un filtro heredado solo por ese proceso y sus descendientes denegó `unshare`
+con `EPERM`. Sin `sudo` ni cambios globales, el entrypoint terminó con RC 2,
+`preflight.json` registró RC 1 y la causa `unshare: ... Operación no permitida`;
+no se lanzó la sonda ni quedaron hijos en la sesión restringida. Evidencia:
 `/tmp/opencode/v2-safety-ci-runner-provenance/hosted-four-runs-20261026-848ba08/local-verifications/preflight-negative-seccomp/`.
 
-La suite local se ejecutó con
+La suite local previa se ejecutó con
 `FORGE_TEST_REAL_OPENCODE_BIN=/home/espinilleitor/.local/share/forge/opencode-v2/node_modules/.bin/opencode`:
 `bash tests/run-all.sh` terminó RC 0, con 28/28 suites y 1100 checks/aserciones
-aprobados, 0 fallidos (106 s). El override usa el runtime real local y la suite
-no contacta proveedores. La invocación global literal de ShellCheck,
+aprobados, 0 fallidos. La invocación global literal de ShellCheck,
 `find . -name "*.sh" -not -path "./.git/*" | xargs shellcheck --severity=warning`,
 terminó RC 0, sin salida.
 
-El workflow declara `release.needs: [test, v2-safety]` y no tiene una condición
-que salte esa dependencia; los cuatro jobs `release` quedaron `skipped` por
-evento/rama, sin publicación. Separadamente, la protección de merge de `master`
-exige actualmente solo `test`; queda pendiente que el administrador registre
-`v2-safety` como check requerido. Esa acción no se considera activa por esta
-acreditación.
+#### Tres ejecuciones del contenido final `e31ded6` (presupuesto vigente)
+
+Los tres runs independientes tienen SHA de cabecera
+`e31ded635e8968c01a671837d0cbcabec85540e9`, y tanto `test` como `v2-safety`
+terminaron `success` (RC 0). El timeout configurado en los tres es **55 min
+(3300 s)**; el presupuesto calculado vigente es **3090 s**. En los runs de PR,
+GitHub evaluó el merge ref sintético `a3c436cf2f28f0fd49d8406899d3663d2a42ce18`
+registrado por el artefacto, manteniendo `e31ded6` como SHA de cabecera.
+
+| Run | Evento / SHA de cabecera (checkout ejecutado) | Jobs `test` / `v2-safety` | Job GitHub / entrypoint | Margen frente a presupuesto vigente (3090 s) | Escenarios (`normal` / `no-pidfd` / `no-pidfd-hang`) | Artefacto vivo |
+| ---: | --- | --- | ---: | ---: | ---: | --- |
+| [`40411954977`](https://github.com/AlbertoChecaMuelas/forge/actions/runs/40411954977) | push / `e31ded6` (`e31ded6`) | success / success | 142 / 135 s | 2948 s | 112 / 1 / 20 s | `12693193733`, `v2-safety-evidence-40411954977-1` |
+| [`40411962790`](https://github.com/AlbertoChecaMuelas/forge/actions/runs/40411962790) | pull_request / `e31ded6` (`a3c436c`) | success / success | 140 / 133 s | 2950 s | 112 / 0 / 20 s | `12693397483`, `v2-safety-evidence-40411962790-1` |
+| [`40412340417`](https://github.com/AlbertoChecaMuelas/forge/actions/runs/40412340417) | pull_request / `e31ded6` (`a3c436c`) | success / success | 145 / 135 s | 2945 s | 113 / 0 / 20 s | `12693148986`, `v2-safety-evidence-40412340417-1` |
+
+En cada ejecución, el preflight funcional obtuvo **8/8** checks: namespaces
+rootless privados, `/proc` privado visible y pidfd probado sobre hijo propio;
+`SIGTERM` escaló a `SIGKILL` por el mismo pidfd, el hijo terminó con RC `-9` y
+fue recogido. Los tres escenarios acreditaron `normal` supervisor/suite `0/0`
+con autorización, `no-pidfd` `6/4` con autorización denegada y rechazo
+inmediato, y `no-pidfd-hang` `6/-9` con timeout real. Cada ejecutor público
+devolvió RC 0. `DEAD-6` quedó aislado dentro del caso `normal`. El teardown de
+cada escenario confirma init eliminado, cero supervivientes de namespace/grupo,
+identidades propias ausentes, raíz sintética eliminada y `teardown_ok=true`.
+
+Los artefactos de los tres runs incluyen `preflight.json`, `job-summary.json`,
+`scenario-results.json`, los tres `verdict.json`, los tres
+`supervisor.stdout.tsv` y `timeout-calculation.txt`. Descarga completa y matriz
+final con fuente por celda:
+`/tmp/opencode/v2-safety-ci-followups/phase-2/final-content/` y
+`/tmp/opencode/v2-safety-ci-followups/phase-2/final-matrix.md`.
+
+El workflow declara `release.needs: [test, v2-safety]` sin condición que salte
+esa dependencia; en estos runs `release` quedó `skipped` por evento/rama, sin
+publicación. Separadamente, la protección de merge de `master` exige actualmente
+solo `test`; queda pendiente que el administrador registre `v2-safety` como
+check requerido. Esa acción no se considera activa por esta acreditación.
+
+### Cierres operacionales documentales
+
+El índice canónico remite a [FOLLOWUPS.md](FOLLOWUPS.md), referencia operacional
+única para las disposiciones y límites de los follow-ups 2 (SQLite) y 4 (PID
+histórico). `CUTOVER-NOTES.md` y `REMEDIATION-REPORT.md` conservan su contexto
+histórico; no son instrucciones de intervención actuales. Los cierres
+documentales no autorizan tocar bases, credenciales, configuración, wrapper ni
+guard, y no deben confundirse con las nuevas evidencias de CI hospedada.
 
 ## Procedencia de `cutover.sh` — excepción autorizada (2026-10-26)
 

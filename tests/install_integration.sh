@@ -1594,6 +1594,7 @@ test_full_uninstall_rtk_default_and_keep() {
   trap 'rm -rf "$TMPHOME"' EXIT
 
   local snippet
+  # shellcheck disable=SC2016  # literal: es el TEXTO/FORMATO que el fixture escribe o busca tal cual; pasarlo a comillas dobles cambiaria su semantica
   snippet='# >>> forge rtk path >>>
 case ":$PATH:" in *":$HOME/.forge/bin:"*) ;; *) export PATH="$HOME/.forge/bin:$PATH" ;; esac
 # <<< forge rtk path <<<'

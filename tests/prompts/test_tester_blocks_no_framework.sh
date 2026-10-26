@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329  # test functions invoked indirectly via run_test "$name"
 # tests/prompts/test_tester_blocks_no_framework.sh — tester scope contract:
 #   tester must emit BLOCKED_TESTER when cwd has no recognizable project/framework.
 # Opt-in: invokes a real model and consumes tokens. Not part of tests/run-all.sh.
 set -euo pipefail
 cd "$(dirname "$0")"
+# shellcheck source=tests/prompts/helpers.sh
 source ./helpers.sh
 
 TESTER_FILE="$FORGE_ROOT/agents/tester.md"

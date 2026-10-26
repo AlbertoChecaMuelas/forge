@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329  # test functions invoked indirectly via run_test "$name"
 # tests/prompts/test_applier_blocks_ambiguity.sh — applier literality contract:
 #   case 1: ambiguous [A] step (no exact path, no literal command) -> BLOCKED
 #   case 2: fully specified step (literal content + verifier)      -> OK + file exists
 # Opt-in: invokes a real model and consumes tokens. Not part of tests/run-all.sh.
 set -euo pipefail
 cd "$(dirname "$0")"
+# shellcheck source=tests/prompts/helpers.sh
 source ./helpers.sh
 
 APPLIER_FILE="$FORGE_ROOT/agents/applier.md"

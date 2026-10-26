@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329  # test functions invoked indirectly via run_test "$name"
 # tests/prompts/test_tech_escalates_design.sh — tech escalation contract:
 #   case 1: multi-option architecture decision, no plan -> ESCALATE_SENIOR
 #   case 2: implementation with a clear plan            -> no ESCALATE_SENIOR
 # Opt-in: invokes a real model and consumes tokens. Not part of tests/run-all.sh.
 set -euo pipefail
 cd "$(dirname "$0")"
+# shellcheck source=tests/prompts/helpers.sh
 source ./helpers.sh
 
 TECH_FILE="$FORGE_ROOT/agents/tech.md"

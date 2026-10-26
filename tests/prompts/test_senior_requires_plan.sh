@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329  # test functions invoked indirectly via run_test "$name"
 # tests/prompts/test_senior_requires_plan.sh — senior scope-gate contract:
 #   senior must emit REQUIRES_PLAN on a multi-file + breaking change with no plan.
 # Opt-in: invokes a real model and consumes tokens. Not part of tests/run-all.sh.
 set -euo pipefail
 cd "$(dirname "$0")"
+# shellcheck source=tests/prompts/helpers.sh
 source ./helpers.sh
 
 SENIOR_FILE="$FORGE_ROOT/agents/senior.md"
