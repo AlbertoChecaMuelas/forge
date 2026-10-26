@@ -37,8 +37,11 @@ cleanup() {
   fi
 
   # The leak guard: the suite must never create the real pinned prefix and
-  # must never modify the real user files.
-  if ! forge_assert_no_forge_prefix; then
+  # must never modify the real user files. The prefix is compared with the
+  # state BEFORE the run: on a machine where OpenCode is really installed the
+  # prefix preexists and that is NOT a failure, but a creation or a deletion
+  # would be.
+  if ! forge_assert_no_forge_prefix "$PROTECTED_SNAPSHOT"; then
     rc=1
   fi
   if ! forge_assert_protected_unchanged "$PROTECTED_SNAPSHOT"; then
@@ -1219,6 +1222,120 @@ assert_no_route_warning() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# The contract of the diagnostics with a runtime that cannot be exercised.
+#
+# `install.sh status` and `install.sh doctor` run an OPERATIONAL probe: the
+# installed launcher is exercised against a private copy of the installation
+# and a private service, and the real plugin list is enumerated. The pinned
+# binary of the sandbox is a stand-in that answers only --version and auth
+# (its `serve --service` is refused), so the probe cannot run and reports
+# UNAVAILABLE|plugin-runtime|<cause>.
+#
+# UNAVAILABLE is a REQUIRED check that did not pass, so the general health is
+# NOT green and both diagnostics exit 1. That is the product contract and it
+# is NOT relaxed here: what changes is the EXPECTATION of a test whose
+# runtime cannot be exercised. The operational guarantee with a real CLI
+# 2.1.4 belongs to the separate real-runtime scenario.
+#
+# The contract asserted with the fake is therefore DEGRADATION:
+#
+#   1. status and doctor exit 1 (not 0),
+#   2. the general state is explicitly DEGRADATED and never "OK",
+#   3. the degradation is attributable to the plugin-runtime inventory probe
+#      and shows an identifiable cause,
+#   4. the STATIC overlay checks keep passing (a passing static check is not
+#      general health),
+#   5. no successful enumeration is ever simulated.
+#
+# The rendered diagnostics do not carry the internal family id, so the
+# attribution to `plugin-runtime` is bound to the rendered message by a
+# static check of the production source of the fixture.
+# ---------------------------------------------------------------------------
+
+# The message of the plugin-runtime family, as the production code emits it.
+PLUGIN_RUNTIME_MESSAGE_PREFIX="plugin list no ejecutada:"
+# The binding between that message and the internal family id.
+PLUGIN_RUNTIME_FAMILY_BINDING="UNAVAILABLE|plugin-runtime|plugin list no ejecutada:"
+
+# assert_status_degraded <label> <status_out>
+# The degradation contract of `status`.
+assert_status_degraded() {
+  local label="$1"
+  local out="$2"
+
+  if grep -qF "Estado general: OK" "$out" 2>/dev/null; then
+    fail "$label: status declara 'Estado general: OK' con un runtime no operable"
+  else
+    pass "$label: status NO declara 'Estado general: OK' con un runtime no operable"
+  fi
+
+  if grep -qF "Estado general: DEGRADADO" "$out" 2>/dev/null; then
+    pass "$label: status declara 'Estado general: DEGRADADO' de forma explicita"
+  else
+    fail "$label: status no declara 'Estado general: DEGRADADO'"
+  fi
+
+  if grep -qE "$PLUGIN_RUNTIME_MESSAGE_PREFIX.+" "$out" 2>/dev/null; then
+    pass "$label: status identifica el sondeo de inventario de plugins como no ejecutable"
+  else
+    fail "$label: status no identifica el sondeo de inventario de plugins"
+  fi
+
+  if grep -qE "$PLUGIN_RUNTIME_MESSAGE_PREFIX.+.*(OPENCODE_DB|binario pinado|aislamiento)" "$out" 2>/dev/null; then
+    pass "$label: status muestra una causa identificable del sondeo de inventario"
+  else
+    fail "$label: status no muestra una causa identificable del sondeo de inventario"
+  fi
+}
+
+# assert_doctor_degraded <label> <doctor_out>
+# The degradation contract of `doctor`.
+assert_doctor_degraded() {
+  local label="$1"
+  local out="$2"
+
+  if grep -qE "FAIL[[:space:]]+UNAVAILABLE: $PLUGIN_RUNTIME_MESSAGE_PREFIX" "$out" 2>/dev/null; then
+    pass "$label: doctor reporta el sondeo de inventario como FAIL UNAVAILABLE"
+  else
+    fail "$label: doctor no reporta el sondeo de inventario como FAIL UNAVAILABLE"
+  fi
+
+  if grep -qE "Resumen: FAILs=0" "$out" 2>/dev/null; then
+    fail "$label: doctor declara 'Resumen: FAILs=0' con un runtime no operable"
+  else
+    pass "$label: doctor NO declara 'Resumen: FAILs=0' con un runtime no operable"
+  fi
+}
+
+# assert_plugin_runtime_family_binding <label> <repo_root>
+# The rendered message must belong to the `plugin-runtime` family of the
+# production code: the rendered diagnostics do not carry the family id, so the
+# attribution is bound to the source that emits it.
+assert_plugin_runtime_family_binding() {
+  local label="$1"
+  local repo="$2"
+
+  if grep -qF "$PLUGIN_RUNTIME_FAMILY_BINDING" "$repo/install.sh" 2>/dev/null; then
+    pass "$label: el mensaje de degradacion renderizado pertenece a la familia plugin-runtime"
+  else
+    fail "$label: el mensaje de degradacion renderizado no esta ligado a la familia plugin-runtime"
+  fi
+}
+
+# assert_no_simulated_enumeration <label> <file> [file...]
+# A fake runtime must never simulate a successful enumeration.
+assert_no_simulated_enumeration() {
+  local label="$1"
+  shift
+
+  if grep -qF "plugin list: enumer" "$@" 2>/dev/null; then
+    fail "$label: se simulo una enumeracion runtime exitosa"
+  else
+    pass "$label: no se simula ninguna enumeracion runtime exitosa"
+  fi
+}
+
 manifest_opencode_value() {
   local state_file="$1"
   local field="$2"
@@ -1270,17 +1387,11 @@ test_status_doctor_healthy_overlay() {
   run_isolated "$SD_HOME" bash "$SD_REPO/install.sh" doctor \
     > "$sandbox/doctor.out" 2>&1 || doctor_rc=$?
 
-  if [ "$status_rc" -eq 0 ]; then
-    pass "status sale 0 con el overlay sano"
-  else
-    fail "status debería salir 0 con el overlay sano (got $status_rc)"
-  fi
-
-  if grep -q "Estado general: OK" "$sandbox/status.out"; then
-    pass "status informa de Estado general: OK con el overlay sano"
-  else
-    fail "status no informó de Estado general: OK con el overlay sano"
-  fi
+  # The fake runtime cannot exercise the operational plugin inventory probe,
+  # so the general health is NOT green: the contract is the explicit
+  # degradation, never a healthy result.
+  assert_equal "status sale 1 con el fake: el runtime pinado no es operable" "1" "$status_rc"
+  assert_status_degraded "status" "$sandbox/status.out"
 
   if grep -q "OpenCode overlay (" "$sandbox/status.out"; then
     pass "status muestra la sección del overlay OpenCode"
@@ -1288,11 +1399,7 @@ test_status_doctor_healthy_overlay() {
     fail "status no mostró la sección del overlay OpenCode"
   fi
 
-  if [ "$doctor_rc" -eq 0 ]; then
-    pass "doctor sale 0 con el overlay sano"
-  else
-    fail "doctor debería salir 0 con el overlay sano (got $doctor_rc)"
-  fi
+  assert_equal "doctor sale 1 con el fake: el runtime pinado no es operable" "1" "$doctor_rc"
 
   if grep -q "OpenCode overlay (" "$sandbox/doctor.out"; then
     pass "doctor muestra la sección del overlay OpenCode"
@@ -1300,11 +1407,18 @@ test_status_doctor_healthy_overlay() {
     fail "doctor no mostró la sección del overlay OpenCode"
   fi
 
-  if grep -q "Resumen: FAILs=0" "$sandbox/doctor.out"; then
-    pass "doctor no reporta FAILs con el overlay sano"
+  assert_doctor_degraded "doctor" "$sandbox/doctor.out"
+
+  # The static overlay checks keep passing, but a passing static check is NOT
+  # general health: it must not turn into "Estado general: OK".
+  if grep -qF "opencode.jsonc: JSONC valido" "$sandbox/status.out"; then
+    pass "status mantiene las comprobaciones estaticas del overlay superadas"
   else
-    fail "doctor reportó FAILs con el overlay sano"
+    fail "status dejó de superar las comprobaciones estaticas del overlay"
   fi
+
+  assert_plugin_runtime_family_binding "status/doctor" "$SD_REPO"
+  assert_no_simulated_enumeration "status/doctor" "$sandbox/status.out" "$sandbox/doctor.out"
 
   assert_no_claude_contract "$sandbox/status.out" \
     "status del overlay sano no menciona el contrato Claude"
@@ -1343,10 +1457,13 @@ test_status_doctor_do_not_write() {
   run_isolated "$SD_HOME" bash "$SD_REPO/install.sh" doctor \
     > "$sandbox/doctor.out" 2>&1 </dev/null || doctor_rc=$?
 
-  if [ "$status_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ]; then
-    pass "status/doctor salen 0 con el overlay sano"
+  # The read-only nature of the diagnostics is what this case asserts; the
+  # exit code is 1 because the fake runtime cannot exercise the operational
+  # probe (the contract of the degradation, not of the health).
+  if [ "$status_rc" -eq 1 ] && [ "$doctor_rc" -eq 1 ]; then
+    pass "status/doctor salen 1 con el fake (runtime no operable)"
   else
-    fail "status/doctor deberían salir 0 con el overlay sano (status=$status_rc doctor=$doctor_rc)"
+    fail "status/doctor deberían salir 1 con el fake (status=$status_rc doctor=$doctor_rc)"
   fi
 
   local sha_after mtime_after home_after repo_after
@@ -1519,7 +1636,8 @@ test_manifest_records_default_opencode_paths() {
 
   run_isolated "$home" bash "$fixture_repo/install.sh" status \
     > "$sandbox/status.out" 2>&1 || status_rc=$?
-  assert_equal "status sale 0 con el overlay por defecto" "0" "$status_rc"
+  assert_equal "status sale 1 con el overlay por defecto (fake sin runtime operable)" "1" "$status_rc"
+  assert_status_degraded "status" "$sandbox/status.out"
   assert_contains "status diagnostica el overlay registrado por defecto" \
     "OpenCode overlay ($default_dir)" "$sandbox/status.out"
 
@@ -1563,8 +1681,11 @@ test_manifest_records_custom_opencode_dir() {
   run_isolated "$home" bash "$fixture_repo/install.sh" status \
     > "$sandbox/status-unset.out" 2>&1 || status_unset_rc=$?
 
-  assert_equal "status sale 0 con la variable alternativa exportada" "0" "$status_aligned_rc"
-  assert_equal "status sale 0 sin la variable alternativa exportada" "0" "$status_unset_rc"
+  assert_equal "status sale 1 con la variable alternativa exportada (fake sin runtime operable)" \
+    "1" "$status_aligned_rc"
+  assert_equal "status sale 1 sin la variable alternativa exportada (fake sin runtime operable)" \
+    "1" "$status_unset_rc"
+  assert_status_degraded "status con la variable alternativa" "$sandbox/status-aligned.out"
   assert_contains "status sigue diagnosticando el directorio alternativo" \
     "OpenCode overlay ($alt_dir)" "$sandbox/status-aligned.out"
 
@@ -1632,7 +1753,9 @@ test_manifest_records_external_opencode_config() {
 
   run_isolated "$home" bash "$fixture_repo/install.sh" status \
     > "$sandbox/status.out" 2>&1 || status_rc=$?
-  assert_equal "status sale 0 validando la config externa registrada" "0" "$status_rc"
+  assert_equal "status sale 1 validando la config externa registrada (fake sin runtime operable)" \
+    "1" "$status_rc"
+  assert_status_degraded "status con la config externa" "$sandbox/status.out"
 
   if grep -qF 'opencode.jsonc: JSONC valido' "$sandbox/status.out"; then
     pass "status valida la config en su ruta real"
@@ -1677,7 +1800,9 @@ test_status_and_doctor_warn_on_route_divergence() {
 
   run_isolated "$home" OPENCODE_CONFIG_DIR="$other_dir" \
     bash "$fixture_repo/install.sh" status > "$sandbox/status-dir.out" 2>&1 || status_rc=$?
-  assert_equal "status sale 0 aunque OPENCODE_CONFIG_DIR contradiga el manifest" "0" "$status_rc"
+  assert_equal "status sale 1 aunque OPENCODE_CONFIG_DIR contradiga el manifest (fake sin runtime operable)" \
+    "1" "$status_rc"
+  assert_status_degraded "status con OPENCODE_CONFIG_DIR divergente" "$sandbox/status-dir.out"
   assert_contains "status WARN de divergencia menciona la ruta del entorno" \
     "OPENCODE_CONFIG_DIR apunta a $other_dir" "$sandbox/status-dir.out"
   assert_contains "status WARN de divergencia menciona la ruta registrada" \
@@ -1691,7 +1816,9 @@ test_status_and_doctor_warn_on_route_divergence() {
 
   run_isolated "$home" OPENCODE_CONFIG="$other_dir/opencode.jsonc" \
     bash "$fixture_repo/install.sh" status > "$sandbox/status-config.out" 2>&1 || status_rc=$?
-  assert_equal "status sale 0 aunque OPENCODE_CONFIG contradiga el manifest" "0" "$status_rc"
+  assert_equal "status sale 1 aunque OPENCODE_CONFIG contradiga el manifest (fake sin runtime operable)" \
+    "1" "$status_rc"
+  assert_status_degraded "status con OPENCODE_CONFIG divergente" "$sandbox/status-config.out"
   assert_contains "status WARN de config menciona la ruta del entorno" \
     "OPENCODE_CONFIG apunta a $other_dir/opencode.jsonc" "$sandbox/status-config.out"
   assert_contains "status WARN de config menciona la config registrada" \
@@ -1701,7 +1828,8 @@ test_status_and_doctor_warn_on_route_divergence() {
 
   run_isolated "$home" OPENCODE_CONFIG_DIR="$other_dir" \
     bash "$fixture_repo/install.sh" doctor > "$sandbox/doctor.out" 2>&1 || doctor_rc=$?
-  assert_equal "doctor sale 0 con una ruta divergente" "0" "$doctor_rc"
+  assert_equal "doctor sale 1 con una ruta divergente (fake sin runtime operable)" "1" "$doctor_rc"
+  assert_doctor_degraded "doctor con ruta divergente" "$sandbox/doctor.out"
   assert_contains "doctor WARN de divergencia menciona la ruta del entorno" \
     "OPENCODE_CONFIG_DIR apunta a $other_dir" "$sandbox/doctor.out"
   assert_contains "doctor WARN de divergencia menciona la ruta registrada" \
@@ -1709,10 +1837,13 @@ test_status_and_doctor_warn_on_route_divergence() {
   assert_contains "doctor WARN de divergencia incluye HINT" \
     "HINT  desexporta OPENCODE_CONFIG_DIR" "$sandbox/doctor.out"
 
-  if grep -qE 'Resumen: FAILs=0[[:space:]]+WARNs=[1-9][0-9]*' "$sandbox/doctor.out"; then
-    pass "doctor resume FAILs=0 y al menos un WARN"
+  # The divergence is a WARN, but the fake runtime adds the UNAVAILABLE
+  # failures of the operational probe: the summary must show BOTH, and never
+  # FAILs=0 (that would be a false healthy claim).
+  if grep -qE 'Resumen: FAILs=[1-9][0-9]*[[:space:]]+WARNs=[1-9][0-9]*' "$sandbox/doctor.out"; then
+    pass "doctor resume FAILs>0 y al menos un WARN con la ruta divergente"
   else
-    fail "doctor no resume FAILs=0 con WARNs positivos"
+    fail "doctor no resume FAILs>0 con WARNs positivos en la ruta divergente"
   fi
 
   TMP_TEST_HOME=""
@@ -1752,10 +1883,15 @@ test_status_and_doctor_do_not_warn_without_route_divergence() {
   run_isolated "$home" OPENCODE_CONFIG_DIR="$alt_dir" OPENCODE_CONFIG="$alt_dir/opencode.jsonc" \
     bash "$fixture_repo/install.sh" doctor > "$sandbox/doctor-aligned.out" 2>&1 || doctor_aligned_rc=$?
 
-  assert_equal "status sin variables exportadas sale 0" "0" "$status_unset_rc"
-  assert_equal "doctor sin variables exportadas sale 0" "0" "$doctor_unset_rc"
-  assert_equal "status con entorno alineado sale 0" "0" "$status_aligned_rc"
-  assert_equal "doctor con entorno alineado sale 0" "0" "$doctor_aligned_rc"
+  assert_equal "status sin variables exportadas sale 1 (fake sin runtime operable)" "1" "$status_unset_rc"
+  assert_equal "doctor sin variables exportadas sale 1 (fake sin runtime operable)" "1" "$doctor_unset_rc"
+  assert_equal "status con entorno alineado sale 1 (fake sin runtime operable)" "1" "$status_aligned_rc"
+  assert_equal "doctor con entorno alineado sale 1 (fake sin runtime operable)" "1" "$doctor_aligned_rc"
+
+  assert_status_degraded "status sin variables exportadas" "$sandbox/status-unset.out"
+  assert_doctor_degraded "doctor sin variables exportadas" "$sandbox/doctor-unset.out"
+  assert_status_degraded "status con entorno alineado" "$sandbox/status-aligned.out"
+  assert_doctor_degraded "doctor con entorno alineado" "$sandbox/doctor-aligned.out"
 
   assert_no_route_warning "status sin variables exportadas no avisa de rutas" "$sandbox/status-unset.out"
   assert_no_route_warning "doctor sin variables exportadas no avisa de rutas" "$sandbox/doctor-unset.out"
@@ -2519,7 +2655,9 @@ test_legacy_manifest_without_config_file() {
 
   run_isolated "$home" OPENCODE_CONFIG="$other_config" \
     bash "$fixture_repo/install.sh" status > "$sandbox/status.out" 2>&1 || status_rc=$?
-  assert_equal "status sale 0 con manifest legacy sin config_file" "0" "$status_rc"
+  assert_equal "status sale 1 con manifest legacy sin config_file (fake sin runtime operable)" \
+    "1" "$status_rc"
+  assert_status_degraded "status legacy" "$sandbox/status.out"
   assert_contains "status usa el fallback de config del overlay registrado" \
     "OpenCode overlay ($default_dir)" "$sandbox/status.out"
   assert_no_route_warning "status legacy no inventa un WARN de config" "$sandbox/status.out"
@@ -2581,7 +2719,9 @@ test_update_and_repair_sync_opencode_paths() {
 
   run_isolated "$home" bash "$fixture_repo/install.sh" status \
     > "$sandbox/status-after-update.out" 2>&1 || status_update_rc=$?
-  assert_equal "status valida el overlay reinstalado por update" "0" "$status_update_rc"
+  assert_equal "status sale 1 validando el overlay reinstalado por update (fake sin runtime operable)" \
+    "1" "$status_update_rc"
+  assert_status_degraded "status tras update" "$sandbox/status-after-update.out"
   assert_contains "status diagnostica la ruta reinstalada por update" \
     "OpenCode overlay ($route_b)" "$sandbox/status-after-update.out"
 
@@ -2596,7 +2736,9 @@ test_update_and_repair_sync_opencode_paths() {
 
   run_isolated "$home" bash "$fixture_repo/install.sh" status \
     > "$sandbox/status-after-repair.out" 2>&1 || status_repair_rc=$?
-  assert_equal "status valida el overlay reinstalado por repair" "0" "$status_repair_rc"
+  assert_equal "status sale 1 validando el overlay reinstalado por repair (fake sin runtime operable)" \
+    "1" "$status_repair_rc"
+  assert_status_degraded "status tras repair" "$sandbox/status-after-repair.out"
   assert_contains "status diagnostica la ruta reinstalada por repair" \
     "OpenCode overlay ($route_c)" "$sandbox/status-after-repair.out"
   assert_equal "update/repair conservan state_schema 3" "3" "$(jq -r '.state_schema' "$state")"
@@ -2605,11 +2747,174 @@ test_update_and_repair_sync_opencode_paths() {
   rm -rf "$sandbox"
 }
 
+# degraded_contract_violations <status_out> <doctor_out> <repo_root>
+# Prints one line per violated rule of the degradation contract. An empty
+# output means the contract holds. It never touches the suite counters, so it
+# can be used as a control over the contract itself.
+degraded_contract_violations() {
+  local status_out="$1" doctor_out="$2" repo="$3"
+
+  if grep -qF "Estado general: OK" "$status_out" 2>/dev/null; then
+    echo "status declara salud general (Estado general: OK) con un runtime no operable"
+  fi
+  if ! grep -qF "Estado general: DEGRADADO" "$status_out" 2>/dev/null; then
+    echo "status no declara la degradacion de forma explicita (Estado general: DEGRADADO ausente)"
+  fi
+  if ! grep -qE "$PLUGIN_RUNTIME_MESSAGE_PREFIX.+" "$status_out" 2>/dev/null; then
+    echo "status no identifica el sondeo de inventario de plugins como no ejecutable"
+  fi
+  if ! grep -qE "$PLUGIN_RUNTIME_MESSAGE_PREFIX.+.*(OPENCODE_DB|binario pinado|aislamiento)" \
+      "$status_out" 2>/dev/null; then
+    echo "status no muestra una causa identificable del sondeo de inventario"
+  fi
+  if ! grep -qE "FAIL[[:space:]]+UNAVAILABLE: $PLUGIN_RUNTIME_MESSAGE_PREFIX" "$doctor_out" 2>/dev/null; then
+    echo "doctor no reporta el sondeo de inventario como FAIL UNAVAILABLE"
+  fi
+  if grep -qE "Resumen: FAILs=0" "$doctor_out" 2>/dev/null; then
+    echo "doctor declara FAILs=0 con un runtime no operable"
+  fi
+  if grep -qF "plugin list: enumer" "$status_out" "$doctor_out" 2>/dev/null; then
+    echo "se simulo una enumeracion runtime exitosa"
+  fi
+  if ! grep -qF "opencode.jsonc: JSONC valido" "$status_out" 2>/dev/null; then
+    echo "las comprobaciones estaticas del overlay dejaron de superarse"
+  fi
+  if ! grep -qF "$PLUGIN_RUNTIME_FAMILY_BINDING" "$repo/install.sh" 2>/dev/null; then
+    echo "el mensaje renderizado no esta ligado a la familia plugin-runtime"
+  fi
+
+  return 0
+}
+
+# The contract of the degradation must be able to REJECT a false healthy
+# output: a contract that accepts anything would be worthless. This control
+# runs WITHOUT any runtime, over synthetic diagnostics.
+test_degradation_contract_is_not_vacuous() {
+  echo ""
+  echo "--- test_degradation_contract_is_not_vacuous"
+
+  local sandbox repo
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/contract-control.XXXXXX")"
+  repo="$(mktemp -d "$TEST_TMP_ROOT/contract-control-repo.XXXXXX")"
+  create_repo_fixture "$repo" >/dev/null
+
+  # A synthetic HEALTHY output: the contract must reject it.
+  cat > "$sandbox/status-healthy.out" <<'EOF'
+    OK       opencode.jsonc: JSONC valido
+    OK       plugin list: enumeración runtime exacta de forge-guard
+  Estado general: OK
+EOF
+  cat > "$sandbox/doctor-healthy.out" <<'EOF'
+  PASS  opencode.jsonc: JSONC valido
+  Resumen: FAILs=0  WARNs=0
+EOF
+
+  local violations
+  violations="$(degraded_contract_violations "$sandbox/status-healthy.out" \
+    "$sandbox/doctor-healthy.out" "$repo" | grep -c . || true)"
+  if [ "$violations" -gt 0 ]; then
+    pass "el contrato de degradacion rechaza una salida sana falsa (control negativo, sin runtime)"
+  else
+    fail "el contrato de degradacion acepta una salida sana falsa (control negativo, sin runtime)"
+  fi
+
+  # The real degraded shape must be ACCEPTED by the very same contract.
+  cat > "$sandbox/status-degraded.out" <<'EOF'
+    OK       opencode.jsonc: JSONC valido
+    UNAVAILABLE plugin list no ejecutada: el binario pinado no pudo resolver OPENCODE_DB antes del aislamiento
+      → bash install.sh install --target=opencode
+  Estado general: DEGRADADO (ver detalles arriba)
+EOF
+  cat > "$sandbox/doctor-degraded.out" <<'EOF'
+  PASS  opencode.jsonc: JSONC valido
+  FAIL  UNAVAILABLE: plugin list no ejecutada: el binario pinado no pudo resolver OPENCODE_DB antes del aislamiento
+  HINT  bash install.sh install --target=opencode
+  Resumen: FAILs=3  WARNs=1
+EOF
+
+  violations="$(degraded_contract_violations "$sandbox/status-degraded.out" \
+    "$sandbox/doctor-degraded.out" "$repo" | grep -c . || true)"
+  if [ "$violations" -eq 0 ]; then
+    pass "el contrato de degradacion acepta la forma degradada real (control positivo, sin runtime)"
+  else
+    fail "el contrato de degradacion rechaza la forma degradada real:"
+    degraded_contract_violations "$sandbox/status-degraded.out" \
+      "$sandbox/doctor-degraded.out" "$repo" | sed 's/^/    /' >&2
+  fi
+
+  rm -rf "$sandbox" "$repo"
+}
+
+# The environmental contract of the real OpenCode prefix, exercised on
+# SYNTHETIC homes so the real installation of this machine is never touched,
+# modified nor deleted (only its metadata is read, by the suite's own
+# fingerprint):
+#
+#   * clean runner: the prefix does not exist before and the suite does not
+#     create it,
+#   * machine with a previous installation: the prefix exists before and
+#     stays untouched. The preexistence is NOT a failure and it does not mask
+#     a real mutation.
+test_forge_prefix_environment_contracts() {
+  echo ""
+  echo "--- test_forge_prefix_environment_contracts"
+
+  local sandbox
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/prefix-contract.XXXXXX")"
+
+  # --- clean runner: the prefix does not exist -------------------------
+  local clean_home="$sandbox/clean-home"
+  mkdir -p "$clean_home"
+  local clean_before clean_output clean_rc=0
+  clean_before="$(forge_protected_snapshot "$clean_home")"
+  mkdir -p "$clean_home/.local/share"
+  clean_output="$(forge_assert_no_forge_prefix "$clean_before" "$clean_home" 2>&1)" || clean_rc=$?
+  if [ "$clean_rc" -eq 0 ]; then
+    pass "runner limpio: el prefijo real de OpenCode no se crea"
+  else
+    fail "runner limpio: el prefijo real de OpenCode se crearia o no se pudo comprobar: $clean_output"
+  fi
+
+  # Negative control: if the prefix appeared, the guard must catch it.
+  mkdir -p "$clean_home/.local/share/forge/opencode-v2"
+  clean_rc=0
+  clean_output="$(forge_assert_no_forge_prefix "$clean_before" "$clean_home" 2>&1)" || clean_rc=$?
+  if [ "$clean_rc" -ne 0 ] && printf '%s' "$clean_output" | grep -q "la suite instalo el prefijo real"; then
+    pass "runner limpio: el guard detecta la creacion del prefijo real (control negativo)"
+  else
+    fail "runner limpio: el guard no detecta la creacion del prefijo real: $clean_output"
+  fi
+
+  # --- machine with a previous installation -----------------------------
+  local prior_home="$sandbox/prior-home"
+  mkdir -p "$prior_home/.local/share/forge/opencode-v2"
+  printf 'preexisting\n' > "$prior_home/.local/share/forge/opencode-v2/marker"
+  local prior_before prior_output prior_rc=0
+  prior_before="$(forge_protected_snapshot "$prior_home")"
+  prior_output="$(forge_assert_no_forge_prefix "$prior_before" "$prior_home" 2>&1)" || prior_rc=$?
+  if [ "$prior_rc" -eq 0 ]; then
+    pass "instalacion preexistente: la preexistencia NO se reporta como fallo de la suite"
+  else
+    fail "instalacion preexistente: la preexistencia se reporta como fallo: $prior_output"
+  fi
+
+  # And the preexistence must not mask a real mutation of the real tree.
+  printf 'mutated\n' > "$prior_home/.local/share/forge/opencode-v2/marker"
+  local mutation_rc=0
+  forge_assert_protected_unchanged "$prior_before" "$prior_home" >/dev/null 2>&1 || mutation_rc=$?
+  if [ "$mutation_rc" -ne 0 ]; then
+    pass "instalacion preexistente: una mutacion real si se detecta (la preexistencia no la tapa)"
+  else
+    fail "instalacion preexistente: una mutacion real NO se detecta"
+  fi
+
+  rm -rf "$sandbox"
+}
+
 echo "================================"
 
 echo " opencode_install_integration.sh"
 echo "================================"
-
 test_isolated_install_and_launcher
 test_missing_plugin_source_aborts_install
 test_failed_install_does_not_persist_state
@@ -2639,6 +2944,8 @@ test_uninstall_failure_preserves_state
 test_manifest_records_opencode_paths_for_both_target
 test_legacy_manifest_without_config_file
 test_update_and_repair_sync_opencode_paths
+test_degradation_contract_is_not_vacuous
+test_forge_prefix_environment_contracts
 
 echo ""
 echo "================================"

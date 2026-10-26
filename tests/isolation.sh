@@ -166,18 +166,65 @@ EOF
   return 1
 }
 
-# forge_assert_no_forge_prefix [base]
-# The pinned OpenCode prefix of the real user must never be created by a
-# test run. It is the exact directory where the leak happened.
+# forge_assert_no_forge_prefix <before-snapshot> [base]
+# The pinned OpenCode prefix of the real user must never be CREATED by a test
+# run, and it must never be DELETED either.
+#
+# The mere PREEXISTENCE of the prefix is NOT a failure: on a machine where
+# OpenCode is really installed (the cutover V2 installation) the prefix exists
+# before the suite starts, and the suite must leave it untouched. It is the
+# state BEFORE the run that decides, and that state comes from the snapshot
+# taken before any test ran:
+#
+#   absent  -> absent   : the suite did not create it (clean runner)
+#   absent  -> present  : FAIL, the suite created the real prefix
+#   present -> absent   : FAIL, the suite deleted the real installation
+#   present -> present  : the preexistence is not a failure; MUTATIONS of the
+#                         preexisting tree are detected separately by the deep
+#                         fingerprint of .local/share/forge (see
+#                         forge_assert_protected_unchanged), so the
+#                         preexistence never masks a write.
+#
+# Without a before-snapshot the state before the run is unknowable, so the
+# check reports that instead of guessing: a prefix that exists can neither be
+# credited nor blamed.
 forge_assert_no_forge_prefix() {
-  local base="${1:-$FORGE_TEST_REAL_HOME}"
+  local before="${1:-}" base="${2:-$FORGE_TEST_REAL_HOME}"
   local prefix="$base/.local/share/forge"
 
-  if [ -e "$prefix" ]; then
+  if [ -z "$before" ]; then
+    printf '  FAIL  no se paso la instantanea previa del prefijo real de OpenCode: no se puede distinguir preexistencia de creacion\n' >&2
+    return 1
+  fi
+
+  local before_fp after_fp
+  before_fp="$(printf '%s\n' "$before" | awk -F'\t' '$1 == ".local/share/forge" { print $2; exit }')"
+  after_fp="$(forge_protected_snapshot "$base" | awk -F'\t' '$1 == ".local/share/forge" { print $2; exit }')"
+
+  if [ -z "$before_fp" ] || [ -z "$after_fp" ]; then
+    printf '  FAIL  no se pudo leer la huella del prefijo real de OpenCode (%s)\n' "$prefix" >&2
+    return 1
+  fi
+
+  if [ "$before_fp" = "absent" ] && [ "$after_fp" = "absent" ]; then
+    printf '  PASS  el prefijo real de OpenCode no existe y la suite no lo creo\n'
+    return 0
+  fi
+
+  if [ "$before_fp" = "absent" ]; then
     printf '  FAIL  la suite instalo el prefijo real de OpenCode: %s\n' "$prefix" >&2
     return 1
   fi
 
+  if [ "$after_fp" = "absent" ]; then
+    printf '  FAIL  la suite borro el prefijo real de OpenCode: %s\n' "$prefix" >&2
+    return 1
+  fi
+
+  # It existed before the run and still exists. The preexistence itself is
+  # not a failure; the deep fingerprint of the protected paths proves that
+  # nothing inside it changed.
+  printf '  PASS  el prefijo real de OpenCode ya existia antes de la suite y sigue presente e intacto (la huella profunda comprueba que no cambio)\n'
   return 0
 }
 
@@ -216,7 +263,16 @@ forge_isolated_env() {
 #              downloading @opencode/cli@2.1.4. The suite never touches the
 #              network and never installs anything.
 #   opencode — a stand-in for the OpenCode CLI that reports the pinned
-#              version and the OpenCode 2 auth JSON contract.
+#              version and the OpenCode 2 auth JSON contract, and that
+#              REFUSES every command needing a real runtime (database path
+#              resolution, serving, plugin/session enumeration).
+#
+# The fake is deliberately NOT a runtime: the operational probes of
+# `install.sh status`/`doctor` enumerate the installed plugins with a real
+# runtime, so with this fake they can only degrade, and the suites assert
+# that explicit degradation. Nothing here may simulate a successful
+# enumeration; the operational guarantee with a real CLI 2.1.4 is covered by
+# the separate real-runtime scenario.
 #
 # Existing files are never overwritten: a suite may replace the fake
 # `opencode` with a specialised one.
@@ -265,23 +321,54 @@ mkdir -p "$prefix/node_modules/.bin"
 cat > "$prefix/node_modules/.bin/opencode" <<'OPENCODE_EOF'
 #!/usr/bin/env sh
 # Fake pinned OpenCode build used by the Forge test suites.
+#
+# It is NOT a runtime and it never pretends to be one:
+#
+#   * it answers only the two contracts the installer needs at install time
+#     (the pinned version and the OpenCode 2 auth JSON),
+#   * every command that needs a REAL runtime (resolving the database path,
+#     serving, enumerating plugins or sessions) is REFUSED explicitly with a
+#     non-zero status and a recognisable message,
+#   * any other command echoes its arguments, which is what the launcher
+#     contract tests observe.
+#
+# The operational probes of `install.sh status`/`doctor` need a real runtime,
+# so with this fake they MUST degrade. The suites assert that explicit
+# degradation, never a healthy result: no successful enumeration can ever be
+# simulated here. The operational guarantee with a real CLI 2.1.4 belongs to
+# the separate real-runtime scenario.
 case "${1:-}" in
   --version)
     printf 'opencodev2.1.4\n'
+    exit 0
     ;;
   auth)
     printf '[{"id":"openai","name":"openai","type":"api"}]\n'
+    exit 0
     ;;
-  *)
-    printf 'ARGV=%s\n' "$*"
-    printf 'OPENCODE_CONFIG_DIR=%s\n' "${OPENCODE_CONFIG_DIR:-}"
-    printf 'OPENCODE_CONFIG=%s\n' "${OPENCODE_CONFIG:-}"
-    if [ -n "${OPENCODE_CONFIG:-}" ] && [ -f "${OPENCODE_CONFIG:-}" ]; then
-      printf '%s\n' '--- CONFIG ---'
-      cat "${OPENCODE_CONFIG}"
+  debug)
+    if [ "${2:-}" = "paths" ] && [ "${3:-}" = "db" ]; then
+      printf 'fake-opencode: "debug paths db" requiere un runtime real\n' >&2
+      exit 3
     fi
     ;;
+  serve)
+    printf 'fake-opencode: "serve" requiere un runtime real\n' >&2
+    exit 3
+    ;;
+  plugin|session)
+    printf 'fake-opencode: "%s" requiere un runtime real\n' "${1:-}" >&2
+    exit 3
+    ;;
 esac
+printf 'ARGV=%s\n' "$*"
+printf 'OPENCODE_CONFIG_DIR=%s\n' "${OPENCODE_CONFIG_DIR:-}"
+printf 'OPENCODE_CONFIG=%s\n' "${OPENCODE_CONFIG:-}"
+if [ -n "${OPENCODE_CONFIG:-}" ] && [ -f "${OPENCODE_CONFIG:-}" ]; then
+  printf '%s\n' '--- CONFIG ---'
+  cat "${OPENCODE_CONFIG}"
+fi
+exit 0
 OPENCODE_EOF
 
 chmod +x "$prefix/node_modules/.bin/opencode"
@@ -294,23 +381,54 @@ NPM_EOF
     cat > "$dir/opencode" <<'OPENCODE_EOF'
 #!/usr/bin/env sh
 # Fake OpenCode CLI used by the Forge test suites.
+#
+# It is NOT a runtime and it never pretends to be one:
+#
+#   * it answers only the two contracts the installer needs at install time
+#     (the pinned version and the OpenCode 2 auth JSON),
+#   * every command that needs a REAL runtime (resolving the database path,
+#     serving, enumerating plugins or sessions) is REFUSED explicitly with a
+#     non-zero status and a recognisable message,
+#   * any other command echoes its arguments, which is what the launcher
+#     contract tests observe.
+#
+# The operational probes of `install.sh status`/`doctor` need a real runtime,
+# so with this fake they MUST degrade. The suites assert that explicit
+# degradation, never a healthy result: no successful enumeration can ever be
+# simulated here. The operational guarantee with a real CLI 2.1.4 belongs to
+# the separate real-runtime scenario.
 case "${1:-}" in
   --version)
     printf 'opencodev2.1.4\n'
+    exit 0
     ;;
   auth)
     printf '[{"id":"openai","name":"openai","type":"api"}]\n'
+    exit 0
     ;;
-  *)
-    printf 'ARGV=%s\n' "$*"
-    printf 'OPENCODE_CONFIG_DIR=%s\n' "${OPENCODE_CONFIG_DIR:-}"
-    printf 'OPENCODE_CONFIG=%s\n' "${OPENCODE_CONFIG:-}"
-    if [ -n "${OPENCODE_CONFIG:-}" ] && [ -f "${OPENCODE_CONFIG:-}" ]; then
-      printf '%s\n' '--- CONFIG ---'
-      cat "${OPENCODE_CONFIG}"
+  debug)
+    if [ "${2:-}" = "paths" ] && [ "${3:-}" = "db" ]; then
+      printf 'fake-opencode: "debug paths db" requiere un runtime real\n' >&2
+      exit 3
     fi
     ;;
+  serve)
+    printf 'fake-opencode: "serve" requiere un runtime real\n' >&2
+    exit 3
+    ;;
+  plugin|session)
+    printf 'fake-opencode: "%s" requiere un runtime real\n' "${1:-}" >&2
+    exit 3
+    ;;
 esac
+printf 'ARGV=%s\n' "$*"
+printf 'OPENCODE_CONFIG_DIR=%s\n' "${OPENCODE_CONFIG_DIR:-}"
+printf 'OPENCODE_CONFIG=%s\n' "${OPENCODE_CONFIG:-}"
+if [ -n "${OPENCODE_CONFIG:-}" ] && [ -f "${OPENCODE_CONFIG:-}" ]; then
+  printf '%s\n' '--- CONFIG ---'
+  cat "${OPENCODE_CONFIG}"
+fi
+exit 0
 OPENCODE_EOF
     chmod +x "$dir/opencode"
   fi

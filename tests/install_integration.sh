@@ -1942,7 +1942,7 @@ test_run_all_executes_every_candidate_suite
 check_real_user_untouched() {
   local rc=0
 
-  if ! forge_assert_no_forge_prefix; then
+  if ! forge_assert_no_forge_prefix "$PROTECTED_SNAPSHOT"; then
     rc=1
   fi
   if ! forge_assert_protected_unchanged "$PROTECTED_SNAPSHOT"; then
