@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - registra la acreditacion hospedada del banco V2
 
+### Fixed
+- cierra los contratos V2 y certifica el banco de seguridad
+
 ## [0.8.2] - 2026-10-26
 
 ### Fixed

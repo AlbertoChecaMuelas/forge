@@ -7,7 +7,7 @@ set -euo pipefail
 # Core constants
 # ---------------------------------------------------------------------------
 FORGE_ROOT="$(cd "$(dirname "$0")" && pwd)"
-FORGE_VERSION="0.8.2"
+FORGE_VERSION="0.8.3"
 FORGE_STATE_FILE="$HOME/.forge-state.json"
 FORGE_OPENCODE_DIR_DEFAULT="$HOME/.config/opencode-forge"
 # ---------------------------------------------------------------------------
