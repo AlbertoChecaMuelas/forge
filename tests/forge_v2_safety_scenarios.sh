@@ -41,6 +41,13 @@
 #                             historical backup and is NEVER consulted by
 #                             default; this override is only for a developer
 #                             that wants another tree and is NOT needed in CI.
+#                             Since the provenance of the loaded module is a
+#                             HARD control (INSP-2 of the harness), pointing
+#                             the bench at another tree now makes the bank
+#                             RED: the override is still honoured (the bench
+#                             runs and it exercises that tree) but the
+#                             invocation is not an acceptance. A green run
+#                             requires the canonical versioned component.
 #   FORGE_V2_REAL_DB         default $HOME/.local/share/opencode/opencode.db
 #                             (the real DB is only stat()'ed, never opened)
 #   FORGE_V2_HANG_TIMEOUT    default 20 (supervisor --timeout of the hang
@@ -137,6 +144,80 @@ case "$SCENARIO" in
     ;;
 esac
 
+# ---------------------------------------------------------------------------
+# The expectations of THIS scenario.
+#
+# They are the expectations of the SCENARIO, not global constants of the bank:
+# the fault injection scenarios are contracted to end with a specific RC (the
+# watchdog disarmed -> the supervisor denies the barrier -> the suite aborts
+# with 4), and the scenario that must be ELIMINATED by the bounded close has
+# no RC at all (NONE: the suite hangs on purpose and the chain kills it).
+#
+# The expected RC of the inner scenario travels to the supervisor, which
+# passes it to the containment entry: the receipt of the inner invocation
+# records the SAME expectation, so the verdict of the entry and the verdict of
+# the supervisor can never disagree about it. A global 0 would make every
+# fault injection scenario a mismatch and its cleanup unaccredited.
+#
+# There are TWO DIFFERENT declarations and they are NOT interchangeable:
+#
+#   EXPECTED_SUITE_RC           the RC that the CONTAINMENT is contracted to
+#                               produce. For the eliminated scenario it is
+#                               NONE: the product cleanup of that invocation
+#                               could not be observed, so its acceptance is
+#                               NOT applicable. It travels to the entry.
+#   EXPECTED_SUITE_OBSERVED_RC  the exit code that the scenario ACTUALLY
+#                               produced, in the convention of the signals.
+#                               It is OBSERVABLE for EVERY scenario, including
+#                               the eliminated one: the close of the entry
+#                               escalates to SIGKILL and the suite ends with
+#                               -9. It is compared EXACTLY, and an ABSENT or
+#                               an INVALID value is rejected: the absence of
+#                               an exit code is not an exit code, and in
+#                               Python `None != 0` is true, so a loose
+#                               comparison would accept a MISSING evidence.
+# ---------------------------------------------------------------------------
+case "$SCENARIO" in
+  normal)
+    EXPECTED_SUITE_RC=0
+    EXPECTED_SUITE_OBSERVED_RC=0
+    EXPECTED_SUPERVISOR_RC=0
+    ;;
+  no-pidfd)
+    EXPECTED_SUITE_RC=4
+    EXPECTED_SUITE_OBSERVED_RC=4
+    EXPECTED_SUPERVISOR_RC=6
+    ;;
+  no-pidfd-hang)
+    EXPECTED_SUITE_RC=NONE
+    EXPECTED_SUITE_OBSERVED_RC=-9
+    EXPECTED_SUPERVISOR_RC=6
+    ;;
+esac
+export FORGE_V2_EXPECTED_SCENARIO_RC="$EXPECTED_SUITE_RC"
+export FORGE_V2_EXPECTED_SUITE_OBSERVED_RC="$EXPECTED_SUITE_OBSERVED_RC"
+
+# ---------------------------------------------------------------------------
+# ADMISSION. This runner is the OUTER consumer of the bank: it creates the
+# evidence directory, it starts the wrapper and it reads the /proc of the
+# processes of the scenario. NONE of that may happen unless the containment
+# of THIS invocation is accredited by the standard entry
+# (tools/verification/forge-contained-run.sh).
+#
+# The accreditation that the inner role_suite() performs for itself does NOT
+# authorize this runner: it protects that role only, and it says nothing about
+# the runner, the supervisor, the preparation, the controls nor the cleanup.
+# ---------------------------------------------------------------------------
+CONTAINMENT_GUARD="$REPO_ROOT/tools/verification/require-v2-containment.sh"
+if [ ! -f "$CONTAINMENT_GUARD" ]; then
+  echo "FALLO: no existe el helper de admision de contencion: $CONTAINMENT_GUARD" >&2
+  exit 78
+fi
+if ! bash "$CONTAINMENT_GUARD"; then
+  echo "FALLO: el banco V2 no se ejecuta sin acreditacion previa de forge-contained-run.sh." >&2
+  exit 78
+fi
+
 if [ ! -f "$HARNESS" ]; then
   echo "FALLO: harness ausente: $HARNESS" >&2
   exit 13
@@ -202,6 +283,9 @@ run_supervisor() {
   export FORGE_V2_BATCH_ROOT="$WORK"
   # Where the wrapper writes the evidence of an expired guard.
   export FORGE_GUARD_EVIDENCE="$EVIDENCE_DIR/guard-expiry.json"
+  # The identity of the supervisor is published so that the leftover wait can
+  # be made on THAT identity instead of sweeping the process table.
+  export FORGE_GUARD_IDENTITY="$EVIDENCE_DIR/guard-identity.json"
   export FORGE_V2_SCENARIO_GRACE="$SCENARIO_GRACE"
 
   set +e
@@ -234,18 +318,41 @@ guard = float(os.environ.get("FORGE_V2_SCENARIO_GUARD", str(GUARD_DEFAULT)))
 grace = float(os.environ.get("FORGE_V2_SCENARIO_GRACE", str(GRACE_DEFAULT)))
 evidence_path = os.environ.get("FORGE_GUARD_EVIDENCE", "")
 
+# The admission gate (tools/verification/require-v2-containment.sh) reads the
+# kernel handle of the INVOKING namespace from the descriptor 8 of its direct
+# invoker. The supervisor is that direct invoker for its own admission, so
+# the supervisor has to RETAIN the descriptor that the containment entry
+# opened before its `unshare`.
+#
+# subprocess.Popen closes every descriptor that is not listed in `pass_fds`
+# (the default `close_fds=True`), so the default would DROP the descriptor
+# and the admission of the supervisor would be impossible to satisfy: the
+# gate would read a handle that does not exist and deny the admission with
+# RC 78. The descriptor is passed EXPLICITLY (and only it), so the rest of
+# the environment of this process is still closed to the child.
+inherited_fds = ()
+try:
+    os.fstat(8)
+except OSError:
+    pass
+else:
+    inherited_fds = (8,)
+
 start = time.monotonic()
 deadline = start + guard
-proc = subprocess.Popen(command, stdout=subprocess.PIPE)
+proc = subprocess.Popen(command, stdout=subprocess.PIPE, pass_fds=inherited_fds)
 supervisor_pid = proc.pid
 fd = proc.stdout.fileno()
 
-# Identity registry. Processes are identified by (pid, start ticks) and by
-# their process group: NEVER by name and never by an indiscriminate sweep.
-registry = {"supervisor": {"pid": supervisor_pid, "ticks": None, "pgrp": None}, "children": {}}
-last_refresh = [0.0]
-
-
+# The identity of a process is read from its OWN /proc/<pid>/stat. This
+# helper is DEFINED BEFORE its first use on purpose: the publication of the
+# identity of the supervisor below happens at module level, and a call to a
+# name that is defined later in the module raises NameError at that point.
+#
+# The /proc it reads is the PRIVATE one of the accredited containment, and
+# the only PIDs it is asked about are the identities of THIS batch: the
+# supervisor it launched and the children the kernel publishes for it. The
+# process table of the host is never enumerated.
 def stat_fields(pid):
     try:
         with open("/proc/%d/stat" % pid, "r", encoding="ascii") as stream:
@@ -265,6 +372,32 @@ def stat_fields(pid):
         return None
 
 
+# The identity of the supervisor is published at its birth: the leftover wait
+# of this interface is made on THAT identity, never on a name and never on a
+# sweep of the host.
+identity_path = os.environ.get("FORGE_GUARD_IDENTITY", "")
+if identity_path:
+    try:
+        with open(identity_path, "w", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "pid": supervisor_pid,
+                        "start_time_ticks": (stat_fields(supervisor_pid) or {}).get("ticks"),
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+    except OSError:
+        pass
+
+# Identity registry. Processes are identified by (pid, start ticks) and by
+# their process group: NEVER by name and never by an indiscriminate sweep.
+registry = {"supervisor": {"pid": supervisor_pid, "ticks": None, "pgrp": None}, "children": {}}
+last_refresh = [0.0]
+
+
 def alive(pid, ticks=None):
     info = stat_fields(pid)
     if info is None or info["state"] == "Z":
@@ -272,18 +405,53 @@ def alive(pid, ticks=None):
     return ticks is None or info["ticks"] == ticks
 
 
-def group_members(pgid):
-    members = []
+def children_of(pid):
+    """The children of a KNOWN process, read from its own children file.
+
+    The process table of the host is NEVER enumerated: the children of a
+    process the batch created are read from the file the kernel publishes
+    for it (/proc/<pid>/task/<tid>/children), so the batch can only ever
+    see the processes it owns.
+    """
+    found = []
     try:
-        entries = os.listdir("/proc")
+        tasks = os.listdir("/proc/%d/task" % pid)
     except OSError:
-        return members
-    for entry in entries:
-        if not entry.isdigit():
+        return found
+    for tid in tasks:
+        try:
+            with open("/proc/%d/task/%s/children" % (pid, tid), "r", encoding="ascii") as stream:
+                raw = stream.read()
+        except OSError:
             continue
-        info = stat_fields(int(entry))
-        if info and info["state"] != "Z" and info["pgrp"] == pgid:
-            members.append(int(entry))
+        for item in raw.split():
+            if item.isdigit():
+                found.append(int(item))
+    return found
+
+
+def group_members(pgid):
+    """The members of a process group the batch KNOWS about.
+
+    The process table of the host is NEVER enumerated, not even from inside
+    the containment: the members are the identities that THIS wrapper
+    recorded, that is, the children of the supervisor located through the
+    children file that the kernel publishes for it. A process of somebody
+    else can therefore never be mistaken for a member of the batch, and never
+    be signalled.
+
+    This function is the identity based replacement of the enumeration of
+    /proc that the timeout path of this interface used to perform: it was the
+    only sweep of the process table in this file, and the calls that the
+    timeout path makes (the teardown of the groups and the detection of the
+    survivors) were left pointing at it.
+    """
+    members = []
+    for pid, child in sorted(registry["children"].items()):
+        if child.get("pgrp") != pgid:
+            continue
+        if alive(int(pid), child.get("ticks")):
+            members.append(int(pid))
     return members
 
 
@@ -291,8 +459,10 @@ def refresh_registry():
     """Record the identity of the supervisor and of what it spawned.
 
     The children are located by their PARENT relation to the supervisor whose
-    own identity (pid + start ticks) was captured when it was launched. No
-    name matching and no sweeping of unrelated processes.
+    own identity (pid + start ticks) was captured when it was launched. The
+    relation is read from the children file of the supervisor: no name
+    matching, no sweeping of the host and no reading of the command line of
+    an unrelated process.
     """
     now = time.monotonic()
     if now - last_refresh[0] < 0.5:
@@ -302,14 +472,7 @@ def refresh_registry():
     if sup is not None:
         registry["supervisor"]["ticks"] = sup["ticks"]
         registry["supervisor"]["pgrp"] = sup["pgrp"]
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return
-    for entry in entries:
-        if not entry.isdigit():
-            continue
-        pid = int(entry)
+    for pid in children_of(supervisor_pid):
         info = stat_fields(pid)
         if info is None or info["state"] == "Z":
             continue
@@ -541,18 +704,59 @@ T_END="$(python3 -c 'import time;print("%.6f"%time.monotonic())')"
 
 echo "supervisor RC: $SUPERVISOR_RC"
 
-# A scenario must never leave a process of its own behind. Any process still
-# carrying this scenario's report path is waited for (never signalled): the
-# supervisor completes by itself.
+# ---------------------------------------------------------------------------
+# The declaration of the cleanup of the product of THIS invocation.
+#
+# The supervisor publishes it in the marker of the entry (the file that
+# tools/verification/forge-contained-run.sh reads before its defensive
+# cleanup) and in the evidence of the scenario. A MISSING declaration is a
+# contract violation: the suite has to declare the cleanup of its OWN
+# environment, observed over its private /proc.
+#
+# The VALUE is not judged by this interface: a scenario that injects a fault
+# may legitimately leave the cleanup unobserved (UNKNOWN), and then the
+# invocation is not a positive acceptance, which is the correct outcome.
+# This interface never turns an unobserved cleanup into a PASS.
+# ---------------------------------------------------------------------------
+PRODUCT_CLEANUP_FILE="${FORGE_PRODUCT_CLEANUP_RESULT_FILE:-}"
+PRODUCT_CLEANUP_DECLARED="ABSENT"
+if [ -n "$PRODUCT_CLEANUP_FILE" ] && [ -f "$PRODUCT_CLEANUP_FILE" ]; then
+  PRODUCT_CLEANUP_DECLARED="$(sed -n '1p' "$PRODUCT_CLEANUP_FILE" 2>/dev/null | tr -d '[:space:]')"
+fi
+export FORGE_V2_PRODUCT_CLEANUP_DECLARED="$PRODUCT_CLEANUP_DECLARED"
+export FORGE_V2_PRODUCT_CLEANUP_FILE="$PRODUCT_CLEANUP_FILE"
+echo "limpieza del producto declarada: $PRODUCT_CLEANUP_DECLARED ($PRODUCT_CLEANUP_FILE)"
+
+# A scenario must never leave a process of its own behind. The supervisor of
+# this scenario is a KNOWN identity (the guard wrapper recorded it when it
+# launched it), so the wait is made on THAT identity: the process table of
+# the host is never swept and no process is ever searched by name.
+scenario_supervisor_alive() {
+  local identity_file="$EVIDENCE_DIR/guard-identity.json"
+  local pid ticks current
+  [ -s "$identity_file" ] || return 1
+  pid="$(sed -n 's/.*"pid"[^0-9]*\([0-9][0-9]*\).*/\1/p' "$identity_file" | head -n 1)"
+  ticks="$(sed -n 's/.*"start_time_ticks"[^0-9]*\([0-9][0-9]*\).*/\1/p' "$identity_file" | head -n 1)"
+  [ -n "$pid" ] || return 1
+  [ -r "/proc/$pid/stat" ] || return 1
+  current="$(sed -e 's/.*) //' "/proc/$pid/stat" 2>/dev/null | awk 'NF >= 20 { print $20; exit }')" || return 1
+  [ -n "$current" ] || return 1
+  if [ -n "$ticks" ] && [ "$current" != "$ticks" ]; then
+    # The number was recycled: the process that is there now is not ours.
+    return 1
+  fi
+  return 0
+}
+
 LEFTOVER_WAIT=0
 while [ "$LEFTOVER_WAIT" -lt "$SCENARIO_GUARD" ]; do
-  if ! pgrep -f -- "--report-path $REPORT" >/dev/null 2>&1; then
+  if ! scenario_supervisor_alive; then
     break
   fi
   sleep 1
   LEFTOVER_WAIT=$((LEFTOVER_WAIT + 1))
 done
-if pgrep -f -- "--report-path $REPORT" >/dev/null 2>&1; then
+if scenario_supervisor_alive; then
   echo "FALLO: queda un proceso propio del escenario tras ${LEFTOVER_WAIT}s" >&2
   exit 14
 fi
@@ -610,18 +814,18 @@ def alive(pid, ticks=None):
     return ticks is None or info["ticks"] == ticks
 
 
-def group_members(pgid):
+def known_members(registry, pgid):
+    """The members of a process group the batch KNOWS about.
+
+    Only the identities the batch recorded are considered: the process table
+    of the host is never enumerated.
+    """
     members = []
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return members
-    for entry in entries:
-        if not entry.isdigit():
+    for pid, child in sorted((registry.get("children") or {}).items()):
+        if child.get("pgrp") != pgid:
             continue
-        info = stat_fields(int(entry))
-        if info and info["state"] != "Z" and info["pgrp"] == pgid:
-            members.append(int(entry))
+        if alive(int(pid), child.get("ticks")):
+            members.append(int(pid))
     return members
 
 
@@ -651,8 +855,11 @@ if evidence is not None:
         if alive(int(pid), child.get("ticks")):
             problems.append("un proceso propio sigue vivo: pid=%s" % pid)
         pgid = child.get("pgrp")
-        if pgid and pgid > 1 and group_members(pgid):
-            problems.append("quedan miembros del grupo propio %s: %r" % (pgid, group_members(pgid)))
+        if pgid and pgid > 1 and known_members(registry, pgid):
+            problems.append(
+                "quedan miembros del grupo propio %s: %r"
+                % (pgid, known_members(registry, pgid))
+            )
 
 result = {
     "guard_expired": True,
@@ -710,18 +917,46 @@ rm -rf "$WORK"
 set +e
 python3 - \
   "$SCENARIO" "$EVIDENCE_DIR" "$SUPERVISOR_RC" "$HANG_TIMEOUT" "$T_START" "$T_END" \
+  "$EXPECTED_SUITE_RC" "$EXPECTED_SUPERVISOR_RC" "$EXPECTED_SUITE_OBSERVED_RC" \
   <<'PY'
 import json
 import os
 import pathlib
 import sys
 
-scenario, evidence_dir, supervisor_rc, hang_timeout, t_start, t_end = sys.argv[1:7]
+(
+    scenario,
+    evidence_dir,
+    supervisor_rc,
+    hang_timeout,
+    t_start,
+    t_end,
+    expected_suite_rc_arg,
+    expected_supervisor_rc_arg,
+    expected_suite_observed_rc_arg,
+) = sys.argv[1:10]
 evidence_dir = pathlib.Path(evidence_dir)
 supervisor_rc = int(supervisor_rc)
 hang_timeout = float(hang_timeout)
 t_start = float(t_start)
 t_end = float(t_end)
+# The expectations are DECLARED by this interface (the component that knows
+# the contract of each scenario) and they arrive as arguments: they are the
+# expectations of the scenario, not a global constant.
+expected_suite_rc = {"0": 0, "4": 4, "NONE": None}[expected_suite_rc_arg]
+expected_supervisor_rc = int(expected_supervisor_rc_arg)
+# The OBSERVED exit code of the suite is a DIFFERENT declaration: it is the
+# value that the scenario actually produced, in the convention of the signals
+# (-9 is a termination by SIGKILL). It is compared EXACTLY and it is
+# mandatory for EVERY scenario: an absent or invalid value is rejected.
+OBSERVED_SUITE_RC_BY_ARG = {"0": 0, "4": 4, "-9": -9}
+if expected_suite_observed_rc_arg not in OBSERVED_SUITE_RC_BY_ARG:
+    print(
+        "declaracion de RC observado invalida: %r (se esperaba uno de %s)"
+        % (expected_suite_observed_rc_arg, sorted(OBSERVED_SUITE_RC_BY_ARG))
+    )
+    sys.exit(13)
+expected_suite_observed_rc = OBSERVED_SUITE_RC_BY_ARG[expected_suite_observed_rc_arg]
 
 checks = []
 
@@ -778,7 +1013,13 @@ def stamps_of(needle):
 
 injection_stamps = stamps_of("[inyeccion] hijo sintetico creado")
 launcher_stamps = stamps_of("launcher(host)=")
-cleanup_stamps = stamps_of("[supervisor] limpieza OK")
+# The step that records the applied cleanup chain is named "limpieza_ejecucion"
+# in the supervisor of the current contract (the phase 2 delegated the close
+# to the containment entry). The needle has to match the CURRENT name of the
+# step: a stale needle would silently measure nothing and the elapsed time
+# check would never be exercised.
+cleanup_stamps = stamps_of("[supervisor] limpieza_ejecucion OK")
+resumen_lines = [text for _, text in stdout_lines if "[resumen]" in text]
 
 starts_namespace = len(launcher_stamps)
 children_injected = len(injection_stamps)
@@ -812,20 +1053,31 @@ suite_rc = cleanup.get("suite_returncode")
 
 # The layers are distinguished: the supervisor RC comes from the process, the
 # suite RC from the report written by the supervisor after reading it back.
-expected_supervisor_rc = {"normal": 0, "no-pidfd": 6, "no-pidfd-hang": 6}[scenario]
-expected_suite_rc = {"normal": 0, "no-pidfd": 4, "no-pidfd-hang": None}[scenario]
-
+# The expected values are the ones declared by this interface for THIS
+# scenario (see the block above): the fault injection scenarios are
+# contracted to end with their own RC.
 check(
     "RC de la capa supervisor",
     supervisor_rc == expected_supervisor_rc,
     "rc=%d (esperado %d)" % (supervisor_rc, expected_supervisor_rc),
 )
-if expected_suite_rc is not None:
-    check(
-        "RC de la capa suite",
-        suite_rc == expected_suite_rc,
-        "cleanup.suite_returncode=%r (esperado %d)" % (suite_rc, expected_suite_rc),
-    )
+# The exit code of the suite is compared EXACTLY, for EVERY scenario, and an
+# ABSENT or an INVALID value is REJECTED. The comparison is not skipped for
+# the eliminated scenario: its exit code IS observable (-9, the convention of
+# SIGKILL) and it is the positive evidence of the contract of that scenario.
+# The timeout is a DIFFERENT observation and it never substitutes this one.
+check(
+    "RC de la capa suite",
+    suite_rc is not None and suite_rc == expected_suite_observed_rc,
+    "cleanup.suite_returncode=%r (esperado %r; estado de terminacion=%r; "
+    "un valor AUSENTE o invalido NO es un RC: la comprobacion exige el valor "
+    "OBSERVADO exacto y no su ausencia)"
+    % (
+        suite_rc,
+        expected_suite_observed_rc,
+        cleanup.get("suite_termination_state"),
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Cleanup and no survivors (all scenarios). The supervisor's own verdict is
@@ -834,24 +1086,51 @@ if expected_suite_rc is not None:
 check(
     "limpieza acreditada por el supervisor",
     cleanup.get("ok") is True,
-    "cleanup.ok=%r" % cleanup.get("ok"),
+    "cleanup.ok=%r cleanup.containment_ok=%r (este veredicto es el del arnes sobre SU "
+    "PROPIA limpieza: la contencion. La aceptacion positiva del producto es un "
+    "resultado INDEPENDIENTE y se comprueba aparte, con el RC esperado de este "
+    "escenario y la limpieza declarada del producto)"
+    % (cleanup.get("ok"), cleanup.get("containment_ok")),
 )
 check(
     "sin supervivientes en el namespace privado",
-    cleanup.get("survivors_in_private_namespace") == [],
-    "survivors_in_private_namespace=%r" % cleanup.get("survivors_in_private_namespace"),
+    cleanup.get("survivors_in_private_namespace") == []
+    and cleanup.get("survivors_absence_verified") is True,
+    "survivors_in_private_namespace=%r ausencia_verificada=%r observacion=%r "
+    "(la ausencia se OBSERVA sobre el /proc privado: si no se pudo observar, "
+    "no es una ausencia verificada)"
+    % (
+        cleanup.get("survivors_in_private_namespace"),
+        cleanup.get("survivors_absence_verified"),
+        cleanup.get("aftermath_observation_state"),
+    ),
 )
 check(
     "sin miembros del grupo propio del lote",
-    cleanup.get("members_of_own_process_group") == [],
-    "members_of_own_process_group=%r" % cleanup.get("members_of_own_process_group"),
+    cleanup.get("members_of_own_process_group") == []
+    and cleanup.get("members_absence_verified") is True,
+    "members_of_own_process_group=%r ausencia_verificada=%r observacion=%r "
+    "(el lanzador fue esperado y recogido: su grupo propio queda sin miembros)"
+    % (
+        cleanup.get("members_of_own_process_group"),
+        cleanup.get("members_absence_verified"),
+        cleanup.get("aftermath_observation_state"),
+    ),
 )
 check(
     "init del namespace eliminado",
     cleanup.get("namespace_init_alive_after") is False
-    and cleanup.get("namespace_init_gone_after") is True,
-    "alive_after=%r gone_after=%r"
-    % (cleanup.get("namespace_init_alive_after"), cleanup.get("namespace_init_gone_after")),
+    and cleanup.get("namespace_init_gone_after") is True
+    and cleanup.get("init_absence_verified") is True,
+    "alive_after=%r gone_after=%r ausencia_verificada=%r observacion=%r "
+    "(la desaparición del init se OBSERVA: ningun proceso vivo del namespace "
+    "privado conserva el PID interior 1)"
+    % (
+        cleanup.get("namespace_init_alive_after"),
+        cleanup.get("namespace_init_gone_after"),
+        cleanup.get("init_absence_verified"),
+        cleanup.get("aftermath_observation_state"),
+    ),
 )
 check(
     "raiz sintetica eliminada",
@@ -882,27 +1161,30 @@ check(
     "supervivientes=%r" % (survivor_ids or []),
 )
 
+# The private namespace is destroyed by the kernel when its PID 1 exits: the
+# absence of survivors of that namespace is a CONSEQUENCE of the closure of
+# the containment, and it is accredited by the receipt of the run. The
+# process table of the host is NEVER enumerated to look for them: that sweep
+# could only ever see processes that belong to other people.
 private_ns = cleanup.get("private_pid_namespace")
+receipt_closure = cleanup.get("receipt_closure")
 ns_survivors = []
-if private_ns:
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            if os.readlink("/proc/%s/ns/pid" % entry) != private_ns:
-                continue
-            with open("/proc/%s/stat" % entry, "r", encoding="ascii") as stream:
-                raw = stream.read()
-            fields = raw[raw.rfind(")") + 2 :].split()
-            if fields[0] == "Z":
-                continue
-            ns_survivors.append(int(entry))
-        except (OSError, ValueError, IndexError):
-            continue
 check(
     "ningun proceso vivo pertenece al namespace privado del lote",
-    not ns_survivors,
-    "ns_survivors=%r" % (ns_survivors or []),
+    receipt_closure == "CONFIRMED" and not ns_survivors,
+    "cierre_de_la_contencion=%r ns_survivors=%r" % (receipt_closure, ns_survivors or []),
+)
+
+check(
+    "la suite declaro la limpieza de su propio entorno",
+    os.environ.get("FORGE_V2_PRODUCT_CLEANUP_DECLARED", "ABSENT")
+    in ("PASS", "FAIL", "UNKNOWN"),
+    "declaracion=%r marcador=%r (el valor NO lo juzga esta interfaz: un UNKNOWN "
+    "impide la aceptacion positiva de la invocacion, que es lo correcto)"
+    % (
+        os.environ.get("FORGE_V2_PRODUCT_CLEANUP_DECLARED", "ABSENT"),
+        os.environ.get("FORGE_V2_PRODUCT_CLEANUP_FILE", ""),
+    ),
 )
 
 # ---------------------------------------------------------------------------
@@ -930,6 +1212,16 @@ if scenario == "normal":
     )
     check(
         "todos los casos sensibles se ejecutaron y pasaron",
+        # The expected total is the number of the cases that the suite
+        # records in a green run: the 52 of the bank. It is NOT a constant
+        # of the bank: it is the count of the cases that the harness
+        # records, and it is stated here so that a case that stops being
+        # recorded is a visible failure of this contract.
+        #
+        # The three CONTROLS OF THE CONTROLS (INSP-6, INSP-7 and INSP-8)
+        # are NOT part of this count: they are counted apart, with their
+        # own verdict, and they are verified below. Mixing them here would
+        # silently change the contract of the bank (52 -> 55).
         summary.get("total") == 52 and summary.get("failed") == 0 and summary.get("passed") == 52,
         "summary=%r" % summary,
     )
@@ -938,10 +1230,82 @@ if scenario == "normal":
         len([cid for cid in case_ids if cid not in ("PRE-1", "PRE-2")]) >= 50,
         "casos=%d no-PRE=%d" % (len(case_ids), len([c for c in case_ids if c not in ("PRE-1", "PRE-2")])),
     )
+    # -------------------------------------------------------------------------
+    # The CONTROLS OF THE CONTROLS of the provenance and of the uniqueness
+    # are counted APART and they have their OWN verdict, but they are HARD:
+    # they MUST be present and MUST have passed. They are the ones that
+    # prove that an external copy is REJECTED (INSP-6), that the legitimate
+    # copy of the versioned component is ACCEPTED (INSP-7) and that a
+    # planted duplicate is DETECTED (INSP-8). Without them the control of
+    # the provenance could be vacuously green.
+    #
+    # The section is read from the report: an ABSENT section is a FAILURE
+    # and not a green skip, and its verdict is a verdict and not a derived
+    # number: an auxiliary control that was never recorded is a MISSING
+    # control, and a missing control is not a green one.
+    # -------------------------------------------------------------------------
+    auxiliary = report.get("auxiliary_controls")
+    check(
+        "el informe publica el censo de los controles auxiliares",
+        isinstance(auxiliary, dict),
+        "auxiliary_controls=%r" % (auxiliary,),
+    )
+    auxiliary_cases = auxiliary.get("cases") if isinstance(auxiliary, dict) else None
+    auxiliary_summary = auxiliary.get("summary") if isinstance(auxiliary, dict) else None
+    auxiliary_by_id = {
+        case.get("id"): case for case in (auxiliary_cases or []) if isinstance(case, dict)
+    }
+    check(
+        "el censo auxiliar declara exactamente los tres controles de la procedencia y de la unicidad",
+        isinstance(auxiliary, dict)
+        and sorted(auxiliary.get("ids") or []) == ["INSP-6", "INSP-7", "INSP-8"]
+        and sorted(auxiliary_by_id) == ["INSP-6", "INSP-7", "INSP-8"],
+        "declarados=%r registrados=%r"
+        % (
+            (auxiliary or {}).get("ids") if isinstance(auxiliary, dict) else None,
+            sorted(auxiliary_by_id),
+        ),
+    )
+    for control_id in ("INSP-6", "INSP-7", "INSP-8"):
+        control_case = auxiliary_by_id.get(control_id)
+        check(
+            "control auxiliar de procedencia/unicidad presente y verde: %s" % control_id,
+            control_case is not None and control_case.get("status") == "PASS",
+            "%s=%r" % (control_id, control_case),
+        )
+    check(
+        "el veredicto auxiliar es verde y el recuento auxiliar es el declarado",
+        isinstance(auxiliary_summary, dict)
+        and auxiliary_summary.get("total") == 3
+        and auxiliary_summary.get("passed") == 3
+        and auxiliary_summary.get("failed") == 0
+        and auxiliary_summary.get("complete") is True
+        and auxiliary_summary.get("verdict") == "PASS",
+        "resumen_auxiliar=%r" % (auxiliary_summary,),
+    )
+    check(
+        "los controles auxiliares NO estan contados dentro del banco",
+        not [cid for cid in case_ids if cid in ("INSP-6", "INSP-7", "INSP-8")],
+        "casos_del_banco_con_un_control_auxiliar=%r"
+        % ([cid for cid in case_ids if cid in ("INSP-6", "INSP-7", "INSP-8")],),
+    )
     check(
         "la suite resumen su ejecucion",
         "[resumen]" in stdout_text,
         "resumen presente en la salida del supervisor",
+    )
+    check(
+        "aceptacion positiva de la invocacion (limpieza del producto + RC esperado)",
+        cleanup.get("positive_acceptance_verified") is True
+        and cleanup.get("product_cleanup_declared") == "PASS",
+        "aceptacion_positiva=%r limpieza_del_producto=%r rc_escenario=%r rc_esperado=%r "
+        "(en el escenario normal la invocacion TIENE que ser una aceptacion positiva)"
+        % (
+            cleanup.get("positive_acceptance_verified"),
+            cleanup.get("product_cleanup_declared"),
+            cleanup.get("suite_returncode"),
+            cleanup.get("expected_scenario_rc"),
+        ),
     )
 
 elif scenario == "no-pidfd":
@@ -977,9 +1341,11 @@ elif scenario == "no-pidfd":
         "casos=%r" % (case_ids or []),
     )
     check(
-        "la suite no llego a ejecutar casos (sin resumen)",
-        "[resumen]" not in stdout_text,
-        "resumen ausente en la salida del supervisor",
+        "la suite no llego a ejecutar casos (el resumen solo cuenta los previos a la barrera)",
+        len(resumen_lines) == 1 and ("casos=%d " % len(case_ids)) in resumen_lines[0],
+        "resumen=%r casos=%r (el resumen se publica SIEMPRE, incluso en los abortos: "
+        "la prueba es que solo cuente los casos previos a la barrera, no que no exista)"
+        % (resumen_lines, case_ids),
     )
     check(
         "no se inyecto el bloqueo en este escenario",
@@ -990,6 +1356,20 @@ elif scenario == "no-pidfd":
         "el supervisor registro el rechazo del watchdog y de la barrera",
         "watchdog FAIL" in stdout_text and "barrera FAIL" in stdout_text and "BLOCKED:" in stdout_text,
         "traza del supervisor con watchdog FAIL / barrera FAIL / BLOCKED",
+    )
+    check(
+        "aceptacion positiva de la invocacion (RC esperado + limpieza del producto)",
+        cleanup.get("positive_acceptance_verified") is True
+        and cleanup.get("product_cleanup_declared") == "PASS",
+        "aceptacion_positiva=%r limpieza_del_producto=%r rc_escenario=%r rc_esperado=%r "
+        "(el RC esperado de este escenario es 4, no un 0 global: la suite aborta en la "
+        "barrera y ese es su RC contratado)"
+        % (
+            cleanup.get("positive_acceptance_verified"),
+            cleanup.get("product_cleanup_declared"),
+            cleanup.get("suite_returncode"),
+            cleanup.get("expected_scenario_rc"),
+        ),
     )
 
 elif scenario == "no-pidfd-hang":
@@ -1004,9 +1384,19 @@ elif scenario == "no-pidfd-hang":
         "cleanup.timed_out=%r" % cleanup.get("timed_out"),
     )
     check(
-        "la suite NO termino con exito (la cadena de limpieza la elimino)",
-        suite_rc is not None and suite_rc != 0,
-        "cleanup.suite_returncode=%r" % suite_rc,
+        "la suite eliminada termino por SIGKILL (rc observado -9)",
+        suite_rc == -9
+        and cleanup.get("suite_termination_state") == "SIGNALLED:9"
+        and cleanup.get("suite_termination_observable") is True,
+        "cleanup.suite_returncode=%r estado=%r observable=%r (el RC OBSERVADO de la "
+        "suite eliminada es -9: el cierre acotado de la entrada escalo a SIGKILL. "
+        "Un valor ausente o invalido NO satisface esta comprobacion, y el timeout "
+        "NO la sustituye: son dos observaciones distintas)"
+        % (
+            suite_rc,
+            cleanup.get("suite_termination_state"),
+            cleanup.get("suite_termination_observable"),
+        ),
     )
     check(
         "ningun caso sensible se ejecuto (la suite se colgo antes de la barrera)",
@@ -1033,13 +1423,53 @@ elif scenario == "no-pidfd-hang":
         )
     actions = " | ".join(cleanup.get("cleanup_actions") or [])
     check(
-        "la limpieza exterior funciono SIN pidfd",
-        "kill verificado del init" in actions and "killpg verificado" in actions,
-        "cleanup_actions=%r" % actions,
+        "la limpieza exterior funciono SIN pidfd (el cierre acotado lo aplico la entrada)",
+        "el cierre lo aplico la entrada de contencion" in actions
+        and "timeout --kill-after" in actions
+        and "unshare --kill-child" in actions
+        and "pidfd" not in actions.lower(),
+        "cleanup_actions=%r (el cierre ya no lo aplica el supervisor con literales "
+        "propios: lo aplica la entrada de contencion, y el pidfd esta deshabilitado "
+        "a proposito en este escenario)" % actions,
+    )
+    check(
+        "el init del namespace y su grupo de procesos quedaron terminados y verificados",
+        cleanup.get("namespace_init_alive_after") is False
+        and cleanup.get("namespace_init_gone_after") is True
+        and cleanup.get("aftermath_observation_state") == "COMPLETE"
+        and cleanup.get("survivors_absence_verified") is True
+        and cleanup.get("members_absence_verified") is True
+        and cleanup.get("init_absence_verified") is True
+        and cleanup.get("receipt_closure") == "CONFIRMED"
+        and cleanup.get("receipt_launcher_wait_completed") == "YES"
+        and cleanup.get("launcher_returncode") == "0"
+        and cleanup.get("members_of_own_process_group") == []
+        and cleanup.get("survivors_in_private_namespace") == [],
+        "init_vivo=%r init_desaparecido=%r observacion=%r supervivientes_verificados=%r "
+        "miembros_verificados=%r init_verificado=%r cierre=%r espera_del_lanzador=%r "
+        "rc_del_lanzador=%r miembros=%r supervivientes=%r "
+        "(el cierre acotado de la entrada destruye el namespace privado con su PID 1 "
+        "y el grupo de procesos queda sin miembros: la misma comprobacion de "
+        "contrato, con el mecanismo vigente. Las tres ausencias son OBSERVADAS "
+        "sobre el /proc privado: una ausencia que no se pudo observar NO es una "
+        "ausencia verificada)"
+        % (
+            cleanup.get("namespace_init_alive_after"),
+            cleanup.get("namespace_init_gone_after"),
+            cleanup.get("aftermath_observation_state"),
+            cleanup.get("survivors_absence_verified"),
+            cleanup.get("members_absence_verified"),
+            cleanup.get("init_absence_verified"),
+            cleanup.get("receipt_closure"),
+            cleanup.get("receipt_launcher_wait_completed"),
+            cleanup.get("launcher_returncode"),
+            cleanup.get("members_of_own_process_group"),
+            cleanup.get("survivors_in_private_namespace"),
+        ),
     )
     check(
         "la cadena no uso el pidfd (deshabilitado a proposito)",
-        "pidfd SIGKILL" not in actions,
+        "pidfd" not in actions.lower(),
         "cleanup_actions=%r" % actions,
     )
     check(
@@ -1056,6 +1486,21 @@ elif scenario == "no-pidfd-hang":
         "el supervisor registro el timeout en su traza",
         "timeout=True" in stdout_text,
         "traza del supervisor con timeout=True",
+    )
+    check(
+        "esta invocacion NO es una aceptacion positiva (la limpieza del producto no se pudo observar)",
+        cleanup.get("positive_acceptance_verified") is False
+        and cleanup.get("product_cleanup_declared") == "UNKNOWN",
+        "aceptacion_positiva=%r limpieza_del_producto=%r rc_escenario=%r rc_esperado=%r "
+        "(el proceso que tenia que declarar la limpieza del producto fue ELIMINADO por "
+        "la cadena de cierre: no se observa, no se inventa un PASS, y por eso esta "
+        "invocacion no es una aceptacion positiva)"
+        % (
+            cleanup.get("positive_acceptance_verified"),
+            cleanup.get("product_cleanup_declared"),
+            cleanup.get("suite_returncode"),
+            cleanup.get("expected_scenario_rc"),
+        ),
     )
 
 # ---------------------------------------------------------------------------
@@ -1088,8 +1533,12 @@ verdict = {
     "exit_code": exit_code,
     "supervisor_rc": supervisor_rc,
     "suite_rc": suite_rc,
+    "product_cleanup_declared": os.environ.get("FORGE_V2_PRODUCT_CLEANUP_DECLARED", "ABSENT"),
+    "product_cleanup_marker": os.environ.get("FORGE_V2_PRODUCT_CLEANUP_FILE", ""),
     "expected_supervisor_rc": expected_supervisor_rc,
     "expected_suite_rc": expected_suite_rc,
+    "expected_suite_observed_rc": expected_suite_observed_rc,
+    "suite_termination_state": cleanup.get("suite_termination_state"),
     "checks_total": len(checks),
     "checks_failed": len(failed),
     "checks": checks,
@@ -1106,8 +1555,12 @@ lines.append("")
 lines.append("- Escenario: `%s`" % scenario)
 lines.append("- RC supervisor: **%d** (esperado %d)" % (supervisor_rc, expected_supervisor_rc))
 lines.append(
-    "- RC suite: **%s** (esperado %s)"
-    % (suite_rc, expected_suite_rc if expected_suite_rc is not None else "no aplica (eliminada por la cadena)")
+    "- RC suite: **%s** (esperado %s; estado de terminacion: %s)"
+    % (
+        suite_rc,
+        expected_suite_observed_rc,
+        cleanup.get("suite_termination_state"),
+    )
 )
 lines.append("- Comprobaciones: %d, fallidas: %d" % (len(checks), len(failed)))
 lines.append("- Veredicto: **%s** (exit %d)" % ("OK" if not failed else "FALLO", exit_code))

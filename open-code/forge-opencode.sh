@@ -2,8 +2,8 @@
 # forge-opencode — launcher for the Forge OpenCode overlay (OpenCode 2).
 #
 # Contract:
-#   * the overlay location comes from the Forge manifest (the state file),
-#     falling back to the environment and then to the default location;
+#   * the overlay location and pinned binary come from a valid Forge manifest;
+#     missing or invalid state fails closed instead of selecting another CLI;
 #   * the OpenCode binary is the Forge-managed PINNED build, invoked by
 #     ABSOLUTE path (never through the system PATH), so an Omarchy upgrade
 #     that reinstalls OpenCode 1 cannot change what Forge runs;
@@ -61,51 +61,156 @@ forge_env_config="${OPENCODE_CONFIG:-}"
 forge_state_file="$HOME/.forge-state.json"
 forge_binary=""
 
-if [ -f "$forge_state_file" ] && command -v jq >/dev/null 2>&1; then
-  recorded_dir="$(jq -r '[.targets_manifest[]? | select(.name == "opencode")][0] | (.dir // empty)' "$forge_state_file" 2>/dev/null || true)"
-  recorded_config="$(jq -r '[.targets_manifest[]? | select(.name == "opencode")][0] | (.config_file // empty)' "$forge_state_file" 2>/dev/null || true)"
-  recorded_binary="$(jq -r '[.targets_manifest[]? | select(.name == "opencode")][0] | (.binary // empty)' "$forge_state_file" 2>/dev/null || true)"
+if [ ! -f "$forge_state_file" ]; then
+  printf 'forge: ERROR: falta el manifiesto de Forge (%s); no se ejecutara ningun OpenCode sin pin\n' \
+    "$forge_state_file" >&2
+  printf 'forge: reinstala el overlay con: bash install.sh install --target=opencode\n' >&2
+  exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  printf 'forge: ERROR: python3 es necesario para validar el manifiesto de Forge; no se ejecutara un OpenCode sin pin\n' >&2
+  exit 1
+fi
 
-  if [ -n "$recorded_dir" ]; then
-    if [ -n "$forge_env_dir" ] && [ "$forge_env_dir" != "$recorded_dir" ]; then
-      printf 'forge: OPENCODE_CONFIG_DIR=%s no coincide con el overlay instalado en %s; se usa el instalado\n' \
-        "$forge_env_dir" "$recorded_dir" >&2
-    fi
-    OPENCODE_CONFIG_DIR="$recorded_dir"
+forge_manifest_field() {
+  python3 - "$forge_state_file" "$1" <<'PY'
+import json
+import sys
 
-    if [ -n "$recorded_config" ]; then
-      if [ -n "$forge_env_config" ] && [ "$forge_env_config" != "$recorded_config" ]; then
-        printf 'forge: OPENCODE_CONFIG=%s no coincide con la config instalada en %s; se usa la instalada\n' \
-          "$forge_env_config" "$recorded_config" >&2
-      fi
-      OPENCODE_CONFIG="$recorded_config"
-    elif [ "$(dirname "$OPENCODE_CONFIG")" != "$recorded_dir" ]; then
-      # Legacy state without a recorded config file: the environment is only
-      # kept when it points inside the installed overlay directory.
-      OPENCODE_CONFIG="$recorded_dir/opencode.jsonc"
-    fi
+try:
+    with open(sys.argv[1], encoding="utf-8") as manifest_file:
+        state = json.load(manifest_file)
+    entries = state.get("targets_manifest") if isinstance(state, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError("missing targets_manifest array")
+    matches = [entry for entry in entries if isinstance(entry, dict) and entry.get("name") == "opencode"]
+    if len(matches) != 1:
+        raise ValueError("expected exactly one opencode target")
+    entry = matches[0]
+    field = sys.argv[2]
+    value = entry.get(field, "")
+    if field in ("dir", "binary") and (not isinstance(value, str) or not value):
+        raise ValueError("missing required " + field)
+    if field == "config_file" and value is None:
+        value = ""
+    if not isinstance(value, str) or "\n" in value or "\r" in value:
+        raise ValueError("invalid " + field)
+except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+print(value)
+PY
+}
+
+if ! recorded_dir="$(forge_manifest_field dir 2>/dev/null)" \
+  || ! recorded_config="$(forge_manifest_field config_file 2>/dev/null)" \
+  || ! recorded_binary="$(forge_manifest_field binary 2>/dev/null)"; then
+  printf 'forge: ERROR: manifiesto de Forge invalido o incompleto (%s); se requiere el binario pinado del target opencode\n' \
+    "$forge_state_file" >&2
+  printf 'forge: reinstala el overlay con: bash install.sh install --target=opencode\n' >&2
+  exit 1
+fi
+
+case "$recorded_dir" in
+  /*) ;;
+  *)
+    printf 'forge: ERROR: la ruta del overlay en el manifiesto no es absoluta: %s\n' \
+      "$recorded_dir" >&2
+    exit 1
+    ;;
+esac
+
+case "$recorded_binary" in
+  /*) forge_binary="$recorded_binary" ;;
+  *)
+    printf 'forge: ERROR: la ruta del binario pinado en el manifiesto no es absoluta: %s\n' \
+      "$recorded_binary" >&2
+    exit 1
+    ;;
+esac
+
+# The manifest's absolute path is not sufficient proof of a pinned install:
+# require npm's expected .bin entry, its package-owned target, and the exact
+# package identity/version installed under the prefix inferred from that entry.
+forge_validate_pinned_binary() {
+  python3 - "$1" "2.1.4" <<'PY'
+import json
+import os
+import sys
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+binary = os.path.abspath(sys.argv[1])
+version = sys.argv[2]
+suffix = os.path.join("node_modules", ".bin", "opencode")
+if not binary.endswith(os.sep + suffix):
+    fail("binary is not under the expected <prefix>/node_modules/.bin/opencode layout")
+
+prefix = binary[: -(len(suffix) + 1)]
+if not prefix or not os.path.isdir(prefix):
+    fail("the registered Forge binary prefix is missing or invalid")
+
+real_prefix = os.path.realpath(prefix)
+package_dir = os.path.join(prefix, "node_modules", "@opencode", "cli")
+real_package_dir = os.path.realpath(package_dir)
+expected_binary = os.path.join(package_dir, "bin", "opencode")
+real_expected_binary = os.path.realpath(expected_binary)
+real_binary = os.path.realpath(binary)
+
+try:
+    if os.path.commonpath((real_prefix, real_package_dir)) != real_prefix:
+        fail("the @opencode/cli package resolves outside the registered prefix")
+    if os.path.commonpath((real_package_dir, real_binary)) != real_package_dir:
+        fail("the registered executable resolves outside the @opencode/cli package")
+except ValueError:
+    fail("the registered executable and prefix are on incompatible paths")
+
+if real_binary != real_expected_binary:
+    fail("the .bin executable does not resolve to @opencode/cli/bin/opencode")
+if not os.path.isfile(real_binary) or not os.access(real_binary, os.X_OK):
+    fail("the package executable is missing or not executable")
+
+package_json = os.path.join(real_package_dir, "package.json")
+with open(package_json, encoding="utf-8") as package_file:
+    package = json.load(package_file)
+if not isinstance(package, dict):
+    fail("the installed package metadata is invalid")
+if package.get("name") != "@opencode/cli" or package.get("version") != version:
+    fail("installed package identity/version is not @opencode/cli@" + version)
+PY
+}
+
+if ! forge_validate_pinned_binary "$forge_binary"; then
+  printf 'forge: ERROR: no se pudo acreditar el paquete OpenCode 2.1.4 bajo el prefijo registrado; no se ejecutara el binario\n' >&2
+  exit 1
+fi
+
+if [ -n "$forge_env_dir" ] && [ "$forge_env_dir" != "$recorded_dir" ]; then
+  printf 'forge: OPENCODE_CONFIG_DIR=%s no coincide con el overlay instalado en %s; se usa el instalado\n' \
+    "$forge_env_dir" "$recorded_dir" >&2
+fi
+OPENCODE_CONFIG_DIR="$recorded_dir"
+
+if [ -n "$recorded_config" ]; then
+  if [ -n "$forge_env_config" ] && [ "$forge_env_config" != "$recorded_config" ]; then
+    printf 'forge: OPENCODE_CONFIG=%s no coincide con la config instalada en %s; se usa la instalada\n' \
+      "$forge_env_config" "$recorded_config" >&2
   fi
-
-  if [ -n "$recorded_binary" ]; then
-    forge_binary="$recorded_binary"
-  fi
+  OPENCODE_CONFIG="$recorded_config"
+elif [ "$(dirname "$OPENCODE_CONFIG")" != "$recorded_dir" ]; then
+  # Legacy state without a recorded config file: the environment is only
+  # kept when it points inside the installed overlay directory.
+  OPENCODE_CONFIG="$recorded_dir/opencode.jsonc"
 fi
 
 export OPENCODE_CONFIG_DIR
 export OPENCODE_CONFIG
 
-# Binary resolution, in order of precedence:
-#   1. FORGE_OPENCODE_BIN  — explicit override (used by the test suite).
-#   2. the pinned binary recorded in the manifest.
-#   3. `opencode` from the PATH — legacy overlay installed before Forge
-#      managed its own pinned build.
-forge_bin="${FORGE_OPENCODE_BIN:-}"
-if [ -z "$forge_bin" ]; then
-  forge_bin="$forge_binary"
-fi
-if [ -z "$forge_bin" ]; then
-  forge_bin="opencode"
-fi
+# Only the absolute binary recorded by the Forge state manifest is eligible.
+forge_bin="$forge_binary"
 
 # A shared server would break the isolation this launcher guarantees, so the
 # flag is rejected instead of being forwarded. Stop at `--`: later arguments
@@ -127,12 +232,7 @@ for forge_arg in "$@"; do
   esac
 done
 
-if [ "$forge_bin" = "opencode" ]; then
-  if ! command -v opencode >/dev/null 2>&1; then
-    printf 'forge: ERROR: no se encontro el binario de OpenCode (instala el overlay con: bash install.sh install --target=opencode)\n' >&2
-    exit 1
-  fi
-elif [ ! -x "$forge_bin" ]; then
+if [ ! -x "$forge_bin" ]; then
   printf 'forge: ERROR: el binario pinado de OpenCode no es ejecutable: %s\n' "$forge_bin" >&2
   printf 'forge: reinstala el overlay con: bash install.sh install --target=opencode\n' >&2
   exit 1
@@ -201,16 +301,30 @@ if [ "$forge_has_standalone" != yes ]; then
       # grammar. Preserve their order after the standalone option.
       set -- --standalone "$@"
       ;;
+    *)
+      # Known CLI subcommands take precedence over a same-named directory.
+      # OpenCode's root command also accepts an existing project directory
+      # positionally, including relative paths without ./ or ../ prefixes.
+      case "$forge_sub" in
+        acp|api|debug|mcp|models|mini|pair|plugin|reload|run|serve|service|stats|uninstall|update|upgrade)
+          ;;
+        *)
+          if [ -d "$forge_sub" ]; then
+            set -- --standalone "$@"
+          fi
+          ;;
+      esac
+      ;;
   esac
 fi
 
-# OpenCode 2.1.4's `plugin list` can race the managed server's loading of
-# config-declared local plugins. Give this command its own disposable service
-# and have the Python supervisor poll the real CLI output until it is exact.
+# OpenCode 2.1.4's list leaves resolve the shared service by default. Give
+# `plugin list` and `mcp list` their own disposable loopback service and private
+# service registration; neither leaf accepts an injected --standalone flag.
 # Help paths remain ordinary CLI help and never start a backend.
-forge_plugin_help=no
+forge_private_list_help=no
 case "${1:-}/${2:-}" in
-  plugin/--help|plugin/-h|plugin/list)
+  plugin/list|mcp/list)
     forge_before_end=yes
     for forge_arg in "$@"; do
       [ "$forge_before_end" = yes ] || break
@@ -219,26 +333,24 @@ case "${1:-}/${2:-}" in
         continue
       fi
       case "$forge_arg" in
-        --help|-h) forge_plugin_help=yes ;;
+        --help|-h) forge_private_list_help=yes ;;
       esac
     done
     ;;
 esac
 
-if [ "${1:-}" = plugin ] && { [ "${2:-}" = list ] || [ "${2:-}" = --help ] || [ "${2:-}" = -h ]; }; then
-  if [ "$forge_plugin_help" = yes ] || [ "${2:-}" != list ]; then
+if { [ "${1:-}" = plugin ] || [ "${1:-}" = mcp ]; } \
+  && { [ "${2:-}" = list ] || { [ "${1:-}" = plugin ] && { [ "${2:-}" = --help ] || [ "${2:-}" = -h ]; }; }; }; then
+  if [ "$forge_private_list_help" = yes ] || [ "${2:-}" != list ]; then
     exec "$forge_bin" "$@"
   fi
 
   if ! command -v python3 >/dev/null 2>&1; then
-    printf 'forge: ERROR: python3 es necesario para aislar y supervisar la enumeracion runtime de plugins\n' >&2
+    printf 'forge: ERROR: python3 es necesario para aislar y supervisar la enumeracion runtime\n' >&2
     exit 1
   fi
 
   forge_runtime_bin="$forge_bin"
-  if [ "$forge_runtime_bin" = opencode ]; then
-    forge_runtime_bin="$(command -v opencode)"
-  fi
   case "$forge_runtime_bin" in
     /*) ;;
     *) forge_runtime_bin="$(CDPATH='' cd -- "$(dirname "$forge_runtime_bin")" && pwd -P)/$(basename "$forge_runtime_bin")" ;;

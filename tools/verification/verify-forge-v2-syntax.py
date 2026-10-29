@@ -25,7 +25,9 @@ EXTERNAL_SHELL_PATHS = ("cutover.sh", "ROLLBACK.sh")
 EXPECTED_SHELL_BLOCK_COUNTS = {
     "forge-v2-followups.sh": (0, 10),
     "install.sh": (3, 1),
-    "forge-opencode.sh": (1, 0),
+    # The manifest-field reader added to the launcher is one legitimate Python
+    # heredoc in addition to its existing inline python -c supervisor launch.
+    "forge-opencode.sh": (1, 1),
     "forge_guard_plugin_unit.sh": (0, 0),
     "forge_v2_safety.sh": (0, 1),
     "forge_v2_safety_scenarios.sh": (2, 2),

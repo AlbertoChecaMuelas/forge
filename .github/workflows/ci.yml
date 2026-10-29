@@ -100,7 +100,15 @@ jobs:
 
   v2-safety:
     runs-on: ubuntu-22.04
-    timeout-minutes: 55
+    # Maximum contained run: 3240s scenario + 60s close grace = 55 minutes.
+    # The 75-minute job leaves 20 minutes for checkout/preparation, receipt
+    # finalization, classification, and the always-run artifact upload.
+    timeout-minutes: 75
+    # Runtime requirements (provided by the ubuntu-22.04 runner, not installed
+    # by this job): /usr/bin/python3, util-linux unshare, GNU timeout/env and
+    # procfs; the runner kernel must permit rootless user/PID namespaces,
+    # private --mount-proc, pidfd_open/pidfd_send_signal, and the nested user
+    # namespace preflight. Absence of any capability is a fail-closed CI error.
     steps:
       - uses: actions/checkout@v4
 
@@ -109,8 +117,111 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Run V2 safety scenarios
-        run: bash tools/ci/v2-safety.sh --all --artifacts-dir "$RUNNER_TEMP/v2-safety-evidence"
+      - name: Run V2 safety scenarios inside accredited containment
+        id: v2-safety
+        run: |
+          set -euo pipefail
+          job_artifacts="$RUNNER_TEMP/v2-safety-job-artifacts"
+          mkdir -m 700 "$job_artifacts"
+          caller_home="$RUNNER_TEMP/v2-safety-caller-home"
+          caller_xdg_config="$RUNNER_TEMP/v2-safety-caller-xdg-config"
+          caller_xdg_data="$RUNNER_TEMP/v2-safety-caller-xdg-data"
+          caller_xdg_cache="$RUNNER_TEMP/v2-safety-caller-xdg-cache"
+          caller_xdg_state="$RUNNER_TEMP/v2-safety-caller-xdg-state"
+          caller_tmp="$RUNNER_TEMP/v2-safety-caller-tmp"
+          mkdir -m 700 "$caller_home" "$caller_xdg_config" "$caller_xdg_data" \
+            "$caller_xdg_cache" "$caller_xdg_state" "$caller_tmp"
+          receipt_pointer="$job_artifacts/receipt-path.txt"
+
+          set +e
+          env HOME="$caller_home" \
+            XDG_CONFIG_HOME="$caller_xdg_config" \
+            XDG_DATA_HOME="$caller_xdg_data" \
+            XDG_CACHE_HOME="$caller_xdg_cache" \
+            XDG_STATE_HOME="$caller_xdg_state" \
+            TMPDIR="$caller_tmp" \
+            bash tools/verification/forge-contained-run.sh \
+              --receipt-dir /tmp/opencode/forge-contracts-v2/remediacion-contencion/runs \
+              --receipt-out "$receipt_pointer" \
+              --scenario-timeout 3240 \
+              --close-timeout 60 \
+              -- bash tools/ci/v2-safety.sh --all --artifacts-dir "$job_artifacts/bank"
+          entry_rc=$?
+          set -e
+          printf '%s\n' "$entry_rc" >"$job_artifacts/entrypoint.rc"
+          printf 'entrypoint_rc=%s\n' "$entry_rc" >>"$GITHUB_OUTPUT"
+
+          if [[ ! -s "$receipt_pointer" ]]; then
+            echo "::error::La entrada de contencion no publico la ruta del recibo."
+            exit 1
+          fi
+          receipt="$(<"$receipt_pointer")"
+          if [[ ! "$receipt" =~ ^/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs/run-[^/]+/receipt\.txt$ ]] \
+            || [[ ! -f "$receipt" || -L "$receipt" ]]; then
+            echo "::error::La ruta publicada del recibo no pertenece a una invocacion valida."
+            exit 1
+          fi
+          receipt_dir="${receipt%/receipt.txt}"
+          receipt_id="${receipt_dir##*/}"
+          receipt_field() {
+            awk -F= -v key="$1" '$1 == key { count++; value=substr($0, index($0, "=") + 1) } END { if (count != 1) exit 1; print value }' "$receipt"
+          }
+          if [[ "$(receipt_field IDENTIFIER)" != "$receipt_id" ]] \
+            || [[ "$(receipt_field RECEIPT_PATH)" != "$receipt" ]]; then
+            echo "::error::El recibo no identifica univocamente esta invocacion."
+            exit 1
+          fi
+
+          receipt_artifact="$job_artifacts/containment-receipt"
+          mkdir -m 700 "$receipt_artifact"
+          cp -- "$receipt" "$receipt_artifact/receipt.txt"
+          for evidence in accreditation.status accreditation.reason accreditation.details \
+            scenario.rc product-cleanup.result product-cleanup.observed defensive-cleanup.status; do
+            if [[ -f "$receipt_dir/$evidence" && ! -L "$receipt_dir/$evidence" ]]; then
+              cp -- "$receipt_dir/$evidence" "$receipt_artifact/$evidence"
+            fi
+          done
+
+          for field_value in \
+            "ACCREDITATION=PASS" \
+            "RECEIPT_COMPLETENESS=COMPLETE" \
+            "CLOSURE=CONFIRMED" \
+            "LAUNCHER_WAIT_COMPLETED=YES" \
+            "CONTAINMENT_EVIDENCE_CERTIFIABLE=YES" \
+            "DEFENSIVE_CLEANUP=PASS"; do
+            if ! grep -Fqx "$field_value" "$receipt"; then
+              echo "::error::El recibo no certifica la frontera/cierre: falta $field_value."
+              exit 1
+            fi
+          done
+
+          scenario_rc="$(receipt_field SCENARIO_RC)"
+          positive_acceptance="$(receipt_field POSITIVE_ACCEPTANCE)"
+          product_cleanup="$(receipt_field PRODUCT_CLEANUP_RESULT)"
+          product_cleanup_observed="$(receipt_field PRODUCT_CLEANUP_OBSERVED_BEFORE_DEFENSIVE_CLEANUP)"
+          if [[ "$(receipt_field WRAPPER_EXIT_CODE)" != "$entry_rc" ]]; then
+            echo "::error::El RC de la entrada no coincide con el RC registrado en el recibo."
+            exit 1
+          fi
+          if [[ "$entry_rc" == 0 && "$scenario_rc" == 0 && "$positive_acceptance" == YES \
+            && "$product_cleanup" == PASS && "$product_cleanup_observed" == YES ]]; then
+            echo "V2 safety bank completed with positive acceptance; receipt=$receipt"
+            exit 0
+          fi
+          if [[ "$entry_rc" == 70 && "$scenario_rc" == 0 && "$positive_acceptance" == NO ]]; then
+            if [[ "$product_cleanup" == FAIL ]]; then
+              echo "::error::El banco V2 completo declaro FAIL en la limpieza del producto; recibo=$receipt"
+              exit 1
+            fi
+            echo "::error::El escenario V2 devolvio RC 0, pero la entrada no pudo certificar aceptación positiva (limpieza=$product_cleanup); no es un fallo de contrato del banco."
+            exit 1
+          fi
+          if [[ "$scenario_rc" =~ ^[0-9]+$ && "$scenario_rc" != 0 ]]; then
+            echo "::error::El banco V2 fallo con RC $scenario_rc (RC de la entrada: $entry_rc); recibo=$receipt"
+            exit 1
+          fi
+          echo "::error::El recibo/RC de la ejecución V2 no permite certificar ni clasificar el resultado; RC entrada=$entry_rc, RC escenario=$scenario_rc."
+          exit 1
 
       - name: Upload V2 safety evidence
         if: always()
@@ -118,12 +229,12 @@ jobs:
         with:
           name: v2-safety-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/v2-safety-evidence/
-            !${{ runner.temp }}/v2-safety-evidence/**/work/**
-            !${{ runner.temp }}/v2-safety-evidence/**/*.db
-            !${{ runner.temp }}/v2-safety-evidence/**/*.sqlite
-            !${{ runner.temp }}/v2-safety-evidence/**/*.sqlite3
-          if-no-files-found: error
+            ${{ runner.temp }}/v2-safety-job-artifacts/
+            !${{ runner.temp }}/v2-safety-job-artifacts/**/work/**
+            !${{ runner.temp }}/v2-safety-job-artifacts/**/*.db
+            !${{ runner.temp }}/v2-safety-job-artifacts/**/*.sqlite
+            !${{ runner.temp }}/v2-safety-job-artifacts/**/*.sqlite3
+          if-no-files-found: warn
           retention-days: 7
 
   release:

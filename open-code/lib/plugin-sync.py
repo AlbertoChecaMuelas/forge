@@ -33,9 +33,13 @@ Modes:
   runtime-copy  Materialize a selected installed overlay/config for an
                 isolated runtime plugin-enumeration probe.
   snapshot-db   Create a coherent SQLite copy through a read-only source handle.
-  runtime-list  Supervise a private ephemeral service and poll OpenCode's real
-                `plugin list` output until it is exact or the bounded budget
-                expires.
+  runtime-list  Supervise a private ephemeral service for `plugin list` or
+                 `mcp list`; plugin output is polled until exact, while MCP
+                 output/status are passed through unchanged from the private
+                 service. MCP output describes the requested location's runtime
+                 set, not every MCP declaration in configuration.
+                 Only the selected installed overlay is materialized: project
+                 configuration and other global configuration are not merged.
 
 "Local" means a `./`-relative path inside the overlay (e.g.
 `./plugin-packages/forge-guard`). Absolute paths and npm package specifiers
@@ -984,12 +988,17 @@ def _rewrite_isolated_paths(value, source_root, destination_root):
     raise PluginSyncError(f"absolute config reference cannot be isolated safely: {value}")
 
 
-def prepare_runtime_overlay(config_dir, config_file, destination, deadline=None):
+def prepare_runtime_overlay(config_dir, config_file, destination, deadline=None, preserve_mcp=False):
     """Materialize the selected installed overlay/config into a private tree.
 
-    Plugin declarations and options are retained. MCP/provider declarations
-    are removed so this bounded inventory probe cannot launch integrations or
-    authenticate with external providers. Relative paths keep their layout.
+    Plugin declarations and options are retained. Provider declarations are
+    removed so this bounded runtime-list probe cannot authenticate with
+    external providers. MCP configuration is removed by default and retained
+    only for isolated `mcp list`; that command reports the requested location's
+    MCP runtime set, not every configured declaration. Only the selected
+    overlay/config is used; global configuration outside it and project
+    configuration are not merged. Relative paths keep their layout, while
+    unsafe absolute references are rejected rather than reinterpreted.
     """
     if deadline is None:
         deadline = time.monotonic() + RUNTIME_MAX_SECONDS
@@ -1026,7 +1035,8 @@ def prepare_runtime_overlay(config_dir, config_file, destination, deadline=None)
     private_config = os.path.join(destination, relative_config)
     copied_data = parse_config(private_config)
     copied_data = _rewrite_isolated_paths(copied_data, source_root, destination)
-    copied_data.pop("mcp", None)
+    if not preserve_mcp:
+        copied_data.pop("mcp", None)
     copied_data.pop("providers", None)
     copied_data.pop("provider", None)
     # Preserve the OpenCode 2 plugin field and each string/object (including
@@ -1337,8 +1347,10 @@ def cmd_runtime_list(args):
     cli_args = list(args.cli_args)
     if cli_args and cli_args[0] == "--":
         cli_args.pop(0)
-    if cli_args[:2] != ["plugin", "list"]:
-        _emit_stderr("runtime-list only supervises the OpenCode plugin list command")
+    plugin_mode = cli_args[:2] == ["plugin", "list"]
+    mcp_mode = cli_args[:2] == ["mcp", "list"]
+    if not plugin_mode and not mcp_mode:
+        _emit_stderr("runtime-list only supervises the OpenCode plugin list and mcp list commands")
         return 1
     if not os.path.isabs(args.binary) or not os.path.isfile(args.binary) or not os.access(args.binary, os.X_OK):
         _emit_stderr("the resolved OpenCode binary is not an executable absolute path")
@@ -1356,6 +1368,7 @@ def cmd_runtime_list(args):
     server_stdout = None
     server_stderr = None
     accepted_output = None
+    accepted_stderr = None
     failure = ""
     failure_stderr = b""
     result_rc = 1
@@ -1402,20 +1415,25 @@ def cmd_runtime_list(args):
                 source_database, xdg_data / "opencode" / "opencode.db", deadline
             )
         private_overlay = root / "overlay"
-        copied = prepare_runtime_overlay(args.config_dir, args.config, private_overlay, deadline)
+        copied = prepare_runtime_overlay(
+            args.config_dir, args.config, private_overlay, deadline, preserve_mcp=mcp_mode
+        )
         if interrupted_signal is not None:
             raise RuntimeInterrupted(interrupted_signal)
         matching_roots = [
             path for path in copied["plugin_roots"] if os.path.basename(path) == "forge-guard"
         ]
-        if not matching_roots:
+        if plugin_mode and not matching_roots:
             raise PluginSyncError("installed config does not declare a copyable local forge-guard package")
 
         # Keep only non-secret runtime controls. In particular, do not inherit
-        # a shared-server URL/password, service env map, auth tokens, MCP or
-        # provider credentials. OPENCODE_DB is either a fresh private snapshot
-        # from a read-only source connection or an explicitly validated
-        # install.sh snapshot; it is never the original user DB.
+        # a shared-server URL/password, service env map, ambient auth/MCP or
+        # provider credentials. The selected MCP block is retained only for
+        # mcp_mode; `mcp list` reports the location's runtime set, not all
+        # config declarations, and no global/project config is assembled.
+        # OPENCODE_DB is either a fresh private snapshot from a read-only source
+        # connection or an explicitly validated install.sh snapshot; it is
+        # never the original user DB.
         runtime_env = {
             "HOME": str(home),
             "XDG_CONFIG_HOME": str(xdg_config),
@@ -1507,11 +1525,11 @@ def cmd_runtime_list(args):
             if not _authenticated_health(registration, timeout=min(1.0, max(0.1, _deadline_check(deadline)))):
                 raise PluginSyncError("private OpenCode service stopped responding to authenticated health")
             load_error = _server_plugin_load_error(server_stderr_path)
-            if load_error:
+            if load_error and plugin_mode:
                 raise PluginSyncError("private runtime reported a plugin load error: " + load_error)
 
             remaining = _deadline_check(deadline)
-            attempt_timeout = min(RUNTIME_ATTEMPT_SECONDS, remaining)
+            attempt_timeout = remaining if mcp_mode else min(RUNTIME_ATTEMPT_SECONDS, remaining)
             if attempt_timeout <= 0:
                 break
             client_stdout = tempfile.TemporaryFile()
@@ -1531,12 +1549,24 @@ def cmd_runtime_list(args):
             except subprocess.TimeoutExpired:
                 _terminate_process_groups([client], deadline)
                 if time.monotonic() >= deadline - RUNTIME_CLEANUP_RESERVE_SECONDS:
-                    raise RuntimeDeadline("plugin list exhausted the shared 35-second deadline")
+                    raise RuntimeDeadline("runtime list exhausted the shared 35-second deadline")
+                if mcp_mode:
+                    raise RuntimeDeadline("runtime mcp list did not finish before the shared deadline")
                 raise PluginSyncError("runtime plugin list attempt exceeded its 2-second timeout")
             client_stdout.seek(0)
             output = client_stdout.read()
             client_stderr.seek(0)
             client_error = client_stderr.read()
+            if mcp_mode:
+                # `mcp list` resolves the registered service and reports that
+                # location's MCP runtime set (not every config declaration); it
+                # may return a meaningful non-zero status. The service was
+                # created in this invocation's private XDG state, so forward
+                # the CLI result unchanged instead of polling or rewriting it.
+                accepted_output = output
+                accepted_stderr = client_error
+                result_rc = client.returncode
+                break
             if client.returncode != 0:
                 failure_stderr = client_error
                 raise PluginSyncError(f"runtime plugin list exited with RC={client.returncode}")
@@ -1626,9 +1656,12 @@ def cmd_runtime_list(args):
 
     if failure:
         _emit_stderr(failure, failure_stderr)
-    if result_rc == 0 and accepted_output is not None:
+    if accepted_output is not None:
         sys.stdout.buffer.write(accepted_output)
         sys.stdout.buffer.flush()
+    if accepted_stderr:
+        sys.stderr.buffer.write(accepted_stderr)
+        sys.stderr.buffer.flush()
     if deadline_fuse is not None:
         deadline_fuse.set()
     return result_rc
@@ -1680,7 +1713,7 @@ def main(argv):
 
     runtime_list = sub.add_parser(
         "runtime-list",
-        help="supervise a private service and poll the real pinned plugin list command",
+        help="supervise a private service for pinned plugin list or mcp list commands",
     )
     runtime_list.add_argument("--binary", required=True, help="resolved absolute OpenCode executable")
     runtime_list.add_argument("--config-dir", required=True, help="effective installed overlay directory")

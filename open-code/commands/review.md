@@ -20,7 +20,7 @@ You are running the `/review` command. You orchestrate an ad-hoc review of an AL
    - `{PLAN_STEP}` -> `ad-hoc audit (no plan)` unless the user names a plan or phase.
    - `{SCOPE}` -> if `WORKING_TREE_MODE` is set, prepend this literal directive: "The commit range {BASE_SHA}..{HEAD_SHA} is empty (BASE equals HEAD). Ignore it and instead audit the uncommitted working tree via `git diff` and `git diff --staged`." followed by the user's focus if given, else `full diff of the working tree`. Otherwise (normal case) -> the user's focus if given (e.g. "security"), else `full diff of the range`.
 3. Dispatch a FRESH review subagent via the `subagent` tool whose entire prompt is the filled template, explicitly overriding the model for that call to `openai/gpt-6.1-sol`. Do not name `@applier`, `@tech`, or `@senior` as the target of this dispatch, and do not paraphrase or trim the template.
-4. Relay the subagent's review body to the user (any surrounding announcement in Spanish). The last line will be exactly one of `OK_PHASE:`, `FINDINGS_PHASE:` or `BLOCKED_REVIEW:`. Findings route only if the user wants to address them: impl -> `@tech`, design -> `@senior`, coverage -> `@tester`.
+4. Relay the subagent's review body to the user (any surrounding announcement in Spanish). The last line will be exactly one of `OK_PHASE:`, `FINDINGS: <c> critical, <m> major, <n> minor[, coverage=<k>]`, or `BLOCKED_REVIEW:`. Findings route only if the user wants to address them: impl -> `@tech`, design -> `@senior`, coverage -> `@tester`.
 5. If the dispatch itself fails (infrastructure error, no return code): report `Fallo de infraestructura del subagente review: <error>` and stop. Do not retry, do not re-route.
 
 ## Review template
@@ -92,8 +92,11 @@ an item, omit it. The line is metadata for `/execute-plan`; it is not emitted wi
 1. Review body in structured markdown: `## Summary` (2-4 sentences), `## Critical findings`,
    `## Major findings`, `## Minor findings`, `## Areas to verify` — omit empty sections.
 2. The LAST line of your response is exactly ONE of:
-   - `OK_PHASE: <one-line summary>` — no actionable findings; checkpoint approved.
-   - `FINDINGS_PHASE: impl=<n>, design=<m>[, coverage=<k>]` — actionable findings, classified.
+   - `OK_PHASE: <one-line summary>` — no actionable findings.
+   - `FINDINGS: <c> critical, <m> major, <n> minor[, coverage=<k>]` — actionable findings,
+     classified; coverage is counted apart from impl.
    - `BLOCKED_REVIEW: <reason>` — cannot review (empty or unreadable diff, ambiguous target,
      diff too large to audit completely).
+
+   The literal ad-hoc findings summary prefix is `FINDINGS: <c> critical, <m> major, <n> minor`.
 ```

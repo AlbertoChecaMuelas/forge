@@ -35,6 +35,119 @@ OPENCODE_PACKAGE="@opencode/cli@${OPENCODE_VERSION}"
 FORGE_BIN_DIR="${FORGE_OPENCODE_BIN_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/forge/opencode-v2}"
 FORGE_BIN="$FORGE_BIN_DIR/node_modules/.bin/opencode"
 
+# This narrow mode must exit before the full installer can prompt for keys,
+# install the pinned binary, or write any other part of the overlay.
+command_only_error() {
+  printf '[forge-opencode] ERROR: %s\n' "$1" >&2
+  exit 1
+}
+
+install_command_only() {
+  if (($# != 1)); then
+    command_only_error 'usage: bash open-code/install-opencode.sh --command-only execute-plan'
+  fi
+  if [[ "$1" != "execute-plan" ]]; then
+    command_only_error "unsupported command '$1'; only 'execute-plan' is allowed"
+  fi
+
+  local source="$REPO_ROOT/open-code/commands/execute-plan.md"
+  local destination="$COMMANDS_DIR/execute-plan.md"
+  local temporary
+
+  if [[ ! -d "$CONFIG_DIR" || ! -d "$COMMANDS_DIR" ]]; then
+    command_only_error "the existing Forge overlay and commands directory are required: $COMMANDS_DIR"
+  fi
+  if ! python3 - "$CONFIG_DIR" "$COMMANDS_DIR" <<'PY'
+import os
+import sys
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+config_dir, commands_dir = sys.argv[1:]
+normalized = [os.path.abspath(path) for path in (config_dir, commands_dir)]
+if os.path.dirname(normalized[1]) != normalized[0] or os.path.basename(normalized[1]) != "commands":
+    fail("commands directory is not the expected child of the Forge overlay")
+
+for supplied, path in zip((config_dir, commands_dir), normalized[:2]):
+    if os.path.realpath(supplied) != path:
+        fail("destination path or one of its ancestors resolves through a symbolic link")
+    current = os.path.sep
+    for component in path.split(os.path.sep):
+        if not component:
+            continue
+        current = os.path.join(current, component)
+        if os.path.islink(current):
+            fail("destination path or one of its ancestors is a symbolic link")
+    if not os.path.isdir(path):
+        fail("destination path is not an existing directory")
+PY
+  then
+    command_only_error 'the complete Forge overlay destination path must be physical and contain no symbolic-link ancestors'
+  fi
+  if [[ ! -f "$source" || -L "$source" ]]; then
+    command_only_error "command source is missing or not a regular file: $source"
+  fi
+  if [[ -L "$destination" ]]; then
+    command_only_error "refusing to replace symbolic-link destination: $destination"
+  fi
+  if [[ ! -f "$destination" ]]; then
+    command_only_error "command destination must already exist as a regular file: $destination"
+  fi
+
+  if ! temporary=$(mktemp "$COMMANDS_DIR/.execute-plan.md.tmp.XXXXXX"); then
+    command_only_error "could not create a temporary file in $COMMANDS_DIR"
+  fi
+  if ! cp -- "$source" "$temporary"; then
+    rm -f -- "$temporary" || true
+    command_only_error "could not copy command source to temporary file: $source"
+  fi
+  if ! chmod --reference="$destination" "$temporary"; then
+    rm -f -- "$temporary" || true
+    command_only_error "could not preserve destination permissions: $destination"
+  fi
+  if ! mv -fT -- "$temporary" "$destination"; then
+    rm -f -- "$temporary" || true
+    command_only_error "could not atomically replace command destination: $destination"
+  fi
+
+  printf '[forge-opencode] updated execute-plan command in %s (permissions preserved)\n' "$COMMANDS_DIR"
+}
+
+# Parse the complete argument vector before the full installer can prompt,
+# generate files, invoke npm, or write to the overlay. The full installer has
+# no positional arguments; its only supported option is the exact, narrow
+# command-only form.
+command_only_requested=no
+for installer_arg in "$@"; do
+  case "$installer_arg" in
+    --command-only) command_only_requested=yes ;;
+    --command-only*)
+      command_only_error 'invalid command-only option; use --command-only execute-plan'
+      ;;
+    --*)
+      command_only_error "unrecognized installer option '$installer_arg'"
+      ;;
+  esac
+done
+
+if [ "$command_only_requested" = yes ]; then
+  if [[ "${1-}" != "--command-only" ]]; then
+    command_only_error 'usage: bash open-code/install-opencode.sh --command-only execute-plan'
+  fi
+  if (($# != 2)); then
+    command_only_error 'usage: bash open-code/install-opencode.sh --command-only execute-plan'
+  fi
+  install_command_only "$2"
+  exit 0
+fi
+
+if (($# != 0)); then
+  command_only_error 'unexpected arguments; the full installer accepts no arguments'
+fi
+
 # check_auth_list validates the stored auth entries with the OpenCode 2 JSON
 # contract: `auth list --standalone --format json` must print a JSON array
 # with at least one entry.
@@ -224,10 +337,10 @@ fi
 if [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo "[forge-opencode] auth detected from environment or env.sh"
 elif check_auth_list; then
-  echo "[forge-opencode] auth detected from the opencode auth list"
+  echo "[forge-opencode] auth detected from the Forge-pinned OpenCode 2 auth list"
 else
   echo "[forge-opencode] ERROR: no usable OpenCode auth found" >&2
-  echo "[forge-opencode]   -> run 'opencode auth login' or export OPENAI_API_KEY/ANTHROPIC_API_KEY" >&2
+  echo "[forge-opencode]   -> run 'forge-opencode auth login' or export OPENAI_API_KEY/ANTHROPIC_API_KEY" >&2
   exit 1
 fi
 

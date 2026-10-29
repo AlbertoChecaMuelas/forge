@@ -271,6 +271,7 @@ Options (install):
   --target=claude|opencode|both Target directory (default: claude)
   --only=<comp>[,<comp>...]     Install only the listed components
                                 (core, the plugin companion, is opt-in only)
+  --reference-only <ref>        Install only the declared Claude reference (requires schema-3 state)
   --show-cost                   Muestra línea de coste por sesión en la statusline (por defecto oculta)
 
 Options (uninstall):
@@ -3519,11 +3520,283 @@ _forge_install_claude_md() {
   fi
 }
 
+# Install the one explicitly supported reference without entering the normal
+# installer path. This deliberately does not migrate state or resolve a target
+# from HOME/environment: the registered Claude manifest entry is authoritative.
+forge_install_reference_only() {
+  local reference="${1:-}"
+  local state_file="$FORGE_STATE_FILE"
+  local component_manifest="$FORGE_ROOT/shared/components/commands.json"
+  local expected_src="shared/reference/escalation-codes.md"
+  local expected_dest="skills/execute-plan/reference/escalation-codes.md"
+
+  if [ "$reference" != "execute-plan/escalation-codes" ]; then
+    echo "[forge] ERROR: referencia --reference-only no permitida: '$reference'" >&2
+    return 1
+  fi
+  if [ ! -f "$component_manifest" ] || [ -L "$component_manifest" ] || \
+      ! jq -e --arg src "$expected_src" --arg dest "$expected_dest" \
+        '[.symlinks[]? | select(.src == $src and .dest == $dest)] | length == 1' \
+        "$component_manifest" >/dev/null 2>&1; then
+    echo "[forge] ERROR: la referencia solicitada no está declarada exactamente una vez en commands.json" >&2
+    return 1
+  fi
+
+  if [ ! -f "$state_file" ] || [ -L "$state_file" ] || ! jq empty "$state_file" >/dev/null 2>&1; then
+    echo "[forge] ERROR: se requiere un state regular y válido de esquema 3" >&2
+    return 1
+  fi
+  if ! jq -e '
+      type == "object" and
+      .state_schema == 3 and
+      (.targets | type == "array" and ([.[] | select(. == "claude")] | length) == 1) and
+      (.targets_manifest | type == "array") and
+      ([.targets_manifest[] | select(.name == "claude")] | length) == 1 and
+      (.symlinks | type == "array" and all(.[]; type == "string")) and
+      ([.targets_manifest[] | select(.name == "claude")][0] |
+        (.dir | type == "string" and startswith("/") and length > 1) and
+        (.components | type == "array" and index("commands") != null) and
+        (.symlinks | type == "array" and all(.[]; type == "string")) and
+        (.symlinks_objects | type == "array" and
+          all(.[]; type == "object" and (.src | type == "string") and (.dest | type == "string")))
+      )
+    ' "$state_file" >/dev/null 2>&1; then
+    echo "[forge] ERROR: state no válido para reference-only: se exige esquema 3, un target Claude inequívoco y commands registrado" >&2
+    return 1
+  fi
+
+  local target_dir
+  target_dir="$(jq -r '[.targets_manifest[] | select(.name == "claude")][0].dir' "$state_file")"
+  case "$target_dir" in
+    *$'\n'*|*"/../"*|*/..|*"/./"*|*/.)
+      echo "[forge] ERROR: directorio Claude registrado no seguro" >&2
+      return 1
+      ;;
+    /*) ;;
+    *)
+      echo "[forge] ERROR: el directorio Claude registrado no es absoluto" >&2
+      return 1
+      ;;
+  esac
+  while [ "$target_dir" != "/" ] && [ "${target_dir%/}" != "$target_dir" ]; do
+    target_dir="${target_dir%/}"
+  done
+  if [ "$target_dir" = "/" ] || [ ! -d "$target_dir" ] || [ -L "$target_dir" ]; then
+    echo "[forge] ERROR: el directorio Claude registrado no existe como directorio real" >&2
+    return 1
+  fi
+  local target_physical
+  target_physical="$(cd -P "$target_dir" 2>/dev/null && pwd -P)" || {
+    echo "[forge] ERROR: no se puede resolver el directorio Claude registrado" >&2
+    return 1
+  }
+  if [ "$target_physical" != "$target_dir" ]; then
+    echo "[forge] ERROR: el directorio Claude registrado atraviesa un enlace simbólico" >&2
+    return 1
+  fi
+
+  # Do not create parent directories here: every parent must already be a real
+  # directory inside the registered target, not a link that redirects writes.
+  local reference_parent
+  for reference_parent in \
+      "$target_dir/skills" \
+      "$target_dir/skills/execute-plan" \
+      "$target_dir/skills/execute-plan/reference"; do
+    if [ ! -d "$reference_parent" ] || [ -L "$reference_parent" ]; then
+      echo "[forge] ERROR: padre ausente o enlazado inesperadamente: $reference_parent" >&2
+      return 1
+    fi
+    local parent_physical
+    parent_physical="$(cd -P "$reference_parent" 2>/dev/null && pwd -P)" || {
+      echo "[forge] ERROR: no se puede resolver el padre de la referencia" >&2
+      return 1
+    }
+    if [ "$parent_physical" != "$reference_parent" ]; then
+      echo "[forge] ERROR: un padre de la referencia desvía la escritura fuera del target" >&2
+      return 1
+    fi
+  done
+
+  local source_abs="$FORGE_ROOT/$expected_src"
+  local link_dest="$target_dir/$expected_dest"
+  if [ ! -f "$source_abs" ] || [ -L "$source_abs" ]; then
+    echo "[forge] ERROR: fuente de referencia ausente o no regular: $source_abs" >&2
+    return 1
+  fi
+
+  local dest_present=0
+  if [ -L "$link_dest" ]; then
+    local current_link
+    current_link="$(readlink "$link_dest" 2>/dev/null || true)"
+    if [ "$current_link" != "$source_abs" ]; then
+      echo "[forge] ERROR: enlace inesperado en el destino de la referencia: $link_dest" >&2
+      return 1
+    fi
+    dest_present=1
+  elif [ -e "$link_dest" ]; then
+    echo "[forge] ERROR: destino de referencia ocupado por un elemento ajeno: $link_dest" >&2
+    return 1
+  fi
+
+  local object_dest_count
+  object_dest_count="$(jq --arg dest "$expected_dest" \
+    '[([.targets_manifest[] | select(.name == "claude")][0].symlinks_objects[] | select(.dest == $dest))] | length' \
+    "$state_file")"
+  if [ "$object_dest_count" -gt 1 ]; then
+    echo "[forge] ERROR: el state contiene registros ambiguos para esta referencia" >&2
+    return 1
+  fi
+
+  local state_update_needed=1
+  if jq -e --arg src "$expected_src" --arg dest "$expected_dest" --arg absolute "$link_dest" '
+      ([.targets_manifest[] | select(.name == "claude")][0]) as $claude |
+      (($claude.symlinks | index($dest)) != null) and
+      ([$claude.symlinks_objects[] | select(.dest == $dest and .src == $src)] | length == 1) and
+      ((.symlinks | index($absolute)) != null)
+    ' "$state_file" >/dev/null 2>&1; then
+    state_update_needed=0
+  fi
+
+  if [ "$dest_present" -eq 1 ] && [ "$state_update_needed" -eq 0 ]; then
+    echo "[forge] reference already installed and registered: $link_dest"
+    return 0
+  fi
+
+  local tmp_state="" backup_state="" created_link=0
+  if [ "$state_update_needed" -eq 1 ]; then
+    if ! tmp_state="$(mktemp "${state_file}.reference-only.XXXXXX")"; then
+      echo "[forge] ERROR: no se pudo preparar el state temporal" >&2
+      return 1
+    fi
+    if ! backup_state="$(mktemp "${state_file}.reference-backup.XXXXXX")"; then
+      rm -f "$tmp_state"
+      echo "[forge] ERROR: no se pudo preparar el respaldo temporal del state" >&2
+      return 1
+    fi
+    if ! cp -p "$state_file" "$backup_state" || ! cp -p "$state_file" "$tmp_state"; then
+      rm -f "$tmp_state" "$backup_state"
+      echo "[forge] ERROR: no se pudo preservar el state antes de preparar la actualización" >&2
+      return 1
+    fi
+    if ! jq --arg src "$expected_src" --arg dest "$expected_dest" --arg absolute "$link_dest" '
+        .targets_manifest |= map(
+          if .name == "claude" then
+            .symlinks = (if (.symlinks | index($dest)) == null then .symlinks + [$dest] else .symlinks end)
+            | .symlinks_objects = (
+                if any(.symlinks_objects[]; .dest == $dest) then
+                  (.symlinks_objects | map(if .dest == $dest then .src = $src else . end))
+                else
+                  .symlinks_objects + [{src: $src, dest: $dest}]
+                end
+              )
+          else . end
+        )
+        | .symlinks = (if (.symlinks | index($absolute)) == null then .symlinks + [$absolute] else .symlinks end)
+      ' "$state_file" > "$tmp_state"; then
+      rm -f "$tmp_state" "$backup_state"
+      echo "[forge] ERROR: no se pudo preparar la actualización de los registros" >&2
+      return 1
+    fi
+    if ! jq -e --arg src "$expected_src" --arg dest "$expected_dest" --arg absolute "$link_dest" '
+        type == "object" and .state_schema == 3 and
+        ([.targets_manifest[] | select(.name == "claude")][0] as $claude |
+          ($claude.symlinks | index($dest)) != null and
+          ([$claude.symlinks_objects[] | select(.dest == $dest and .src == $src)] | length == 1)
+        ) and ((.symlinks | index($absolute)) != null)
+      ' "$tmp_state" >/dev/null 2>&1; then
+      rm -f "$tmp_state" "$backup_state"
+      echo "[forge] ERROR: la actualización preparada del state no supera la validación" >&2
+      return 1
+    fi
+  fi
+
+  if [ "$dest_present" -eq 0 ]; then
+    if ! ln -s "$source_abs" "$link_dest"; then
+      [ -n "$tmp_state" ] && rm -f "$tmp_state"
+      [ -n "$backup_state" ] && rm -f "$backup_state"
+      echo "[forge] ERROR: no se pudo crear el enlace de referencia" >&2
+      return 1
+    fi
+    created_link=1
+  fi
+
+  if [ "$state_update_needed" -eq 1 ]; then
+    # Do not overwrite a state file changed by another installer during the
+    # preparation window. The candidate and original are on the same volume,
+    # so the final rename publishes the complete validated state atomically.
+    if ! cmp -s "$backup_state" "$state_file"; then
+      if [ "$created_link" -eq 1 ] && [ -L "$link_dest" ] && [ "$(readlink "$link_dest" 2>/dev/null || true)" = "$source_abs" ]; then
+        rm -f "$link_dest"
+      fi
+      rm -f "$tmp_state" "$backup_state"
+      echo "[forge] ERROR: el state cambió durante la preparación; no se publicó la referencia" >&2
+      return 1
+    fi
+    if ! mv -f "$tmp_state" "$state_file"; then
+      # A failed atomic rename leaves the original intact. Restore its saved
+      # bytes as a guard against a tool reporting failure after replacement.
+      if ! cmp -s "$backup_state" "$state_file" && [ -f "$state_file" ] && [ ! -L "$state_file" ]; then
+        cp -p "$backup_state" "$state_file" || echo "[forge] ERROR: no se pudo restaurar el state tras el fallo de publicación" >&2
+      fi
+      if [ "$created_link" -eq 1 ] && [ -L "$link_dest" ] && [ "$(readlink "$link_dest" 2>/dev/null || true)" = "$source_abs" ]; then
+        rm -f "$link_dest"
+      fi
+      rm -f "$tmp_state" "$backup_state"
+      echo "[forge] ERROR: falló la publicación atómica del state; se revirtió la referencia creada" >&2
+      return 1
+    fi
+    rm -f "$backup_state"
+  fi
+
+  echo "[forge] reference installed: $link_dest"
+  return 0
+}
+
 cmd_install() {
   # Parse flags
   local target_arg="both"
   local show_cost=0
   local only_csv=""
+
+  # This constrained mode must branch before normal component parsing, target
+  # resolution, migrations, or any installation side effect.
+  local has_reference_only=0
+  local reference_arg_scan
+  for reference_arg_scan in "$@"; do
+    case "$reference_arg_scan" in
+      --reference-only|--reference-only=*) has_reference_only=1 ;;
+    esac
+  done
+  if [ "$has_reference_only" -eq 1 ]; then
+    local reference_target_count=0 reference_flag_count=0 reference_value=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --target=claude)
+          reference_target_count=$((reference_target_count + 1))
+          shift
+          ;;
+        --reference-only)
+          reference_flag_count=$((reference_flag_count + 1))
+          if [ "$reference_flag_count" -ne 1 ] || [ "$#" -lt 2 ]; then
+            echo "[forge] ERROR: --reference-only requiere exactamente un identificador de referencia" >&2
+            return 1
+          fi
+          reference_value="$2"
+          shift 2
+          ;;
+        *)
+          echo "[forge] ERROR: argumento no permitido con --reference-only: $1" >&2
+          return 1
+          ;;
+      esac
+    done
+    if [ "$reference_target_count" -ne 1 ] || [ "$reference_flag_count" -ne 1 ]; then
+      echo "[forge] ERROR: use --target=claude --reference-only execute-plan/escalation-codes" >&2
+      return 1
+    fi
+    forge_install_reference_only "$reference_value"
+    return $?
+  fi
 
   for arg in "$@"; do
     case "$arg" in

@@ -7,6 +7,7 @@
     { "src": "skills/execute-plan/reference/batch-algorithm.md",    "dest": "skills/execute-plan/reference/batch-algorithm.md" },
     { "src": "skills/execute-plan/reference/reviewer-and-close.md", "dest": "skills/execute-plan/reference/reviewer-and-close.md" },
     { "src": "skills/execute-plan/reference/review-template.md", "dest": "skills/execute-plan/reference/review-template.md" },
+    { "src": "shared/reference/escalation-codes.md",               "dest": "skills/execute-plan/reference/escalation-codes.md" },
     { "src": "skills/review/SKILL.md",            "dest": "skills/review/SKILL.md" },
     { "src": "skills/sync-readme/SKILL.md",       "dest": "skills/sync-readme/SKILL.md" },
     { "src": "skills/plan-format/SKILL.md",       "dest": "skills/plan-format/SKILL.md" },

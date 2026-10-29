@@ -29,11 +29,27 @@ fail() { echo "  FAIL  $1" >&2; FAIL=1; }
 cleanup() {
   local rc=$?
 
-  if [ -n "${TMP_TEST_HOME:-}" ]; then
-    rm -rf "$TMP_TEST_HOME"
-  fi
-  if [ -n "${TEST_TMP_ROOT:-}" ]; then
-    rm -rf "$TEST_TMP_ROOT"
+  # The containment closes every contained scenario: the kernel tears the
+  # private PID namespace down when its PID 1 exits, so no process of a
+  # fixture can outlive the run that created it. There is no observer to stop
+  # and no registry to sweep.
+  #
+  # What the suite DOES owe is the evidence: when a contained run could not
+  # be certified, the sandbox and the receipts are KEPT and their location is
+  # reported, because a failed closure must never look like a clean run.
+  if [ -s "${FORGE_CONTAINMENT_FAILED_RECEIPTS_FILE:-}" ]; then
+    FORGE_CONTAINMENT_FAILED_RECEIPTS="$(cat "$FORGE_CONTAINMENT_FAILED_RECEIPTS_FILE")"
+    echo "  FAIL  hay corridas contenidas que no se pudieron certificar; sus recibos se conservan:" >&2
+    printf '%s\n' "$FORGE_CONTAINMENT_FAILED_RECEIPTS" | sed 's/^/        /' >&2
+    echo "        el sandbox de la suite se conserva en $TEST_TMP_ROOT" >&2
+    rc=1
+  else
+    if [ -n "${TMP_TEST_HOME:-}" ]; then
+      rm -rf "$TMP_TEST_HOME"
+    fi
+    if [ -n "${TEST_TMP_ROOT:-}" ]; then
+      rm -rf "$TEST_TMP_ROOT"
+    fi
   fi
 
   # The leak guard: the suite must never create the real pinned prefix and
@@ -52,6 +68,11 @@ cleanup() {
 }
 
 mkdir -p "$TEST_TMP_ROOT"
+# The receipts of the contained runs that could NOT be certified are
+# recorded here: they are the evidence of a failure and they are never
+# deleted to make the suite look clean.
+FORGE_CONTAINMENT_FAILED_RECEIPTS_FILE="$TEST_TMP_ROOT/failed-receipts.txt"
+: > "$FORGE_CONTAINMENT_FAILED_RECEIPTS_FILE"
 trap cleanup EXIT
 
 # The production installer gives OPENCODE_CONFIG_DIR / OPENCODE_CONFIG
@@ -313,15 +334,44 @@ test_isolated_install_and_launcher() {
   tmp_home="$(mktemp -d "$TEST_TMP_ROOT/install.XXXXXX")"
   TMP_TEST_HOME="$tmp_home"
 
-  local fixture_repo installer uninstaller installed_config overlay_root plugin_packages_dir
+  local fixture_repo uninstaller installed_config overlay_root plugin_packages_dir
+  local manifest pinned_binary install_rc=0 launch_rc=0
   fixture_repo="$(create_repo_fixture "$tmp_home/repo")"
-  installer="$fixture_repo/open-code/install-opencode.sh"
   uninstaller="$fixture_repo/open-code/uninstall-opencode.sh"
   installed_config="$tmp_home/.config/opencode-forge/opencode.jsonc"
   overlay_root="$tmp_home/.config/opencode-forge"
   plugin_packages_dir="$overlay_root/plugin-packages"
+  manifest="$tmp_home/.forge-state.json"
+  pinned_binary="$tmp_home/.local/share/forge/opencode-v2/node_modules/.bin/opencode"
 
-  run_isolated "$tmp_home" OPENAI_API_KEY=test-openai-key bash "$installer" >/dev/null 2>&1
+  # The launcher reads the Forge manifest, so the fixture installs the way the
+  # user does: the ROOT installer runs the overlay installer and then writes
+  # the manifest that records the pinned binary and the config file of the
+  # opencode target. Running the overlay installer alone leaves no manifest
+  # behind, and the launcher is then expected to fail closed (that is a
+  # different contract, covered by its own case).
+  install_opencode_fixture "$tmp_home" "$fixture_repo" > "$tmp_home/install.out" 2>&1 || install_rc=$?
+  if [ "$install_rc" -ne 0 ]; then
+    fail "la instalacion de referencia del overlay aislado fallo (rc=$install_rc)"
+    sed -n '1,20p' "$tmp_home/install.out" | sed 's/^/      /' >&2
+    TMP_TEST_HOME=""
+    rm -rf "$tmp_home"
+    return
+  fi
+
+  # The manifest is the ONLY authority of the launcher: it must exist, be
+  # valid JSON and record the effective paths of the opencode target.
+  if [ -f "$manifest" ] && jq empty "$manifest" >/dev/null 2>&1; then
+    pass "el instalador deja el manifiesto de Forge en el HOME aislado"
+  else
+    fail "el instalador no dejo un manifiesto de Forge valido ($manifest)"
+  fi
+  assert_equal "el manifiesto registra el directorio efectivo del overlay" \
+    "$overlay_root" "$(manifest_opencode_value "$manifest" dir)"
+  assert_equal "el manifiesto registra el config_file del target opencode" \
+    "$installed_config" "$(manifest_opencode_value "$manifest" config_file)"
+  assert_equal "el manifiesto registra el binario pinado del prefijo aislado" \
+    "$pinned_binary" "$(manifest_opencode_value "$manifest" binary)"
 
   if [ -f "$tmp_home/.config/opencode-forge/agents/orchestrator.md" ] \
     && [ ! -L "$tmp_home/.config/opencode-forge/agents/orchestrator.md" ] \
@@ -434,7 +484,43 @@ test_isolated_install_and_launcher() {
     fail "global opencode config was touched"
   fi
 
-  run_isolated "$tmp_home" "$tmp_home/.local/bin/forge-opencode" debug config > "$tmp_home/debug-config.out"
+  # The launcher runs the PINNED binary recorded in the manifest, never the
+  # `opencode` of the PATH. The decoy below is the ONLY `opencode` in the
+  # PATH and it must never run: a launcher that falls back to the generic
+  # binary would resurrect the OpenCode V1 of the machine.
+  mkdir -p "$tmp_home/fakebin"
+  cat > "$tmp_home/fakebin/opencode" <<'EOF'
+#!/usr/bin/env sh
+printf 'PATH-DECOY-OPENCODE\n'
+EOF
+  chmod +x "$tmp_home/fakebin/opencode"
+
+  # The pinned binary is replaced by a fake that reports what the launcher
+  # passed to it: the config it resolved and the token loaded from
+  # ~/.opencode-tokens through env.sh.
+  #
+  # The replacement happens on the EXECUTABLE of the package: the entry of
+  # `.bin` must keep resolving to it, or the launcher would refuse to run it
+  # (the accreditation of the pinned package).
+  cat > "$tmp_home/.local/share/forge/opencode-v2/node_modules/@opencode/cli/bin/opencode" <<'EOF'
+#!/usr/bin/env sh
+printf '%s\n' "${OPENAI_API_KEY:-missing}"
+printf 'ARGV=%s\n' "$*"
+printf 'OPENCODE_CONFIG_DIR=%s\n' "${OPENCODE_CONFIG_DIR:-}"
+printf 'OPENCODE_CONFIG=%s\n' "${OPENCODE_CONFIG:-}"
+if [ -n "${OPENCODE_CONFIG:-}" ] && [ -f "${OPENCODE_CONFIG:-}" ]; then
+  printf '%s\n' '--- CONFIG ---'
+  cat "${OPENCODE_CONFIG}"
+fi
+EOF
+  chmod +x "$tmp_home/.local/share/forge/opencode-v2/node_modules/@opencode/cli/bin/opencode"
+
+  run_isolated "$tmp_home" PATH="$tmp_home/fakebin:$PATH" "$tmp_home/.local/bin/forge-opencode" \
+    debug config > "$tmp_home/debug-config.out" 2> "$tmp_home/debug-config.err" || launch_rc=$?
+  if [ "$launch_rc" -ne 0 ]; then
+    fail "el launcher no pudo ejecutar el binario pinado del manifiesto (rc=$launch_rc)"
+    sed -n '1,10p' "$tmp_home/debug-config.err" | sed 's/^/      /' >&2
+  fi
 
   # The launcher must resolve the isolated overlay and the OpenCode 2 plugin
   # package. The OpenCode 1 plugin files must not appear anywhere.
@@ -456,20 +542,34 @@ test_isolated_install_and_launcher() {
     pass "the installed config does not declare any OpenCode 1 plugin file"
   fi
 
-  mkdir -p "$tmp_home/fakebin"
-  printf 'OPENAI_API_KEY=file-token\n' > "$tmp_home/.opencode-tokens"
-  cat > "$tmp_home/fakebin/opencode" <<'EOF'
-#!/usr/bin/env sh
-printf '%s\n' "${OPENAI_API_KEY:-missing}"
-EOF
-  chmod +x "$tmp_home/fakebin/opencode"
+  # The generic binary of the PATH is never executed: the launcher only runs
+  # the pinned build of the Forge prefix.
+  if grep -qF 'PATH-DECOY-OPENCODE' "$tmp_home/debug-config.out"; then
+    fail "el launcher ejecuto el opencode del PATH en vez del binario pinado"
+  else
+    pass "el launcher no ejecuta el opencode del PATH: solo el binario pinado del manifiesto"
+  fi
 
-  run_isolated "$tmp_home" PATH="$tmp_home/fakebin:$PATH" "$tmp_home/.local/bin/forge-opencode" > "$tmp_home/launcher-env.out"
+  printf 'OPENAI_API_KEY=file-token\n' > "$tmp_home/.opencode-tokens"
+
+  launch_rc=0
+  run_isolated "$tmp_home" PATH="$tmp_home/fakebin:$PATH" "$tmp_home/.local/bin/forge-opencode" \
+    > "$tmp_home/launcher-env.out" 2> "$tmp_home/launcher-env.err" || launch_rc=$?
+  if [ "$launch_rc" -ne 0 ]; then
+    fail "el launcher sin subcomando no pudo ejecutar el binario pinado (rc=$launch_rc)"
+    sed -n '1,10p' "$tmp_home/launcher-env.err" | sed 's/^/      /' >&2
+  fi
 
   if grep -q '^file-token$' "$tmp_home/launcher-env.out"; then
     pass "launcher loads OPENAI_API_KEY from ~/.opencode-tokens via env.sh"
   else
     fail "launcher did not load OPENAI_API_KEY from ~/.opencode-tokens"
+  fi
+
+  if grep -qF 'PATH-DECOY-OPENCODE' "$tmp_home/launcher-env.out"; then
+    fail "el launcher ejecuto el opencode del PATH en vez del binario pinado"
+  else
+    pass "el launcher no ejecuta el opencode del PATH al arrancar la UI"
   fi
 
   # Audit the other hardcoded overlay lists. The generator runs against a fresh
@@ -2532,6 +2632,1008 @@ test_launcher_enforces_the_v2_isolation() {
   rm -rf "$sandbox"
 }
 
+# ---------------------------------------------------------------------------
+# The launcher fails CLOSED when the Forge manifest is missing or invalid.
+#
+# The manifest is the only authority of the launcher: without it the pinned
+# binary is unknown, so the launcher must refuse to run instead of falling
+# back to the generic `opencode` of the PATH (which may be the OpenCode V1
+# that an Omarchy upgrade reinstalls).
+#
+# The fixture installs the overlay the way the user does (the root installer
+# writes the manifest), so the failure observed here is caused by the state
+# of the manifest and by nothing else.
+# ---------------------------------------------------------------------------
+test_launcher_fails_closed_without_a_valid_manifest() {
+  echo ""
+  echo "--- test_launcher_fails_closed_without_a_valid_manifest"
+
+  local sandbox home fixture_repo launcher install_rc=0 launch_rc=0
+  local manifest pinned_binary
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/manifest-fail-closed.XXXXXX")"
+  home="$sandbox/home"
+  TMP_TEST_HOME="$home"
+  mkdir -p "$home"
+  fixture_repo="$(create_repo_fixture "$sandbox/repo")"
+  create_fake_opencode "$home"
+  manifest="$home/.forge-state.json"
+  launcher="$home/.local/bin/forge-opencode"
+  pinned_binary="$home/.local/share/forge/opencode-v2/node_modules/.bin/opencode"
+
+  install_opencode_fixture "$home" "$fixture_repo" > "$sandbox/install.out" 2>&1 || install_rc=$?
+  assert_equal "install de referencia para el cierre fail-closed termina correctamente" "0" "$install_rc"
+
+  if [ "$install_rc" -ne 0 ]; then
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+
+  # The decoy in the PATH is the only `opencode` reachable by name: if the
+  # launcher ever falls back to it, the marker appears in the output.
+  cat > "$home/fakebin/opencode" <<'EOF'
+#!/usr/bin/env sh
+printf 'PATH-DECOY-OPENCODE\n'
+EOF
+  chmod +x "$home/fakebin/opencode"
+
+  # --- 1. the manifest is missing ------------------------------------------
+  rm -f "$manifest"
+  launch_rc=0
+  run_isolated "$home" PATH="$home/fakebin:$PATH" "$launcher" \
+    > "$sandbox/missing.out" 2> "$sandbox/missing.err" || launch_rc=$?
+  assert_equal "sin manifiesto el launcher sale con codigo 1" "1" "$launch_rc"
+  assert_contains "sin manifiesto el launcher explica que falta el manifiesto" \
+    "falta el manifiesto de Forge" "$sandbox/missing.err"
+  assert_contains "sin manifiesto el launcher dice como se arregla" \
+    "reinstala el overlay" "$sandbox/missing.err"
+  if grep -qF 'PATH-DECOY-OPENCODE' "$sandbox/missing.out"; then
+    fail "sin manifiesto el launcher ejecuto el opencode del PATH"
+  else
+    pass "sin manifiesto el launcher no ejecuta el opencode del PATH"
+  fi
+
+  # --- 2. the manifest is invalid -----------------------------------------
+  printf '%s\n' '{ this is not json' > "$manifest"
+  launch_rc=0
+  run_isolated "$home" PATH="$home/fakebin:$PATH" "$launcher" \
+    > "$sandbox/invalid.out" 2> "$sandbox/invalid.err" || launch_rc=$?
+  assert_equal "con manifiesto invalido el launcher sale con codigo 1" "1" "$launch_rc"
+  assert_contains "con manifiesto invalido el launcher explica la causa" \
+    "manifiesto de Forge invalido o incompleto" "$sandbox/invalid.err"
+  if grep -qF 'PATH-DECOY-OPENCODE' "$sandbox/invalid.out"; then
+    fail "con manifiesto invalido el launcher ejecuto el opencode del PATH"
+  else
+    pass "con manifiesto invalido el launcher no ejecuta el opencode del PATH"
+  fi
+
+  # --- 3. the manifest has no opencode target ------------------------------
+  jq -n '{targets_manifest: []}' > "$manifest"
+  launch_rc=0
+  run_isolated "$home" PATH="$home/fakebin:$PATH" "$launcher" \
+    > "$sandbox/no-target.out" 2> "$sandbox/no-target.err" || launch_rc=$?
+  assert_equal "sin target opencode el launcher sale con codigo 1" "1" "$launch_rc"
+  assert_contains "sin target opencode el launcher explica la causa" \
+    "manifiesto de Forge invalido o incompleto" "$sandbox/no-target.err"
+
+  # --- 4. the recorded binary is not absolute ------------------------------
+  jq --arg binary "opencode" \
+    '.targets_manifest = [{name:"opencode",dir:"/tmp/x",config_file:"/tmp/x/opencode.jsonc",binary:$binary}]' \
+    "$manifest" > "$manifest.relative"
+  mv "$manifest.relative" "$manifest"
+  launch_rc=0
+  run_isolated "$home" PATH="$home/fakebin:$PATH" "$launcher" \
+    > "$sandbox/relative.out" 2> "$sandbox/relative.err" || launch_rc=$?
+  assert_equal "con binario relativo el launcher sale con codigo 1" "1" "$launch_rc"
+  assert_contains "con binario relativo el launcher explica la causa" \
+    "no es absoluta" "$sandbox/relative.err"
+  if grep -qF 'PATH-DECOY-OPENCODE' "$sandbox/relative.out"; then
+    fail "con binario relativo el launcher ejecuto el opencode del PATH"
+  else
+    pass "con binario relativo el launcher no ejecuta el opencode del PATH"
+  fi
+
+  # --- 5. the recorded binary does not exist -------------------------------
+  jq --arg binary "$pinned_binary.missing" \
+    '.targets_manifest = [{name:"opencode",dir:"/tmp/x",config_file:"/tmp/x/opencode.jsonc",binary:$binary}]' \
+    "$manifest" > "$manifest.missing"
+  mv "$manifest.missing" "$manifest"
+  launch_rc=0
+  run_isolated "$home" PATH="$home/fakebin:$PATH" "$launcher" \
+    > "$sandbox/missing-bin.out" 2> "$sandbox/missing-bin.err" || launch_rc=$?
+  assert_equal "con binario inexistente el launcher sale con codigo 1" "1" "$launch_rc"
+  # The launcher EXITS before it executes anything, so the rejection happens
+  # in the accreditation of the pinned package: that is the gate that comes
+  # first, and its diagnostic is the one the operator reads.
+  assert_contains "con binario inexistente el launcher explica la causa" \
+    "no se pudo acreditar el paquete OpenCode 2.1.4" "$sandbox/missing-bin.err"
+
+  # --- 6. the manifest is back: the launcher works again -------------------
+  install_opencode_fixture "$home" "$fixture_repo" > "$sandbox/reinstall.out" 2>&1 || install_rc=$?
+  assert_equal "reinstalar restituye el manifiesto" "0" "$install_rc"
+  launch_rc=0
+  run_isolated "$home" PATH="$home/fakebin:$PATH" "$launcher" debug config \
+    > "$sandbox/restored.out" 2> "$sandbox/restored.err" || launch_rc=$?
+  assert_equal "con el manifesto restaurado el launcher sale 0" "0" "$launch_rc"
+  assert_contains "con el manifesto restaurado el launcher usa el binario pinado" \
+    "OPENCODE_CONFIG_DIR=$home/.config/opencode-forge" "$sandbox/restored.out"
+
+  TMP_TEST_HOME=""
+  rm -rf "$sandbox"
+}
+
+# write_network_free_launcher <sandbox>
+#
+# Writes a COPY of the launcher of Forge in <sandbox>/launcher, with a COPY
+# of the helper of the runtime in which the TWO operations of network are
+# replaced by CONTROLLED DOUBLES:
+#
+#   * the ownership of the loopback listener of the private service;
+#   * the authenticated health of that service.
+#
+# The battery of the suites does NOT use the network: not even the loopback
+# interface. The COPY is the one that the sandbox uses, so the repository is
+# never modified, and the rest of the launcher (the routing, the manifest,
+# the environment and the supervision) is exercised exactly as it is.
+#
+# It prints the path of the launcher of la copia.
+write_network_free_launcher() {
+  local sandbox="$1"
+  local launcher_dir="$sandbox/launcher"
+  rm -rf "$launcher_dir"
+  mkdir -p "$launcher_dir/lib" || return 1
+  cp "$FORGE_ROOT/open-code/forge-opencode.sh" "$launcher_dir/forge-opencode" || return 1
+  chmod +x "$launcher_dir/forge-opencode"
+  if [ -f "$FORGE_ROOT/open-code/env.sh" ]; then
+    cp "$FORGE_ROOT/open-code/env.sh" "$launcher_dir/env.sh" || return 1
+  fi
+  cp "$FORGE_ROOT/open-code/lib/plugin-sync.py" "$launcher_dir/lib/plugin-sync.py" || return 1
+
+  python3 - "$launcher_dir/lib/plugin-sync.py" <<'NETWORK_FREE_DOUBLES_EOF'
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    source = handle.read()
+
+LISTENER_DOUBLE = '''def _listener_owned_by(pid, port):
+    """DOUBLE DE PRUEBA (sin red): el servicio privado simulado no abre socket.
+
+    La pertenencia del listener se declara cumplida sin consultar
+    /proc/net: la bateria de las suites NO usa la red, ni el loopback.
+    """
+    return True
+
+
+'''
+
+HEALTH_DOUBLE = '''def _authenticated_health(registration, timeout=1.0):
+    """DOUBLE DE PRUEBA (sin red): la salud del servicio se comprueba contra
+    el propio registro, sin ninguna peticion HTTP."""
+    url = registration.get("url")
+    password = registration.get("password")
+    pid = registration.get("pid")
+    version = registration.get("version")
+    if not isinstance(url, str) or not url:
+        return False
+    if not isinstance(password, str) or not password:
+        return False
+    if not isinstance(pid, int) or not isinstance(version, str):
+        return False
+    return True
+
+
+'''
+
+
+def replace_function(text, name, replacement):
+    pattern = re.compile(r"^def %s\(.*?(?=^def |\Z)" % re.escape(name), re.M | re.S)
+    match = pattern.search(text)
+    if not match:
+        raise SystemExit("la copia del ayudante no define %s" % name)
+    return text[:match.start()] + replacement + text[match.end():]
+
+
+source = replace_function(source, "_listener_owned_by", LISTENER_DOUBLE)
+source = replace_function(source, "_authenticated_health", HEALTH_DOUBLE)
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write(source)
+NETWORK_FREE_DOUBLES_EOF
+  [ $? -eq 0 ] || return 1
+  printf '%s\n' "$launcher_dir/forge-opencode"
+}
+
+# ---------------------------------------------------------------------------
+# The private service the Forge supervisor expects, emulated by a fake CLI.
+#
+# The fake is NOT a runtime: it registers a private service in the XDG state
+# directory it is given and it resolves the service registration of ITS OWN
+# XDG state directory for `mcp list`.
+#
+# Every invocation is recorded with the environment that decides the routing,
+# so the fixture can prove WHICH service the effective path resolved and
+# WHICH state directory it consulted.
+#
+# THE FIXTURE USES NO NETWORK AT ALL: the private service is SIMULATED (it
+# opens no socket) and the two operations of network of the runtime helper
+# are replaced by controlled doubles in the copy of that helper that the
+# sandbox uses. Nothing outside the sandbox is written.
+# ---------------------------------------------------------------------------
+write_fake_private_service() {
+  local binary="$1" log="$2" identities="$3"
+
+  cat > "$binary" <<'FAKE_PY'
+#!/usr/bin/env python3
+"""Fake OpenCode CLI for the Forge launcher fixture (private service).
+
+The private service of this fixture is SIMULATED: it opens NO socket. The
+battery of the suites does not use the network at all, not even the loopback
+interface.
+"""
+import json
+import os
+import pathlib
+import sys
+import time
+
+LOG_PATH = "__FORGE_FAKE_LOG__"
+IDENTITY_PATH = "__FORGE_FAKE_IDENTITIES__"
+VERSION = "2.1.4"
+ENV_KEYS = (
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "TMPDIR",
+    "OPENCODE_DB",
+    "OPENCODE_CONFIG_DIR",
+    "OPENCODE_CONFIG",
+)
+
+
+def record(argv, extra=None):
+    entry = {"argv": argv, "env": {key: os.environ.get(key, "") for key in ENV_KEYS}}
+    if extra:
+        entry.update(extra)
+    with open(LOG_PATH, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry) + "\n")
+        handle.flush()
+
+
+def start_ticks(pid):
+    """The starttime (field 22) of /proc/<pid>/stat, or "" when unreadable.
+
+    Only the OWN processes of the fixture are read: the fake itself and its
+    own parent, the private supervisor that spawned it. No other process is
+    inspected and no cmdline is ever read.
+    """
+    try:
+        with open("/proc/%d/stat" % pid, "r", encoding="ascii", errors="replace") as stream:
+            data = stream.read()
+    except OSError:
+        return ""
+    tail = data.rsplit(")", 1)[-1].split()
+    if len(tail) < 20:
+        return ""
+    return tail[19]
+
+
+def record_identity_of(pid, ticks):
+    """Append an ALREADY KNOWN identity ("<pid> <starttime>") of an own process.
+
+    The identity is used as it is: it comes from a record that the process
+    itself wrote, and NOT from the live process behind the number. A number
+    that was recycled would otherwise be recorded with the identity of the
+    foreign process that occupies it now, and that foreign process would
+    later be signalled as if it were ours.
+    """
+    if not IDENTITY_PATH:
+        return
+    if not ticks:
+        return
+    with open(IDENTITY_PATH, "a", encoding="ascii") as handle:
+        handle.write("%d %s\n" % (pid, ticks))
+        handle.flush()
+
+
+def record_identity(pid):
+    """Append the "<pid> <starttime>" identity of an OWN process."""
+    ticks = start_ticks(pid)
+    if not ticks:
+        return
+    record_identity_of(pid, ticks)
+
+
+def registry_files():
+    state = os.environ.get("XDG_STATE_HOME", "")
+    directory = pathlib.Path(state) / "opencode"
+    if not directory.is_dir():
+        return []
+    return sorted(directory.glob("service*.json"))
+
+
+def serve():
+    """The private service of the fixture, SIMULATED (no red).
+
+    The service opens NO socket: it publishes the registration that the
+    supervisor expects (with the shape of a loopback URL) and it stays alive
+    while the supervisor uses it.
+
+    The two operations of network of the runtime helper (the ownership of the
+    loopback listener and the authenticated health of the service) are
+    replaced by controlled doubles in the COPY of that helper that the
+    sandbox uses. The battery of the suites does not use the network.
+    """
+    url = "http://127.0.0.1:%d" % (40000 + (os.getpid() % 20000))
+    password = "forge-fixture-password"
+    directory = pathlib.Path(os.environ.get("XDG_STATE_HOME", "")) / "opencode"
+    directory.mkdir(parents=True, exist_ok=True)
+    registration = {
+        "pid": os.getpid(),
+        # The starttime travels with the pid: a consumer that reads this
+        # registry can tell the service apart from whatever process
+        # occupies that number later.
+        "starttime": start_ticks(os.getpid()),
+        "version": VERSION,
+        "url": url,
+        "password": password,
+    }
+    (directory / ("service-%d.json" % os.getpid())).write_text(
+        json.dumps(registration), encoding="utf-8"
+    )
+    # The number of sockets that this process has open: it MUST be zero. It
+    # is the proof, observed by the process itself, that the fixture does
+    # not use the network. It is published in the log of the invocations
+    # (the state directory of the service is removed when the runtime
+    # finishes, the log is not).
+    sockets = 0
+    try:
+        for descriptor in pathlib.Path("/proc/self/fd").iterdir():
+            try:
+                target = os.readlink(descriptor)
+            except OSError:
+                continue
+            if target.startswith("socket:"):
+                sockets += 1
+    except OSError:
+        sockets = -1
+    record(["serve"], {"sockets": sockets})
+    # The service stays alive while the supervisor uses it.
+    while True:
+        time.sleep(0.05)
+
+
+def main():
+    argv = sys.argv[1:]
+    record(argv)
+
+    # The identity of this process and of its parent (the private supervisor
+    # that spawned it) is recorded, so the fixture can check afterwards that
+    # the processes it created are gone WITHOUT sweeping the process table.
+    record_identity(os.getpid())
+    record_identity(os.getppid())
+
+    if argv[:3] == ["debug", "paths", "db"]:
+        sys.stdout.write(
+            os.path.join(os.environ.get("XDG_DATA_HOME", ""), "opencode", "opencode.db") + "\n"
+        )
+        return 0
+
+    if argv[:1] == ["serve"]:
+        serve()
+        return 0
+
+    if argv[:2] == ["mcp", "list"]:
+        files = registry_files()
+        record(argv, {"registry": [str(item) for item in files]})
+        if not files:
+            sys.stdout.write("RESOLVED_SERVICE=none\n")
+            return 1
+        try:
+            registration = json.loads(files[0].read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            sys.stdout.write("RESOLVED_SERVICE=invalid\n")
+            return 1
+        # The identity registered by the private supervisor is recorded too:
+        # it is an OWN process of the fixture (the private server it owns).
+        registered_pid = registration.get("pid")
+        registered_ticks = registration.get("starttime")
+        if isinstance(registered_pid, int) and registered_ticks:
+            # The identity comes from the REGISTRY (the file the service
+            # itself wrote), never from the live process behind that number.
+            record_identity_of(registered_pid, registered_ticks)
+        sys.stdout.write("RESOLVED_SERVICE=%s\n" % registration.get("url", ""))
+        sys.stdout.write("RESOLVED_REGISTRY=%s\n" % files[0])
+        return 0
+
+    sys.stdout.write("ARGV=%s\n" % " ".join(argv))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+FAKE_PY
+
+  sed -i "s|__FORGE_FAKE_LOG__|$log|" "$binary"
+  sed -i "s|__FORGE_FAKE_IDENTITIES__|$identities|" "$binary"
+  chmod +x "$binary"
+}
+
+# test_launcher_isolates_mcp_list_from_the_shared_service
+#
+# `mcp list` resolves the SHARED service by default in OpenCode 2.1.4, so the
+# launcher routes it to the private supervisor: a disposable loopback service
+# with its own service registration, its own HOME/XDG and its own database.
+#
+# The fixture proves that with the routing and the environment of every
+# invocation of the fake runtime:
+#
+#   * the CLI is invoked with `mcp list` by the supervisor, never with
+#     `--standalone` (that leaf does not declare it);
+#   * the only service started is the private one: an ephemeral loopback
+#     listener started by the supervisor;
+#   * the state directory consulted by `mcp list` is the PRIVATE one, never
+#     the shared one, so the shared resolver is never reached;
+#   * the database used is the private snapshot, never the original one;
+#   * the registration of the shared service is not even read: it is left
+#     untouched and its URL is never the one resolved;
+#   * no process of the fixture survives.
+test_launcher_isolates_mcp_list_from_the_shared_service() {
+  echo ""
+  echo "--- test_launcher_isolates_mcp_list_from_the_shared_service"
+
+  local sandbox home fixture_repo launcher install_rc=0 launch_rc=0
+  local pinned_binary log_file decoy_registry decoy_before decoy_after
+  local db resolved resolved_registry mcp_line state_of_mcp db_of_mcp
+  local sockets_file sockets_count
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/mcp-isolation.XXXXXX")"
+  home="$sandbox/home"
+  TMP_TEST_HOME="$home"
+  mkdir -p "$home" "$sandbox/tmp"
+  fixture_repo="$(create_repo_fixture "$sandbox/repo")"
+  create_fake_opencode "$home"
+  install_opencode_fixture "$home" "$fixture_repo" > "$sandbox/install.out" 2>&1 || install_rc=$?
+  assert_equal "install de referencia para el aislamiento de mcp termina correctamente" "0" "$install_rc"
+
+  if [ "$install_rc" -ne 0 ]; then
+    sed -n '1,20p' "$sandbox/install.out" | sed 's/^/      /' >&2
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+
+  # The launcher of this fixture is a COPY with the two operations of
+  # network of the runtime helper replaced by controlled doubles: the
+  # battery of the suites does not use the network, not even the loopback
+  # interface. The repository is never modified.
+  launcher="$(write_network_free_launcher "$sandbox")" || {
+    fail "no se pudo preparar la copia del launcher sin red"
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  }
+  pinned_binary="$home/.local/share/forge/opencode-v2/node_modules/.bin/opencode"
+  # The ACCREDITED layout: the entry of `.bin` is a LINK to the executable of
+  # the package @opencode/cli. The fixture replaces the EXECUTABLE of the
+  # package (never the link), so the accreditation of the launcher stays
+  # intact: a `sed -i` on the link would replace the link itself.
+  package_binary="$home/.local/share/forge/opencode-v2/node_modules/@opencode/cli/bin/opencode"
+  log_file="$sandbox/fake-calls.log"
+
+  # The identities of the processes this fixture creates. The fake runtime
+  # appends its own identity (and the one of the supervisor that spawned
+  # it) to this file; nothing else is ever recorded.
+  #
+  # The registry is a DIAGNOSTIC record and NOT a certificate of descendants:
+  # it is written INSIDE the containment (where the namespace it belongs to
+  # is known) and it is only used to terminate those identities there.
+  own_identities="$sandbox/own-identities.txt"
+  : > "$own_identities"
+
+  # The decoy of the shared service: a registration in the SHARED state
+  # directory of the sandbox, pointing at a port where nothing listens. If the
+  # effective path consulted the shared resolver, this registration would be
+  # the one resolved.
+  mkdir -p "$home/.local/state/opencode"
+  decoy_registry="$home/.local/state/opencode/service-decoy.json"
+  printf '%s\n' '{"pid":424242,"version":"2.1.4","url":"http://127.0.0.1:1","password":"decoy"}' \
+    > "$decoy_registry"
+  decoy_before="$(sha256sum "$decoy_registry" | cut -d' ' -f1)"
+
+  # The generic binary of the PATH: the only `opencode` reachable by name.
+  cat > "$home/fakebin/opencode" <<'EOF'
+#!/usr/bin/env sh
+printf 'PATH-DECOY-OPENCODE\n'
+EOF
+  chmod +x "$home/fakebin/opencode"
+
+  # The pinned binary is replaced by the fake that emulates the private
+  # service and records every invocation. The replacement happens on the
+  # EXECUTABLE of the package, so the entry of `.bin` keeps pointing to it.
+  write_fake_private_service "$package_binary" "$log_file" "$own_identities"
+
+  if [ ! -L "$pinned_binary" ] \
+    || [ "$(readlink "$pinned_binary")" != "../@opencode/cli/bin/opencode" ]; then
+    fail "el fixture de mcp conserva el enlace acreditado de .bin"
+  else
+    pass "el fixture de mcp conserva el enlace acreditado de .bin"
+  fi
+
+  # The database of the sandbox: a valid but empty SQLite file. The real
+  # database of the user is never opened, never read and never copied.
+  db="$home/.local/share/opencode/opencode.db"
+  mkdir -p "$(dirname "$db")"
+  if ! python3 -c '
+import sqlite3
+import sys
+
+connection = sqlite3.connect(sys.argv[1])
+connection.execute("PRAGMA user_version = 0")
+connection.commit()
+connection.close()
+' "$db" 2>/dev/null; then
+    fail "no se pudo crear la base de datos aislada del fixture de mcp"
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+
+  launch_rc=0
+
+  # The observer records the identity of every descendant of this test while
+  # the fixture runs, so the survivor check below does not depend on the
+  # command line of the processes it looks for.
+  #
+  # Its availability is MANDATORY: an observer that does not work would
+  # leave an empty inventory, and an empty inventory reads as "zero
+  # survivors". When the observer cannot prove it is running, the fixture
+  # FAILS instead of certifying anything.
+  # The launcher runs INSIDE the containment. The supervisor of the launcher
+  # and the private service it starts are processes that never pass through
+  # any registry of the suite, and the containment covers them without
+  # touching their code: the kernel tears the private PID namespace down
+  # when its PID 1 exits, so nothing of the fixture can outlive the run.
+  forge_make_toolchain "$home/fakebin"
+  forge_isolated_env_with_registry "$home" "$own_identities" \
+    PATH="$home/fakebin:$PATH" TMPDIR="$sandbox/tmp" \
+    "$launcher" mcp list > "$sandbox/mcp.out" 2> "$sandbox/mcp.err" || launch_rc=$?
+  assert_equal "mcp list sale 0 con el servicio privado" "0" "$launch_rc"
+
+  # The receipt of the contained run is the evidence of this fixture: the
+  # boundary was accredited by invocation, the closure was confirmed and the
+  # cleanup of the product was observed BEFORE the defensive cleanup.
+  contained_receipt="$FORGE_CONTAINMENT_LAST_RECEIPT"
+  if [ -z "$contained_receipt" ] || [ ! -s "$contained_receipt" ]; then
+    fail "la corrida contenida no dejo recibo: no hay evidencia de cierre"
+  elif ! forge_receipt_containment_evidence "$contained_receipt"; then
+    fail "el recibo de la corrida contenida no certifica la frontera ni el cierre"
+    forge_receipt_summary "$contained_receipt" >&2 || true
+  else
+    pass "la corrida contenida acredita la frontera y el cierre (recibo: $contained_receipt)"
+  fi
+
+  # The result of the PRODUCT is a verdict of its own: the certification of
+  # the boundary does not convert it into a PASS, and the consumer does not
+  # presume it. Whatever it is, the POSITIVE ACCEPTANCE that the receipt
+  # declares must AGREE with it: a receipt that declares a positive
+  # acceptance while its own product result contradicts it is contradictory
+  # evidence.
+  product_result="$(forge_receipt_product_cleanup "$contained_receipt")"
+  declared_acceptance="$(forge_receipt_read "$contained_receipt" POSITIVE_ACCEPTANCE 2>/dev/null || printf 'NO')"
+  if { [ "$product_result" = "PASS" ] && [ "$declared_acceptance" = "YES" ]; } \
+    || { [ "$product_result" != "PASS" ] && [ "$declared_acceptance" != "YES" ]; }; then
+    pass "la aceptacion positiva del recibo es coherente con la limpieza del producto (producto=$product_result aceptacion=$declared_acceptance)"
+  else
+    fail "la aceptacion positiva del recibo ($declared_acceptance) NO es coherente con la limpieza del producto ($product_result)"
+  fi
+
+  if [ "$launch_rc" -ne 0 ]; then
+    sed -n '1,20p' "$sandbox/mcp.err" | sed 's/^/      /' >&2
+  fi
+
+  resolved="$(sed -n 's/^RESOLVED_SERVICE=//p' "$sandbox/mcp.out" | head -n 1)"
+  resolved_registry="$(sed -n 's/^RESOLVED_REGISTRY=//p' "$sandbox/mcp.out" | head -n 1)"
+
+  # Every invocation of the fake runtime, with the environment that decides
+  # the routing.
+  if [ -f "$log_file" ]; then
+    python3 - "$log_file" > "$sandbox/invocations.txt" <<'INVOCATIONS_PY'
+import json
+import sys
+
+for line in open(sys.argv[1], encoding="utf-8"):
+    line = line.strip()
+    if not line:
+        continue
+    entry = json.loads(line)
+    env = entry.get("env", {})
+    print("ARGV=%s" % " ".join(entry.get("argv", [])))
+    print("  HOME=%s" % env.get("HOME", ""))
+    print("  STATE=%s" % env.get("XDG_STATE_HOME", ""))
+    print("  DB=%s" % env.get("OPENCODE_DB", ""))
+    print("  CONFIG=%s" % env.get("OPENCODE_CONFIG_DIR", ""))
+INVOCATIONS_PY
+  else
+    : > "$sandbox/invocations.txt"
+  fi
+
+  # The private service is the one that is started: a private service
+  # SIMULADA (it opens no socket), started by the supervisor and not by the
+  # launcher.
+  if grep -qF 'ARGV=serve --service --hostname 127.0.0.1 --port 0 --print-logs' \
+    "$sandbox/invocations.txt"; then
+    pass "mcp list arranca el servicio privado SIMULADO (sin red)"
+  else
+    fail "mcp list no arranco el servicio privado esperado"
+    sed -n '1,40p' "$sandbox/invocations.txt" | sed 's/^/      /' >&2
+  fi
+
+  # The service did NOT open any socket: the battery of the suites does not
+  # use the network, not even the loopback interface. The count is observed
+  # by the service itself and published in the log of the invocations.
+  local sockets_count
+  sockets_count="$(python3 - "$log_file" <<'SOCKETS_EOF'
+import json
+import sys
+
+count = ""
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            if entry.get("argv") == ["serve"] and "sockets" in entry:
+                count = str(entry["sockets"])
+except (OSError, ValueError):
+    pass
+print(count)
+SOCKETS_EOF
+)"
+  if [ "$sockets_count" = "0" ]; then
+    pass "el servicio privado simulado NO abrio ningun socket: la bateria no usa la red"
+  else
+    fail "el servicio privado simulado publico '$sockets_count' sockets (se esperaba 0): la bateria no debe usar la red"
+  fi
+
+  # The leaf `mcp list` does not declare --standalone: the launcher must not
+  # inject it.
+  if grep -qF 'ARGV=mcp list --standalone' "$sandbox/invocations.txt"; then
+    fail "mcp list recibio --standalone: esa hoja no lo admite"
+  else
+    pass "mcp list no recibe --standalone (esa hoja no lo admite)"
+  fi
+
+  mcp_line="$(grep -A4 '^ARGV=mcp list$' "$sandbox/invocations.txt" | head -n 5)"
+  state_of_mcp="$(printf '%s\n' "$mcp_line" | sed -n 's/^  STATE=//p' | head -n 1)"
+  db_of_mcp="$(printf '%s\n' "$mcp_line" | sed -n 's/^  DB=//p' | head -n 1)"
+
+  # The state directory consulted is the PRIVATE one: the shared resolver is
+  # never reached.
+  case "$state_of_mcp" in
+    "$sandbox/tmp/"*)
+      pass "mcp list consulta el estado PRIVADO del servicio ($state_of_mcp)"
+      ;;
+    *)
+      fail "mcp list no consulto el estado privado del servicio (estado='$state_of_mcp')"
+      ;;
+  esac
+
+  if grep -qF "STATE=$home/" "$sandbox/invocations.txt"; then
+    fail "alguna invocacion consulto el estado compartido del sandbox"
+  else
+    pass "ninguna invocacion consulta el estado compartido del sandbox"
+  fi
+
+  # The database used is the private snapshot, never the original one.
+  case "$db_of_mcp" in
+    "$sandbox/tmp/"*)
+      pass "mcp list usa la instantanea PRIVADA de la base de datos"
+      ;;
+    *)
+      fail "mcp list no uso la instantanea privada de la base de datos (db='$db_of_mcp')"
+      ;;
+  esac
+
+  # The service resolved is the private one, never the shared registration.
+  if [ -n "$resolved" ] && [ "$resolved" != "http://127.0.0.1:1" ]; then
+    pass "mcp list resuelve el servicio privado ($resolved)"
+  else
+    fail "mcp list resolvio el servicio compartido o ninguno (resuelto='$resolved')"
+  fi
+
+  case "$resolved_registry" in
+    "$home/"*)
+      fail "mcp list resolvio el registro del servicio compartido ($resolved_registry)"
+      ;;
+    "$sandbox/tmp/"*)
+      pass "el registro resuelto por mcp list pertenece al servicio privado"
+      ;;
+    *)
+      fail "el registro resuelto por mcp list no es privado ($resolved_registry)"
+      ;;
+  esac
+
+  decoy_after="$(sha256sum "$decoy_registry" | cut -d' ' -f1)"
+  assert_equal "el registro del servicio compartido no se toca" "$decoy_before" "$decoy_after"
+
+  if grep -qF 'PATH-DECOY-OPENCODE' "$sandbox/mcp.out" "$sandbox/mcp.err"; then
+    fail "mcp list ejecuto el opencode del PATH"
+  else
+    pass "mcp list no ejecuta el opencode del PATH"
+  fi
+
+  # No process of the fixture survives.
+  #
+  # The guarantee is NO LONGER an inventory of the host: it is the CLOSURE of
+  # the containment, accredited by the receipt of the run. The scenario
+  # terminated the private service by its IDENTITY (inside the namespace,
+  # where that identity is valid) and then observed the PRIVATE /proc of the
+  # containment: any process still alive there is a leftover of the product.
+  #
+  # The two results are kept SEPARATED: the result of the product (did it
+  # clean up?) and the defensive result of the containment (was the boundary
+  # accredited and the closure confirmed?). A correct closure NEVER converts
+  # a failure of the product into a PASS.
+  local product_result="UNKNOWN"
+  if [ -n "$contained_receipt" ] && [ -s "$contained_receipt" ]; then
+    product_result="$(forge_receipt_product_cleanup "$contained_receipt")"
+  fi
+  case "$product_result" in
+    PASS)
+      pass "no queda ningun proceso propio del fixture de mcp dentro de la contencion"
+      ;;
+    FAIL)
+      fail "quedan procesos propios del fixture de mcp dentro de la contencion"
+      ;;
+    *)
+      fail "la limpieza del producto NO se pudo observar (resultado: $product_result): el chequeo de supervivientes seria vacuo"
+      ;;
+  esac
+
+  TMP_TEST_HOME=""
+  rm -rf "$sandbox"
+}
+
+# test_containment_controls
+#
+# The evidence of this suite is only worth something if the machinery that
+# produces it is proven to work. This test proves the properties the
+# CONTAINMENT of tools/verification/forge-contained-run.sh must have, and it
+# proves them with the SAME sensitivity the retired observer had:
+#
+#   1. the BOUNDARY is accredited BY INVOCATION and the CLOSURE is
+#      CONFIRMED: the contained environment is waited for;
+#   2. a descendant that survives its parent (a REPARENTED process, the very
+#      case the observer had to poll for) is VISIBLE over the private /proc
+#      of the containment, so the cleanup of the product is declared FAIL;
+#   3. the defensive cleanup of the harness NEVER converts that failure into
+#      a PASS: the product result and the defensive result are separate;
+#   4. the EVIDENCE is rejected when it is absent, partial, illegible or
+#      contradictory: there is no "PASS by absence".
+test_containment_controls() {
+  echo ""
+  echo "--- test_containment_controls"
+
+  local sandbox chain_dir chain_level4 detected=no
+  local receipt product_result rc=0 saved_failed saved_scope
+  sandbox="$(mktemp -d "$TEST_TMP_ROOT/containment-controls.XXXXXX")"
+  chain_dir="$sandbox/chain"
+  mkdir -p "$chain_dir"
+
+  # The chain reproduces the shape that broke the observer: level2 exits and
+  # level3 is REPARENTED, and level4 is created by level3 AFTER the
+  # reparenting. The containment does not need to follow it: the observation
+  # over the private /proc sees it and the kernel tears the namespace down.
+  cat > "$chain_dir/level1.sh" <<'CHAIN_L1_EOF'
+#!/bin/sh
+# level1 owns level2 and stays alive until it is terminated.
+printf '%s %s\n' "$$" "$(sed -e 's/.*) //' /proc/$$/stat | awk '{ print $20 }')" \
+  >> "$CHAIN_DIR/identities.txt"
+echo "$$" > "$CHAIN_DIR/level1.pid"
+sh "$CHAIN_DIR/level2.sh" &
+exec sleep 30
+CHAIN_L1_EOF
+  cat > "$chain_dir/level2.sh" <<'CHAIN_L2_EOF'
+#!/bin/sh
+# level2 creates level3 and exits after a short delay: level3 stays alive
+# and is reparented.
+printf '%s %s\n' "$$" "$(sed -e 's/.*) //' /proc/$$/stat | awk '{ print $20 }')" \
+  >> "$CHAIN_DIR/identities.txt"
+echo "$$" > "$CHAIN_DIR/level2.pid"
+sh "$CHAIN_DIR/level3.sh" &
+sleep 0.5
+exit 0
+CHAIN_L2_EOF
+  cat > "$chain_dir/level3.sh" <<'CHAIN_L3_EOF'
+#!/bin/sh
+# level3 waits until its parent exited, creates level4 and stays alive.
+printf '%s %s\n' "$$" "$(sed -e 's/.*) //' /proc/$$/stat | awk '{ print $20 }')" \
+  >> "$CHAIN_DIR/identities.txt"
+echo "$$" > "$CHAIN_DIR/level3.pid"
+sleep 1
+sh "$CHAIN_DIR/level4.sh" &
+exec sleep 30
+CHAIN_L3_EOF
+  cat > "$chain_dir/level4.sh" <<'CHAIN_L4_EOF'
+#!/bin/sh
+# level4 is the deepest level: it only exists if level3 created it after the
+# reparenting.
+printf '%s %s\n' "$$" "$(sed -e 's/.*) //' /proc/$$/stat | awk '{ print $20 }')" \
+  >> "$CHAIN_DIR/identities.txt"
+echo "$$" > "$CHAIN_DIR/level4.pid"
+exec sleep 30
+CHAIN_L4_EOF
+  chmod +x "$chain_dir/level1.sh" "$chain_dir/level2.sh" \
+    "$chain_dir/level3.sh" "$chain_dir/level4.sh"
+
+  # The scenario of the control: it creates the chain, waits for its deepest
+  # level and returns. The chain is NOT terminated by the scenario: the
+  # containment has to close it.
+  cat > "$sandbox/chain-launcher.sh" <<CHAIN_LAUNCHER_EOF
+#!/bin/sh
+CHAIN_DIR='$chain_dir'
+export CHAIN_DIR
+sh "\$CHAIN_DIR/level1.sh" &
+waited=0
+while [ "\$waited" -lt 300 ]; do
+  [ -s "\$CHAIN_DIR/level4.pid" ] && break
+  sleep 0.05
+  waited=\$((waited + 1))
+done
+exit 0
+CHAIN_LAUNCHER_EOF
+  chmod +x "$sandbox/chain-launcher.sh"
+
+  local scenario
+  scenario="$(forge_contained_scenario "$sandbox/home")" || {
+    fail "no se pudo preparar el escenario contenido del control"
+    rm -rf "$sandbox"
+    return
+  }
+
+  # This control EXPECTS a product cleanup that is not a PASS: the chain
+  # survives on purpose. Its receipt is therefore not registered as an
+  # incident of the suite.
+  #
+  # The declaration of this invocation is NOT APPLICABLE for the cleanup of
+  # the PRODUCT: the scenario injects a fault on purpose and the product of
+  # the repository is not what survives. The verdict itself (FAIL) stays in
+  # the receipt of the run and in the collector: nothing is hidden, the
+  # verdict simply does not describe the cleanup of the product.
+  saved_failed="${FORGE_CONTAINMENT_FAILED_RECEIPTS_FILE:-}"
+  saved_scope="${FORGE_CONTAINED_RUN_DECLARATION_SCOPE:-}"
+  saved_declarations="${FORGE_PRODUCT_CLEANUP_DECLARATIONS_FILE:-}"
+  FORGE_CONTAINMENT_FAILED_RECEIPTS_FILE=""
+  export FORGE_CONTAINED_RUN_DECLARATION_SCOPE="NOT_APPLICABLE"
+  # The declaration of this control is NOT published to the collector of the
+  # consumer: a FAIL under a NOT_APPLICABLE scope is CONTRADICTORY evidence
+  # and the aggregate preserves the failure instead of skipping it (a scope
+  # must never hide a failure of the product). The verdict stays in the
+  # receipt of the run, which is where this control reads it.
+  unset FORGE_PRODUCT_CLEANUP_DECLARATIONS_FILE
+  forge_contained_run "$scenario" "$sandbox/chain-launcher.sh" || rc=$?
+  FORGE_CONTAINMENT_FAILED_RECEIPTS_FILE="$saved_failed"
+  export FORGE_CONTAINED_RUN_DECLARATION_SCOPE="$saved_scope"
+  if [ -n "$saved_declarations" ]; then
+    export FORGE_PRODUCT_CLEANUP_DECLARATIONS_FILE="$saved_declarations"
+  fi
+  rm -f "$scenario"
+
+  receipt="$FORGE_CONTAINMENT_LAST_RECEIPT"
+  if [ -z "$receipt" ] || [ ! -s "$receipt" ]; then
+    fail "la corrida contenida del control no dejo recibo: no hay evidencia de frontera ni de cierre"
+    rm -rf "$sandbox"
+    return
+  fi
+
+  # This control certifies the BOUNDARY AND THE CLOSURE of the contained
+  # run, not the acceptance: the product of the control does NOT clean up
+  # (the chain survives on purpose), so the POSITIVE ACCEPTANCE does not
+  # exist and the consumer must reject it. Certifying the closure is not
+  # the same as certifying the acceptance.
+  if forge_receipt_containment_evidence "$receipt"; then
+    pass "el control acredita la frontera y el cierre de la corrida contenida"
+  else
+    fail "el control NO puede acreditar la frontera ni el cierre de la corrida contenida"
+    forge_receipt_summary "$receipt" >&2 || true
+  fi
+  if [ "$(forge_receipt_read "$receipt" POSITIVE_ACCEPTANCE 2>/dev/null || printf 'NO')" != "YES" ]; then
+    pass "el control NO tiene aceptacion positiva: un producto que no limpio no se certifica"
+  else
+    fail "el control declara aceptacion positiva con un producto que no limpio"
+  fi
+
+  # The chain reached its deepest level: the scenario observed it, so the
+  # control really exercised the reparenting.
+  if [ -s "$chain_dir/level4.pid" ]; then
+    chain_level4="$(cat "$chain_dir/level4.pid")"
+    detected=yes
+  fi
+  if [ "$detected" = yes ] && grep -q "^$chain_level4 " "$chain_dir/identities.txt" 2>/dev/null; then
+    pass "el control exercita la cadena reparentada (el descendiente de segundo nivel existe)"
+  else
+    fail "el control NO exercito la cadena reparentada: la sensibilidad del chequeo no esta probada"
+  fi
+
+  # The product cleanup of the control: the chain was NOT terminated by the
+  # scenario, so the observation over the private /proc MUST report FAIL.
+  # This is the sensitivity the retired observer had to provide: a
+  # descendant that survives its parent has to be visible.
+  product_result="$(forge_receipt_product_cleanup "$receipt")"
+  if [ "$product_result" = "FAIL" ]; then
+    pass "el descendiente que sobrevive a su padre se ve en el /proc privado: la limpieza del producto se declara FAIL"
+  else
+    fail "el descendiente que sobrevive a su padre NO se ve (resultado: $product_result): el chequeo de supervivientes seria vacuo"
+  fi
+
+  # --- the evidence is rejected when it is absent or contradictory ---------
+  if forge_receipt_require "$sandbox/absent-receipt.txt" >/dev/null 2>&1; then
+    fail "un recibo AUSENTE se acepto como evidencia: no puede haber PASS por ausencia"
+  else
+    pass "un recibo AUSENTE se rechaza: no hay PASS por ausencia"
+  fi
+
+  : > "$sandbox/empty-receipt.txt"
+  if forge_receipt_require "$sandbox/empty-receipt.txt" >/dev/null 2>&1; then
+    fail "un recibo VACIO se acepto como evidencia"
+  else
+    pass "un recibo VACIO se rechaza"
+  fi
+
+  # A receipt whose accreditation was revoked is contradictory evidence.
+  sed 's/^ACCREDITATION=PASS$/ACCREDITATION=FAILED/' "$receipt" > "$sandbox/revoked-receipt.txt"
+  if forge_receipt_require "$sandbox/revoked-receipt.txt" >/dev/null 2>&1; then
+    fail "un recibo con la acreditacion revocada se acepto"
+  else
+    pass "un recibo con la acreditacion revocada se rechaza"
+  fi
+
+  # A receipt whose closure was not confirmed is contradictory evidence too.
+  sed 's/^CLOSURE=CONFIRMED$/CLOSURE=UNCONFIRMED/' "$receipt" > "$sandbox/unclosed-receipt.txt"
+  if forge_receipt_require "$sandbox/unclosed-receipt.txt" >/dev/null 2>&1; then
+    fail "un recibo con el cierre sin confirmar se acepto"
+  else
+    pass "un recibo con el cierre sin confirmar se rechaza"
+  fi
+
+  # The CLOSURE has THREE independent links. A receipt that declares the
+  # closure as CONFIRMED but does not carry the OBSERVED effective
+  # termination of the private PID 1 is contradictory evidence: the signal
+  # that was sent is not an observed termination.
+  sed 's/^PID1_COMPLETION_OBSERVED=PASS$/PID1_COMPLETION_OBSERVED=NO/' \
+    "$receipt" > "$sandbox/unobserved-pid1-receipt.txt"
+  if forge_receipt_require "$sandbox/unobserved-pid1-receipt.txt" >/dev/null 2>&1; then
+    fail "un recibo sin la terminacion observada del PID 1 se acepto"
+  else
+    pass "un recibo sin la terminacion observada del PID 1 se rechaza"
+  fi
+
+  # The same for the RC of the launcher: a launcher that was waited for but
+  # returned a non-zero RC did not close cleanly.
+  sed 's/^LAUNCHER_RC=0$/LAUNCHER_RC=1/' "$receipt" > "$sandbox/failed-launcher-receipt.txt"
+  if forge_receipt_require "$sandbox/failed-launcher-receipt.txt" >/dev/null 2>&1; then
+    fail "un recibo con el RC del launcher distinto de cero se acepto"
+  else
+    pass "un recibo con el RC del launcher distinto de cero se rechaza"
+  fi
+
+  # A receipt that declares the product cleanup as NOT observed is not
+  # certifiable: UNKNOWN is never a PASS.
+  sed 's/^PRODUCT_CLEANUP_OBSERVED_BEFORE_DEFENSIVE_CLEANUP=YES$/PRODUCT_CLEANUP_OBSERVED_BEFORE_DEFENSIVE_CLEANUP=NO/' \
+    "$receipt" > "$sandbox/unobserved-receipt.txt"
+  if [ "$(forge_receipt_product_cleanup "$sandbox/unobserved-receipt.txt")" = "UNKNOWN" ]; then
+    pass "una limpieza del producto NO observada es UNKNOWN y nunca un PASS"
+  else
+    fail "una limpieza del producto NO observada se leyo como un PASS"
+  fi
+
+  rm -rf "$sandbox"
+}
+
 test_pinned_binary_lives_in_the_isolated_prefix() {
   echo ""
   echo "--- test_pinned_binary_lives_in_the_isolated_prefix"
@@ -2546,6 +3648,18 @@ test_pinned_binary_lives_in_the_isolated_prefix() {
   create_fake_opencode "$home"
   state="$home/.forge-state.json"
 
+  # The accredited package lives INSIDE the sandbox prefix. The REAL prefix
+  # of the machine must not be touched by this install: its state is
+  # captured before the install and compared after it.
+  local real_prefix_package
+  real_prefix_package="$FORGE_TEST_REAL_HOME/.local/share/forge/opencode-v2/node_modules/@opencode/cli/package.json"
+  local real_prefix_state_before
+  if [ -f "$real_prefix_package" ]; then
+    real_prefix_state_before="present:$(sha256sum "$real_prefix_package" | cut -d' ' -f1)"
+  else
+    real_prefix_state_before="absent"
+  fi
+
   install_opencode_fixture "$home" "$fixture_repo" > "$sandbox/install.out" 2>&1 || install_rc=$?
   assert_equal "install de referencia para el binario pinado termina correctamente" "0" "$install_rc"
 
@@ -2554,6 +3668,15 @@ test_pinned_binary_lives_in_the_isolated_prefix() {
     rm -rf "$sandbox"
     return
   fi
+
+  local real_prefix_state_after
+  if [ -f "$real_prefix_package" ]; then
+    real_prefix_state_after="present:$(sha256sum "$real_prefix_package" | cut -d' ' -f1)"
+  else
+    real_prefix_state_after="absent"
+  fi
+  assert_equal "el install no toca el paquete del prefijo REAL de OpenCode" \
+    "$real_prefix_state_before" "$real_prefix_state_after"
 
   expected_prefix="$home/.local/share/forge/opencode-v2"
   expected_binary="$expected_prefix/node_modules/.bin/opencode"
@@ -2568,15 +3691,43 @@ test_pinned_binary_lives_in_the_isolated_prefix() {
     fail "el binario pinado no se instaló en el prefijo aislado ($expected_binary)"
   fi
 
+  # The ACCREDITED layout: the entry of `.bin` is a LINK that resolves to the
+  # executable of the package @opencode/cli, and the package.json of that
+  # package accredits the pinned identity and version. The launcher refuses
+  # to run anything else, so the installation must produce exactly this.
+  local package_dir expected_package_binary package_name package_version
+  package_dir="$expected_prefix/node_modules/@opencode/cli"
+  expected_package_binary="$package_dir/bin/opencode"
+
+  if [ -L "$expected_binary" ] \
+    && [ "$(readlink "$expected_binary")" = "../@opencode/cli/bin/opencode" ]; then
+    pass "el binario pinado es el enlace acreditado de .bin"
+  else
+    fail "el binario pinado no es el enlace acreditado de .bin"
+  fi
+
+  if [ -x "$expected_package_binary" ]; then
+    pass "el paquete @opencode/cli instala su ejecutable en bin/"
+  else
+    fail "el paquete @opencode/cli no instala su ejecutable en bin/"
+  fi
+
+  package_name="$(jq -r '.name // ""' "$package_dir/package.json" 2>/dev/null || true)"
+  package_version="$(jq -r '.version // ""' "$package_dir/package.json" 2>/dev/null || true)"
+  assert_equal "el paquete instalado se identifica como @opencode/cli" \
+    "@opencode/cli" "$package_name"
+  assert_equal "el paquete instalado declara la version fijada" \
+    "2.1.4" "$package_version"
+
   local reported_version
   reported_version="$("$expected_binary" --version 2>/dev/null | tr -d ' \n' || true)"
   assert_equal "el binario pinado reporta la version fijada" \
     "opencodev2.1.4" "$reported_version"
 
-  if [ ! -e "$home/.local/share/forge/opencode-v2/node_modules/@opencode" ]; then
-    pass "el prefijo pinado no se instala fuera del sandbox"
+  if [ ! -e "$expected_prefix/node_modules/@opencode/cli" ]; then
+    fail "el paquete acreditado no se instala en el prefijo aislado"
   else
-    fail "el prefijo pinado se instaló fuera del sandbox"
+    pass "el paquete acreditado se instala en el prefijo aislado"
   fi
 
   TMP_TEST_HOME=""
@@ -2936,6 +4087,9 @@ test_status_and_doctor_warn_on_route_divergence
 test_status_and_doctor_do_not_warn_without_route_divergence
 test_launcher_uses_manifest_paths
 test_launcher_enforces_the_v2_isolation
+test_launcher_fails_closed_without_a_valid_manifest
+test_launcher_isolates_mcp_list_from_the_shared_service
+test_containment_controls
 test_pinned_binary_lives_in_the_isolated_prefix
 test_uninstall_removes_registered_overlay
 test_second_uninstall_without_state_is_informed_noop

@@ -226,6 +226,8 @@ test_component_symlinks_commands_has_reference_entries() {
     "skills/create-plan/reference/constraints.md" \
     "skills/execute-plan/reference/batch-algorithm.md" \
     "skills/execute-plan/reference/reviewer-and-close.md" \
+    "skills/execute-plan/reference/review-template.md" \
+    "skills/execute-plan/reference/escalation-codes.md" \
     "skills/plan-format/SKILL.md"; do
     if printf '%s\n' "$output" | grep -qF "$ref_dest"; then
       pass "commands component includes reference entry: $ref_dest"
@@ -234,10 +236,12 @@ test_component_symlinks_commands_has_reference_entries() {
     fi
   done
 
-  # commands.json has exactly 21 symlink entries (no target_root_files)
+  # commands.json has exactly 14 symlink entries (no target_root_files): the
+  # escalation codes are distributed to the execute-plan skill so the
+  # installed skills never reference a path of the checkout.
   local count
   count=$(printf '%s\n' "$output" | wc -l | tr -d ' ')
-  assert_eq "commands component has exactly 13 entries" "13" "$count"
+  assert_eq "commands component has exactly 14 entries" "14" "$count"
 }
 
 # =============================================================================

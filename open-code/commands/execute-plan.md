@@ -13,20 +13,191 @@ You are running the `/execute-plan` command. Your job is to iterate through the 
 
 These two patterns are reused across every step below; they are quoted here once instead of repeated at each call site.
 
-**Set or update a scalar front-matter key** (creates it just before the closing `---` fence if it does not already exist, otherwise updates it in place):
+**Set or update a scalar front-matter key** (creates it just before the closing `---` fence if it does not already exist, otherwise updates it in place; recognizes plain and quoted YAML keys, rejects invalid front-matter, detects already-published concurrent changes, and replaces the file only after validating the result):
 
 ```bash
 set_frontmatter() {
-  local plan="$1" key="$2" value="$3"
-  if grep -q "^${key}:" "$plan"; then
-    sed -i "s|^${key}:.*|${key}: ${value}|" "$plan"
-  else
-    awk -v k="$key" -v v="$value" '
-      BEGIN{fence=0}
-      /^---$/{fence++; print; if (fence==2) {print k": "v}; next}
-      {print}
-    ' "$plan" > "$plan.tmp" && mv "$plan.tmp" "$plan"
+  if [ "$#" -ne 3 ]; then
+    printf '%s\n' 'set_frontmatter: expected <plan> <key> <value>' >&2
+    return 2
   fi
+  python3 - "$1" "$2" "$3" <<'PY'
+import json
+import os
+import re
+import stat
+import sys
+import tempfile
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+def split_lines(data):
+    if not data:
+        return []
+    chunks = data.split(b"\n")
+    lines = [chunk + b"\n" for chunk in chunks[:-1]]
+    if chunks[-1]:
+        lines.append(chunks[-1])
+    return lines
+
+
+def line_content(line):
+    if line.endswith(b"\n"):
+        line = line[:-1]
+        if line.endswith(b"\r"):
+            line = line[:-1]
+    return line
+
+
+def frontmatter(lines):
+    if not lines or line_content(lines[0]) != b"---":
+        fail("line 1 is not an opening --- front-matter fence")
+    for index in range(1, len(lines)):
+        if line_content(lines[index]) == b"---":
+            return index
+    fail("no closing --- front-matter fence")
+
+
+def yaml_key(text):
+    if re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*", text):
+        return text.encode("utf-8")
+    return json.dumps(text, ensure_ascii=False).encode("utf-8")
+
+
+def yaml_value(text):
+    plain = bool(text) and text == text.strip()
+    plain = plain and not any(ord(char) < 0x20 or ord(char) == 0x7f for char in text)
+    plain = plain and text[0] not in "-?:,[]{}#&*!|>'\"%@`"
+    plain = plain and ": " not in text and " #" not in text and not text.endswith(":")
+    if plain:
+        return text.encode("utf-8")
+    return json.dumps(text, ensure_ascii=False).encode("utf-8")
+
+
+def fence_lines(lines):
+    return [line for line in lines if line_content(line) == b"---"]
+
+
+def has_key(line, prefixes):
+    return line_content(line).lstrip(b" \t").startswith(prefixes)
+
+
+def main():
+    plan, key, value = sys.argv[1:]
+    if not os.path.isfile(plan):
+        fail(f"plan is not a regular file: {plan}")
+    if "\n" in key or "\r" in key or not key:
+        fail("key must be a non-empty single-line scalar")
+    if "\n" in value or "\r" in value:
+        fail("value must be a single-line scalar")
+
+    with open(plan, "rb") as source:
+        source_stat = os.fstat(source.fileno())
+        original = source.read()
+    before = split_lines(original)
+    closing = frontmatter(before)
+    body = b"".join(before[closing + 1 :])
+
+    raw_key = key.encode("utf-8")
+    quoted_key = json.dumps(key, ensure_ascii=False).encode("utf-8")
+    single_quoted_key = b"'" + key.replace("'", "''").encode("utf-8") + b"'"
+    prefixes = (raw_key + b":", quoted_key + b":", single_quoted_key + b":")
+    matches = [
+        index
+        for index in range(1, closing)
+        if has_key(before[index], prefixes)
+    ]
+
+    rendered = yaml_key(key) + b": " + yaml_value(value)
+    updated = list(before)
+    if matches:
+        for index in matches:
+            old_line = before[index]
+            old_content = line_content(old_line)
+            indentation = old_content[: len(old_content) - len(old_content.lstrip(b" \t"))]
+            ending = (
+                b"\r\n"
+                if old_line.endswith(b"\r\n")
+                else b"\n"
+                if old_line.endswith(b"\n")
+                else b""
+            )
+            updated[index] = indentation + rendered + ending
+    else:
+        if before[closing].endswith(b"\r\n"):
+            ending = b"\r\n"
+        elif before[closing].endswith(b"\n"):
+            ending = b"\n"
+        elif before[0].endswith(b"\r\n"):
+            ending = b"\r\n"
+        else:
+            ending = b"\n"
+        updated.insert(closing, rendered + ending)
+
+    result = b"".join(updated)
+    directory = os.path.dirname(os.path.abspath(plan))
+    temp_path = None
+    try:
+        mode = stat.S_IMODE(os.stat(plan).st_mode)
+        fd, temp_path = tempfile.mkstemp(prefix=".set_frontmatter.", dir=directory)
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb") as temporary:
+            temporary.write(result)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+
+        with open(temp_path, "rb") as temporary:
+            validated = temporary.read()
+        after = split_lines(validated)
+        after_closing = frontmatter(after)
+        after_matches = [
+            index
+            for index in range(1, after_closing)
+            if has_key(after[index], prefixes)
+        ]
+        expected_matches = len(matches) if matches else 1
+        if line_content(after[0]) != b"---":
+            fail("validation failed: opening fence changed")
+        if len(fence_lines(after)) != len(fence_lines(before)):
+            fail("validation failed: fence count changed")
+        if b"".join(after[after_closing + 1 :]) != body:
+            fail("validation failed: document body changed")
+        if len(after_matches) != expected_matches or any(
+            line_content(after[index]).lstrip(b" \t") != rendered for index in after_matches
+        ):
+            fail("validation failed: key is not correctly set inside front-matter")
+        if after[after_closing] != before[closing]:
+            fail("validation failed: closing fence changed")
+
+        # Optimistic concurrency guard: abort if the original path no longer
+        # names the inode and bytes read above. This check is not atomic with
+        # os.replace; a writer can still race in the small interval after it.
+        with open(plan, "rb") as current:
+            current_stat = os.fstat(current.fileno())
+            current_data = current.read()
+        if (current_stat.st_dev, current_stat.st_ino) != (source_stat.st_dev, source_stat.st_ino) \
+            or current_data != original:
+            fail("plan changed since it was read; refusing to overwrite concurrent updates")
+
+        os.replace(temp_path, plan)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+
+try:
+    main()
+except Exception as error:
+    print(f"set_frontmatter: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
 }
 ```
 
@@ -40,6 +211,8 @@ flip_step() {
 ```
 
 Both are run inline via `bash -lc "..."`; there is no persistent shell state between commands, so `set_frontmatter`/`flip_step` must be defined in the same invocation that calls them (or re-sourced) whenever used.
+
+The pre-publication inode/content check is optimistic rather than a lock: it aborts when a concurrent change is observed, but a writer can still race in the small interval between that check and `os.replace()`.
 
 ## Flow
 
@@ -376,6 +549,9 @@ an item, omit it. The line is metadata for `/execute-plan`; it is not emitted wi
    - `FINDINGS_PHASE: impl=<n>, design=<m>[, coverage=<k>]` — actionable findings, classified.
    - `BLOCKED_REVIEW: <reason>` — cannot review (empty or unreadable diff, ambiguous target,
      diff too large to audit completely).
+
+   Outside an `/execute-plan` checkpoint, the compatible ad-hoc findings summary is
+   `FINDINGS: <c> critical, <m> major, <n> minor` (optionally followed by `, coverage=<k>`).
 ```
 
 ## Final output

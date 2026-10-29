@@ -1773,6 +1773,32 @@ run_all_candidate_names() {
   fi
 }
 
+# Prints the basenames of the suites that the runner declares ISOLATED.
+#
+# An isolated suite is NOT executed by design (it is blocked and not
+# approved), so it cannot be executed either. It stays in the count of the
+# battery and the runner has to report it as ISOLATED: the isolation is
+# declared by the runner itself, never inferred.
+run_all_isolated_names() {
+  local runner="$1"
+  local tests_dir="$2"
+
+  local isolated_line
+  isolated_line="$(grep -m1 '^ISOLATED_TESTS=' "$runner" 2>/dev/null || true)"
+  if [ -n "$isolated_line" ]; then
+    (
+      SCRIPT_DIR="$tests_dir"
+      export SCRIPT_DIR
+      # shellcheck disable=SC1090
+      eval "$isolated_line"
+      # shellcheck disable=SC2086
+      for f in $ISOLATED_TESTS; do
+        [ -f "$f" ] && basename "$f"
+      done
+    )
+  fi
+}
+
 # Suites that used to be swallowed by the heredoc and never ran.
 RUN_ALL_PREVIOUSLY_LOST_SUITES="protocol_unit.sh readme_sync_unit.sh
 release_flow_integration.sh release_skill_unit.sh rtk_unit.sh
@@ -1860,15 +1886,26 @@ STUB
   fi
 
   missing=""
+  isolated_candidates="$(run_all_isolated_names "$runner" "$tests_dir" || true)"
   while IFS= read -r candidate; do
     [ -z "$candidate" ] && continue
-    if ! printf '%s\n' "$output" | grep -qF "PASS  $candidate"; then
-      missing="$missing $candidate"
+    if printf '%s\n' "$output" | grep -qF "PASS  $candidate"; then
+      continue
     fi
+    # A suite that the runner itself declares ISOLATED is not executed BY
+    # DESIGN (it is blocked and not approved), so it cannot have been
+    # executed. It has to be reported as ISOLATED, and only a suite that the
+    # runner declares isolated may be accepted that way: the isolation is
+    # declared, never inferred from a missing line.
+    if printf '%s\n' "$isolated_candidates" | grep -qxF "$candidate" \
+      && printf '%s\n' "$output" | grep -qF "ISOLATED  $candidate"; then
+      continue
+    fi
+    missing="$missing $candidate"
   done < "$candidates_file"
 
   if [ -z "$missing" ]; then
-    pass "run-all: every candidate suite was executed"
+    pass "run-all: every candidate suite was executed (or explicitly isolated)"
   else
     fail "run-all: candidate suites never executed:$missing"
   fi

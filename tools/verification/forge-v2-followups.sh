@@ -38,6 +38,11 @@ RESIDUAL_CMDLINE=(
   serve --hostname 127.0.0.1 --port 34765 --print-logs
 )
 
+if ! bash "$REPO/tools/verification/require-v2-containment.sh"; then
+  echo "BLOCKED: este verifier esta excluido de la puerta V2 y no puede ejecutarse sobre el host." >&2
+  exit 78
+fi
+
 test -d "$BASE"
 test ! -L "$BASE"
 test "$(stat -c '%u' "$BASE")" = "$(id -u)"

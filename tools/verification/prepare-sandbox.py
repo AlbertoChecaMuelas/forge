@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -123,6 +124,11 @@ def ensure_tree_is_private_and_plain(root: Path) -> None:
 
 
 def main() -> int:
+    containment_guard = Path(__file__).with_name("require-v2-containment.sh")
+    guarded = subprocess.run(["/bin/bash", str(containment_guard)], check=False)
+    if guarded.returncode != 0:
+        fail("preparador excluido: no se ejecuta sin la puerta de contencion acreditada")
+
     if len(sys.argv) != 1:
         fail("usage: prepare-sandbox.py")
 
