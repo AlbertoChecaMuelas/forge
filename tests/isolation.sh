@@ -438,8 +438,21 @@ forge_make_toolchain() {
 # installer expects from the pinned build:
 #
 #   <dir>/node_modules/@opencode/cli/package.json   (@opencode/cli@2.1.4)
-#   <dir>/node_modules/@opencode/cli/bin/opencode   (the pinned executable)
-#   <dir>/node_modules/.bin/opencode -> ../@opencode/cli/bin/opencode
+#   <dir>/node_modules/@opencode/cli/bin/opencode.exe  (the pinned executable)
+#   <dir>/node_modules/.bin/opencode -> ../@opencode/cli/bin/opencode.exe
+#
+# The layout is the REAL one: @opencode/cli@2.1.4 declares in its OWN
+# package.json
+#
+#   "bin": {"opencode": "./bin/opencode.exe", "opencode2": "./bin/opencode.exe"}
+#
+# and publishes the executable THERE. The fixture does not decide where the
+# executable lives: it writes that declaration and then materialises the
+# executable at the DECLARED path, read back from the package.json it just
+# wrote. A fixture that published a layout the real package never publishes
+# would stay green against a launcher that compares the registered
+# executable against a FIXED path instead of resolving it from the `bin`
+# field of the package.
 #
 # The layout is the ACCREDITED one: the launcher refuses to run a pinned
 # binary that does not follow it (the entry of `.bin` must resolve to the
@@ -472,19 +485,33 @@ if [ -z "$prefix" ]; then
 fi
 
 package_dir="$prefix/node_modules/@opencode/cli"
-mkdir -p "$package_dir/bin" "$prefix/node_modules/.bin"
+mkdir -p "$package_dir" "$prefix/node_modules/.bin"
 
 cat > "$package_dir/package.json" <<'PACKAGE_EOF'
 {
   "name": "@opencode/cli",
   "version": "2.1.4",
   "bin": {
-    "opencode": "bin/opencode"
+    "opencode": "./bin/opencode.exe",
+    "opencode2": "./bin/opencode.exe"
   }
 }
 PACKAGE_EOF
 
-cat > "$package_dir/bin/opencode" <<'OPENCODE_EOF'
+# The DECLARED path is read back from the package.json: the executable is
+# materialised where the package says it is, never at a name of the
+# fixture's own.
+declared_bin="$(sed -n 's/.*"opencode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  "$package_dir/package.json" | head -n 1)"
+if [ -z "$declared_bin" ]; then
+  printf 'fake-npm: el package.json no declara ningun ejecutable\n' >&2
+  exit 1
+fi
+declared_bin="${declared_bin#./}"
+
+mkdir -p "$package_dir/$(dirname "$declared_bin")"
+
+cat > "$package_dir/$declared_bin" <<'OPENCODE_EOF'
 #!/usr/bin/env sh
 # Fake pinned OpenCode build used by the Forge test suites.
 #
@@ -537,8 +564,8 @@ fi
 exit 0
 OPENCODE_EOF
 
-chmod +x "$package_dir/bin/opencode"
-ln -sfn ../@opencode/cli/bin/opencode "$prefix/node_modules/.bin/opencode"
+chmod +x "$package_dir/$declared_bin"
+ln -sfn "../@opencode/cli/$declared_bin" "$prefix/node_modules/.bin/opencode"
 exit 0
 NPM_EOF
     chmod +x "$dir/npm"
@@ -599,6 +626,24 @@ exit 0
 OPENCODE_EOF
     chmod +x "$dir/opencode"
   fi
+}
+
+# forge_declared_package_binary <package-dir>
+#
+# The path (relative to the package, without the leading "./") of the
+# executable that the package DECLARES in the `bin` field of its own
+# package.json.
+#
+# It is READ from that package.json, so no fixture has to hardcode the name
+# of the executable: the fixtures materialise the layout that the package
+# declares, exactly as the production resolves it. It fails when the
+# package declares no bin entry named `opencode`.
+forge_declared_package_binary() {
+  local package_dir="$1" declared
+  declared="$(jq -r '(.bin // {}) | .opencode // empty' \
+    "$package_dir/package.json" 2>/dev/null || true)"
+  [ -n "$declared" ] || return 1
+  printf '%s\n' "${declared#./}"
 }
 
 # ---------------------------------------------------------------------------

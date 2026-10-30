@@ -70,20 +70,70 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #
 # The only isolated suite today is the real runtime integration:
 #
-#   tests/opencode_real_runtime_integration.sh — needs the GLOBAL installation
-#       of @opencode/cli (or FORGE_TEST_REAL_OPENCODE_BIN) and the real
-#       integration is NOT APPROVED: it stays BLOCKED until its whole chain is
-#       accredited. Without a runtime it would fail by design ("a missing
-#       runtime is a failure of the suite, never a green skip"), and running
-#       it is not authorised, so it is isolated instead of being executed or
-#       being counted as a pass.
+#   tests/opencode_real_runtime_integration.sh — it needs a REAL OpenCode
+#       2.1.4 runtime. The battery NEVER installs anything, so it cannot
+#       provide one, and a machine without the global installation of
+#       @opencode/cli has none: without a runtime the scenario FAILS BY
+#       DESIGN ("a missing runtime is a failure of the suite, never a green
+#       skip"), so it must not run by default.
+#
+#       The isolation is LIFTED when a runtime is AVAILABLE, and the battery
+#       never guesses: the runtime is either DECLARED explicitly
+#       (FORGE_TEST_REAL_OPENCODE_BIN) or the global installation of
+#       @opencode/cli is present (the CI installs it with
+#       `npm install -g @opencode/cli@2.1.4`). The suite is then EXECUTED and
+#       its result COUNTS: a failure of the real integration propagates to
+#       the battery.
+#
+#         FORGE_TEST_REAL_OPENCODE_BIN="$(npm prefix -g)/bin/opencode" \
+#           bash tests/run-all.sh
+#
+#       Without a runtime the suite stays isolated, with the reason printed,
+#       and the count of the summary stays the real one.
 # ---------------------------------------------------------------------------
 EXTRA_TESTS="$SCRIPT_DIR/test-install-summary.sh"
 ISOLATED_TESTS="$SCRIPT_DIR/opencode_real_runtime_integration.sh"
 
+# real_runtime_available
+#
+# The runtime of the real integration is AVAILABLE when it is DECLARED
+# explicitly (FORGE_TEST_REAL_OPENCODE_BIN) or when the global installation
+# of @opencode/cli is present: those are the two sources that the scenario
+# itself resolves, so the battery and the scenario can never disagree about
+# whether there is a runtime. It NEVER installs anything and never reaches
+# the network: it only stats the paths of the global installation.
+real_runtime_available() {
+  local prefix root
+
+  if [ -n "${FORGE_TEST_REAL_OPENCODE_BIN:-}" ]; then
+    return 0
+  fi
+
+  command -v npm >/dev/null 2>&1 || return 1
+  prefix="$(npm prefix -g 2>/dev/null || true)"
+  root="$(npm root -g 2>/dev/null || true)"
+  [ -n "$prefix" ] && [ -x "$prefix/bin/opencode" ] && return 0
+  [ -n "$root" ] && [ -x "$root/@opencode/cli/bin/opencode.exe" ] && return 0
+
+  return 1
+}
+
+# is_isolated <suite>
+#
+# The real runtime integration is EXECUTED when a runtime is available and
+# ISOLATED otherwise: it is not executed, it is not counted as a pass and
+# the reason is printed.
 is_isolated() {
   local candidate="$1"
   local isolated
+
+  if [ "$candidate" = "$SCRIPT_DIR/opencode_real_runtime_integration.sh" ]; then
+    if real_runtime_available; then
+      return 1
+    fi
+    return 0
+  fi
+
   for isolated in $ISOLATED_TESTS; do
     [ "$candidate" = "$isolated" ] && return 0
   done
@@ -344,7 +394,7 @@ while IFS= read -r test_file; do
   if is_isolated "$test_file"; then
     TOTAL=$(( TOTAL + 1 ))
     ISOLATED=$(( ISOLATED + 1 ))
-    echo "ISOLATED  $base  (suite bloqueada y no aprobada: no se ejecuta)"
+    echo "ISOLATED  $base  (suite aislada: no se ejecuta y no se cuenta como aprobada)"
     if [ "$CLEANUP_STATE" = "OBSERVING" ]; then
       # An ISOLATED suite is NOT EXECUTED: it launched nothing, so it has
       # nothing to clean up. Its declaration is NOT APPLICABLE and it does

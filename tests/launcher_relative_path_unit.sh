@@ -30,8 +30,27 @@
 # that is ACCREDITED, so the fixture materialises the layout it demands:
 #
 #   <prefix>/node_modules/.bin/opencode            (the entry of the manifest)
-#     -> <prefix>/node_modules/@opencode/cli/bin/opencode
+#     -> <prefix>/node_modules/@opencode/cli/<the declared executable>
 #   <prefix>/node_modules/@opencode/cli/package.json  (@opencode/cli@2.1.4)
+#
+# The layout is the REAL one. The real @opencode/cli@2.1.4 declares in its
+# OWN package.json:
+#
+#   "bin": {"opencode": "./bin/opencode.exe", "opencode2": "./bin/opencode.exe"}
+#
+# and publishes the executable THERE. The fixture never decides where the
+# executable lives: the package.json of the fixture DECLARES it and the
+# fixture materialises it at the DECLARED path (read back from that
+# package.json), exactly as the production resolves it.
+#
+# That is not a detail: a fixture that published a layout the real package
+# never publishes stays GREEN against a launcher that compares the
+# registered executable against a FIXED path (`bin/opencode`) instead of
+# resolving it from the `bin` field of the package. Such a launcher runs
+# the real installation of nobody, and the defect stays invisible. One
+# case of this suite therefore publishes a package whose executable has a
+# name of its own, and the SENSITIVITY of the suite is measured against a
+# mutation that reintroduces the fixed path.
 #
 # The suite proves that the accreditation is a GATE, not a decoration:
 #
@@ -39,8 +58,12 @@
 #     executed: the fixture records its own execution with a SENTINEL;
 #   - an entry of `.bin` that resolves OUTSIDE the package is rejected and
 #     never executed either;
+#   - an entry of `.bin` that resolves INSIDE the package but NOT to the
+#     executable that the package DECLARES is rejected and never executed;
 #   - a package whose version is not the pinned one is rejected and never
 #     executed;
+#   - the executable is RESOLVED from the `bin` field of the package: a
+#     package that declares an executable of its own is accredited and runs;
 #   - a VALID package under a CUSTOM prefix is accepted and runs.
 #
 # The launcher is copied into the sandbox before it runs, so the optional
@@ -130,30 +153,62 @@ CLI_EOF
 }
 
 # ---------------------------------------------------------------------------
+# The layout that the fixture publishes.
+#
+# The default is the layout of the REAL @opencode/cli@2.1.4: the executable
+# is named `opencode.exe` and the package declares it in its `bin` field.
+# The alternative is a name of the fixture's own: the suite must not depend
+# on the name of the executable.
+# ---------------------------------------------------------------------------
+FIXTURE_DECLARED_BIN="./bin/opencode.exe"
+FIXTURE_DECLARED_BIN_ALTERNATIVE="./bin/forge-oc-2.1.4"
+
+# ---------------------------------------------------------------------------
 # The ACCREDITED package: the launcher only accepts a pinned binary whose
 # path follows the <prefix>/node_modules/.bin/opencode layout, that RESOLVES
-# to <prefix>/node_modules/@opencode/cli/bin/opencode under that prefix and
-# that is accredited by the package.json of @opencode/cli@2.1.4.
+# to the executable that the package.json of @opencode/cli@2.1.4 DECLARES
+# under that prefix and that is accredited by that same package.json.
 #
-# write_accredited_package <prefix> [version]
+# write_accredited_package <prefix> [version] [declared-bin]
+#
+# The declared path is the ONLY place where the name of the executable
+# appears: the package.json DECLARES it and the fixture materialises the
+# executable at the DECLARED path, read back from that package.json. The
+# entry of `.bin` is derived from the same declaration.
 # ---------------------------------------------------------------------------
 write_accredited_package() {
   local prefix="$1"
   local version="${2:-2.1.4}"
+  local declared="${3:-$FIXTURE_DECLARED_BIN}"
   local package_dir="$prefix/node_modules/@opencode/cli"
 
-  mkdir -p "$package_dir/bin" "$prefix/node_modules/.bin"
-  write_fixture_cli "$package_dir/bin/opencode"
+  mkdir -p "$package_dir" "$prefix/node_modules/.bin"
+
   cat > "$package_dir/package.json" <<PACKAGE_EOF
 {
   "name": "@opencode/cli",
   "version": "$version",
   "bin": {
-    "opencode": "bin/opencode"
+    "opencode": "$declared"
   }
 }
 PACKAGE_EOF
-  ln -sfn ../@opencode/cli/bin/opencode "$prefix/node_modules/.bin/opencode"
+
+  # The DECLARED path is read back from the package.json: the fixture
+  # materialises what the package declares, never a name of its own.
+  local declared_relative executable
+  declared_relative="$(jq -r '.bin.opencode // empty' "$package_dir/package.json" 2>/dev/null || true)"
+  if [ -z "$declared_relative" ]; then
+    echo "  FAIL: el package.json del fixture no declara ningun ejecutable" >&2
+    return 1
+  fi
+  declared_relative="${declared_relative#./}"
+
+  executable="$package_dir/$declared_relative"
+  mkdir -p "$(dirname "$executable")"
+  write_fixture_cli "$executable"
+
+  ln -sfn "../@opencode/cli/$declared_relative" "$prefix/node_modules/.bin/opencode"
 }
 
 # ---------------------------------------------------------------------------
@@ -250,14 +305,14 @@ EXTERNAL_EOF
 
 # ---------------------------------------------------------------------------
 # A DECOY INSIDE the package: it lives under the @opencode/cli package but
-# it is NOT the executable of the package (`bin/opencode`). The accreditation
+# it is NOT the executable that the package DECLARES. The accreditation
 # demands that the entry of `.bin` resolves to THAT executable, so the decoy
 # is rejected. It records its own execution with a SENTINEL too.
 # ---------------------------------------------------------------------------
 write_decoy_in_package() {
   local sandbox="$1"
   local package_dir="$2"
-  local decoy="$package_dir/decoy/opencode"
+  local decoy="$package_dir/decoy/impostor"
 
   mkdir -p "$package_dir/decoy"
   cat > "$decoy" <<DECOY_EOF
@@ -286,6 +341,13 @@ DECOY_EOF
 # drop-version-check: the launcher stops checking the identity and the
 # version of the installed package, so a package that is not the pinned one
 # would be executed.
+#
+# hardcode-declared-bin: the launcher stops RESOLVING the executable from the
+# `bin` field that the package declares and compares the registered
+# executable against a FIXED path (`bin/opencode`) again. This is the
+# regression that the suite must never let pass: it is the defect that
+# broke the real installation, whose @opencode/cli@2.1.4 declares
+# `./bin/opencode.exe`.
 apply_launcher_mutation() {
   local launcher="$1" mutation="$2"
   case "$mutation" in
@@ -340,16 +402,64 @@ with open(path, encoding="utf-8") as handle:
 # the resolution observable.
 pairs = (
     (
-        "    if os.path.commonpath((real_prefix, real_package_dir)) != real_prefix:\n",
+        "    if not is_within(real_package_dir, real_prefix):\n",
         "    if False:\n",
     ),
     (
-        "    if os.path.commonpath((real_package_dir, real_binary)) != real_package_dir:\n",
+        "    if not is_within(real_binary, real_package_dir):\n",
         "    if False:\n",
     ),
     (
-        "if real_binary != real_expected_binary:\n",
-        "if False:\n",
+        "    if real_binary != resolved_declared_bin:\n",
+        "    if False:\n",
+    ),
+)
+for anchor, mutated in pairs:
+    if text.count(anchor) != 1:
+        sys.stderr.write("mutation anchor not found in the launcher copy\n")
+        raise SystemExit(2)
+    text = text.replace(anchor, mutated, 1)
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write(text)
+PY
+      ;;
+    hardcode-declared-bin)
+      python3 - "$launcher" <<'PY'
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    text = handle.read()
+
+# The RESOLUTION from the `bin` field of the package is replaced by the
+# FIXED path that the defective launcher used: the registered executable is
+# compared against `<package>/bin/opencode` whatever the package declares.
+# The existence check of the declared entry disappears with it, exactly as
+# it did in the defective launcher: the comparison was made against a path
+# that the real package never publishes.
+pairs = (
+    (
+        """    bin_entries = package.get("bin")
+    if not isinstance(bin_entries, dict) or binary_name not in bin_entries:
+        fail("the installed package does not declare a bin entry named " + repr(binary_name))
+    declared_bin = bin_entries[binary_name]
+    if not isinstance(declared_bin, str) or not declared_bin:
+        fail("the package bin entry for " + repr(binary_name) + " is invalid")
+    if os.path.isabs(declared_bin):
+        fail("the package bin entry for " + repr(binary_name) + " must be relative")
+
+    resolved_declared_bin = os.path.realpath(os.path.join(real_package_dir, declared_bin))
+""",
+        """    resolved_declared_bin = os.path.realpath(os.path.join(real_package_dir, "bin", "opencode"))
+""",
+    ),
+    (
+        """    if not os.path.isfile(resolved_declared_bin) or not os.access(resolved_declared_bin, os.X_OK):
+        fail("the package bin entry for " + repr(binary_name) + " is missing or not executable")
+""",
+        """    if False:
+        fail("the package bin entry for " + repr(binary_name) + " is missing or not executable")
+""",
     ),
 )
 for anchor, mutated in pairs:
@@ -733,8 +843,9 @@ test_escaping_bin_entry_is_rejected_without_execution() {
 
 # ---------------------------------------------------------------------------
 # Case (B6b): the entry of `.bin` resolves INSIDE the package but NOT to the
-# executable of the package. Only the resolution to `bin/opencode` rejects
-# it, so this case is the one that pins that clause of the accreditation.
+# executable that the package DECLARES. Only the resolution to the declared
+# bin entry rejects it, so this case is the one that pins that clause of the
+# accreditation.
 # ---------------------------------------------------------------------------
 test_decoy_bin_entry_is_rejected_without_execution() {
   local sandbox="$WORKDIR/decoy"
@@ -744,7 +855,7 @@ test_decoy_bin_entry_is_rejected_without_execution() {
   prefix="$home/.local/share/forge/opencode-v2"
   decoy="$(write_decoy_in_package "$sandbox" "$prefix/node_modules/@opencode/cli")"
 
-  ln -sfn ../@opencode/cli/decoy/opencode "$prefix/node_modules/.bin/opencode"
+  ln -sfn ../@opencode/cli/decoy/impostor "$prefix/node_modules/.bin/opencode"
 
   local rc=0
   run_launcher "$sandbox" "$sandbox/work" --help || rc=$?
@@ -775,6 +886,41 @@ test_decoy_bin_entry_is_rejected_without_execution() {
     fail "decoy-bin: the CLI never received any argument"
     sed -n '1,5p' "$sandbox/stdout.txt" | sed 's/^/      /' >&2
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Case (B6c): the executable of the package is NOT the one that a FIXED
+# path would suggest: the package declares an executable of its own and the
+# launcher must RESOLVE it from that declaration.
+#
+# This is the case that pins the defect this suite exists to catch: a
+# launcher that compares the registered executable against a hard-coded
+# path (`bin/opencode`) accredits a package that the real @opencode/cli
+# never publishes and rejects the real one, which declares
+# `./bin/opencode.exe`. The failure of this case is the ATTRIBUTION that
+# the sensitivity of the suite looks for.
+# ---------------------------------------------------------------------------
+test_executable_is_resolved_from_the_declared_bin() {
+  local sandbox="$WORKDIR/declared-bin"
+  local home
+  home="$(make_sandbox "$sandbox")"
+  local prefix
+  prefix="$home/.local/share/forge/opencode-v2"
+
+  # The package declares an executable with a name of its own.
+  write_accredited_package "$prefix" "2.1.4" "$FIXTURE_DECLARED_BIN_ALTERNATIVE"
+
+  local rc=0
+  run_launcher "$sandbox" "$sandbox/work" --version || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    pass "declared-bin: rc 0"
+  else
+    fail "declared-bin: the launcher resolved the executable declared by the package (rc=$rc)"
+    sed -n '1,5p' "$sandbox/stderr.txt" | sed 's/^/      /' >&2
+  fi
+
+  assert_argv "declared-bin" "--standalone --version" "$sandbox"
+  assert_no_decoy "declared-bin" "$sandbox"
 }
 
 # ---------------------------------------------------------------------------
@@ -858,7 +1004,8 @@ test_the_suite_detects_each_broken_accreditation() {
   for mutation in \
     drop-package-accreditation \
     drop-resolution-checks \
-    drop-version-check; do
+    drop-version-check \
+    hardcode-declared-bin; do
     case "$mutation" in
       drop-package-accreditation)
         expected="FAIL: external-binary: the external binary was never executed"
@@ -868,6 +1015,9 @@ test_the_suite_detects_each_broken_accreditation() {
         ;;
       drop-version-check)
         expected="FAIL: wrong-version: the pinned binary was never executed"
+        ;;
+      hardcode-declared-bin)
+        expected="FAIL: declared-bin: the launcher resolved the executable declared by the package"
         ;;
     esac
 
@@ -920,6 +1070,7 @@ run_test test_root_options_are_not_broken
 run_test test_external_binary_is_rejected_without_execution
 run_test test_escaping_bin_entry_is_rejected_without_execution
 run_test test_decoy_bin_entry_is_rejected_without_execution
+run_test test_executable_is_resolved_from_the_declared_bin
 run_test test_wrong_package_version_is_rejected_without_execution
 run_test test_custom_prefix_is_accepted
 

@@ -53,3 +53,20 @@ Esto es necesario porque el paquete real `@opencode/cli@2.1.4` declara
 extensión no reproduce ese layout y puede ocultar un fallo del launcher. Los
 fixtures de acreditación deben cubrir el layout declarado, y las declaraciones
 ausentes, ambiguas, inválidas o fuera del paquete deben rechazarse sin fallback.
+
+## Soporte del runner
+
+El job `test` está fijado **temporalmente** a `ubuntu-22.04`: Ubuntu 24.04 aplica
+la política AppArmor `kernel.apparmor_restrict_unprivileged_userns=1`, que
+bloquea los user namespaces sin privilegios requeridos por la contención. El
+contrato también requiere montaje privado de `/proc` y `pidfd_open`/
+`pidfd_send_signal`. Canonical mantiene Ubuntu 22.04 hasta mayo de 2027, pero la
+retirada de runners de GitHub tiene un calendario independiente; fijar la
+familia de imagen no congela el kernel ni los paquetes.
+
+La salida del pin es migrar a un runner Ubuntu 24.04 con autorización AppArmor
+específica para `unshare`, validando namespaces anidados y el banco completo, o
+usar un runner propio efímero. Sustituir la contención queda como último
+recurso por el coste de recertificación. Revisar por primera vez antes del
+30 de noviembre de 2026; adelantar la revisión si hay un brownout o un anuncio
+de retirada con menos de 60 días.
