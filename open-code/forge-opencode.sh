@@ -185,9 +185,16 @@ try:
             result[key] = value
         return result
 
+    def reject_non_json_constant(constant):
+        fail("the installed package metadata contains invalid JSON constant " + constant)
+
     package_json = os.path.join(real_package_dir, "package.json")
     with open(package_json, encoding="utf-8") as package_file:
-        package = json.load(package_file, object_pairs_hook=reject_duplicate_keys)
+        package = json.load(
+            package_file,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_non_json_constant,
+        )
     if not isinstance(package, dict):
         fail("the installed package metadata is invalid")
     if package.get("name") != "@opencode/cli" or package.get("version") != version:

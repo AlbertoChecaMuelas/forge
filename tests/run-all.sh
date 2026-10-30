@@ -90,32 +90,110 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #
 #       Without a runtime the suite stays isolated, with the reason printed,
 #       and the count of the summary stays the real one.
+#
+#       The reason is not a decoration: an ISOLATED suite that does not say
+#       WHY looks exactly like a preparation that went wrong. The reason is
+#       published with a STABLE code (so a program can tell the causes
+#       apart) and with a detail that names WHAT was searched and WHY it was
+#       not found (so a person can act on it):
+#
+#         ISOLATED  <suite>  (...)  motivo=<CODE>: <detail>
+#
+#       The codes of the resolution of the runtime are:
+#
+#         RUNTIME_DECLARED                           the runtime is DECLARED
+#         GLOBAL_INSTALLATION_FOUND                  the global installation is there
+#         NO_DECLARATION_AND_NO_NPM                  npm is not available at all
+#         NO_DECLARATION_AND_NO_GLOBAL_INSTALL       nothing of the global tree exists
+#         NO_DECLARATION_AND_GLOBAL_NOT_EXECUTABLE   the global tree is there but is not executable
+#
+#       and the code of a suite that the runner isolates BY DECLARATION is:
+#
+#         DECLARED_ISOLATED_BY_THE_RUNNER
 # ---------------------------------------------------------------------------
 EXTRA_TESTS="$SCRIPT_DIR/test-install-summary.sh"
 ISOLATED_TESTS="$SCRIPT_DIR/opencode_real_runtime_integration.sh"
 
-# real_runtime_available
+# The REASON of the last resolution of the runtime and the reason of the last
+# isolation. They are published by the probe and read by the loop that prints
+# the isolated suites.
+REAL_RUNTIME_REASON_CODE=""
+REAL_RUNTIME_REASON_DETAIL=""
+ISOLATION_REASON_CODE=""
+ISOLATION_REASON_DETAIL=""
+
+# real_runtime_probe
+#
+# Resolves the runtime the same way the scenario does and publishes WHY it is
+# not there. It NEVER installs anything and never reaches the network: it only
+# stats the paths of the global installation.
 #
 # The runtime of the real integration is AVAILABLE when it is DECLARED
 # explicitly (FORGE_TEST_REAL_OPENCODE_BIN) or when the global installation
 # of @opencode/cli is present: those are the two sources that the scenario
 # itself resolves, so the battery and the scenario can never disagree about
-# whether there is a runtime. It NEVER installs anything and never reaches
-# the network: it only stats the paths of the global installation.
-real_runtime_available() {
-  local prefix root
+# whether there is a runtime.
+real_runtime_probe() {
+  local prefix root candidate candidates="" searched="" not_executable=""
+
+  REAL_RUNTIME_REASON_CODE=""
+  REAL_RUNTIME_REASON_DETAIL=""
 
   if [ -n "${FORGE_TEST_REAL_OPENCODE_BIN:-}" ]; then
+    REAL_RUNTIME_REASON_CODE="RUNTIME_DECLARED"
+    REAL_RUNTIME_REASON_DETAIL="la declaracion explicita FORGE_TEST_REAL_OPENCODE_BIN=$FORGE_TEST_REAL_OPENCODE_BIN esta presente"
     return 0
   fi
 
-  command -v npm >/dev/null 2>&1 || return 1
+  if ! command -v npm >/dev/null 2>&1; then
+    REAL_RUNTIME_REASON_CODE="NO_DECLARATION_AND_NO_NPM"
+    REAL_RUNTIME_REASON_DETAIL="la declaracion explicita FORGE_TEST_REAL_OPENCODE_BIN esta ausente y npm no esta disponible, de modo que la instalacion global de @opencode/cli no se puede ni buscar"
+    return 1
+  fi
+
   prefix="$(npm prefix -g 2>/dev/null || true)"
   root="$(npm root -g 2>/dev/null || true)"
-  [ -n "$prefix" ] && [ -x "$prefix/bin/opencode" ] && return 0
-  [ -n "$root" ] && [ -x "$root/@opencode/cli/bin/opencode.exe" ] && return 0
+  [ -n "$prefix" ] && candidates="$candidates$prefix/bin/opencode
+"
+  [ -n "$root" ] && candidates="$candidates$root/@opencode/cli/bin/opencode.exe
+"
 
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    if [ -x "$candidate" ]; then
+      REAL_RUNTIME_REASON_CODE="GLOBAL_INSTALLATION_FOUND"
+      REAL_RUNTIME_REASON_DETAIL="la instalacion global de @opencode/cli esta presente en $candidate"
+      return 0
+    fi
+    if [ -e "$candidate" ]; then
+      not_executable="$not_executable; $candidate (existe pero no es ejecutable)"
+    else
+      searched="$searched; $candidate (no existe)"
+    fi
+  done <<CANDIDATES_EOF
+$candidates
+CANDIDATES_EOF
+
+  not_executable="${not_executable#; }"
+  searched="${searched#; }"
+
+  if [ -n "$not_executable" ]; then
+    REAL_RUNTIME_REASON_CODE="NO_DECLARATION_AND_GLOBAL_NOT_EXECUTABLE"
+    REAL_RUNTIME_REASON_DETAIL="la declaracion explicita FORGE_TEST_REAL_OPENCODE_BIN esta ausente y la instalacion global de @opencode/cli no aporta ningun ejecutable utilizable: $not_executable"
+    return 1
+  fi
+
+  REAL_RUNTIME_REASON_CODE="NO_DECLARATION_AND_NO_GLOBAL_INSTALL"
+  REAL_RUNTIME_REASON_DETAIL="la declaracion explicita FORGE_TEST_REAL_OPENCODE_BIN esta ausente y no hay instalacion global de @opencode/cli (se busco: $searched)"
   return 1
+}
+
+# real_runtime_available
+#
+# The resolution of the runtime, reduced to its verdict. The CAUSE is
+# published by the probe that this function drives.
+real_runtime_available() {
+  real_runtime_probe
 }
 
 # is_isolated <suite>
@@ -123,19 +201,32 @@ real_runtime_available() {
 # The real runtime integration is EXECUTED when a runtime is available and
 # ISOLATED otherwise: it is not executed, it is not counted as a pass and
 # the reason is printed.
+#
+# The reason of an isolation is ALWAYS published: a suite that the runner
+# isolates by declaration says so, and a suite that is isolated because its
+# runtime is missing says WHICH runtime was searched and WHY it was not found.
 is_isolated() {
   local candidate="$1"
   local isolated
+
+  ISOLATION_REASON_CODE=""
+  ISOLATION_REASON_DETAIL=""
 
   if [ "$candidate" = "$SCRIPT_DIR/opencode_real_runtime_integration.sh" ]; then
     if real_runtime_available; then
       return 1
     fi
+    ISOLATION_REASON_CODE="$REAL_RUNTIME_REASON_CODE"
+    ISOLATION_REASON_DETAIL="$REAL_RUNTIME_REASON_DETAIL"
     return 0
   fi
 
   for isolated in $ISOLATED_TESTS; do
-    [ "$candidate" = "$isolated" ] && return 0
+    if [ "$candidate" = "$isolated" ]; then
+      ISOLATION_REASON_CODE="DECLARED_ISOLATED_BY_THE_RUNNER"
+      ISOLATION_REASON_DETAIL="el runner declara esta suite como aislada en ISOLATED_TESTS"
+      return 0
+    fi
   done
   return 1
 }
@@ -391,10 +482,16 @@ while IFS= read -r test_file; do
 
   # An isolated suite is neither executed nor counted as a pass: it stays in
   # the count of the battery and the reason is printed.
+  #
+  # The reason is part of the line and it is not a decoration: it names the
+  # CAUSE with a stable code (a program can tell the causes apart) and with a
+  # detail that says WHAT was searched and WHY it was not found (a person can
+  # act on it). An isolated suite without a reason is indistinguishable from a
+  # preparation that went wrong.
   if is_isolated "$test_file"; then
     TOTAL=$(( TOTAL + 1 ))
     ISOLATED=$(( ISOLATED + 1 ))
-    echo "ISOLATED  $base  (suite aislada: no se ejecuta y no se cuenta como aprobada)"
+    echo "ISOLATED  $base  (suite aislada: no se ejecuta y no se cuenta como aprobada)  motivo=$ISOLATION_REASON_CODE: $ISOLATION_REASON_DETAIL"
     if [ "$CLEANUP_STATE" = "OBSERVING" ]; then
       # An ISOLATED suite is NOT EXECUTED: it launched nothing, so it has
       # nothing to clean up. Its declaration is NOT APPLICABLE and it does
