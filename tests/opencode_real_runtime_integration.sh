@@ -859,9 +859,19 @@ SHIM_EOF
 # The launcher under test can be DECLARED (FORGE_TEST_REAL_LAUNCHER). The
 # declaration exists for the SENSITIVITY proof: a launcher whose
 # accreditation is broken must make this suite FAIL, and that can only be
-# shown with a launcher other than the personal entry. The declaration never
-# weakens the check: a declared launcher is ALWAYS applicable, so a broken
-# one fails instead of being declared.
+# shown with a launcher other than the personal entry.
+#
+# The declaration of the launcher SELECTS THE SUBJECT and nothing else: it is
+# NOT the declaration of the executable (FORGE_TEST_REAL_OPENCODE_BIN), which
+# selects the runtime. The applicability of this check depends on the
+# INSTALLATION and NEVER on the subject (see the ORDER of the resolution
+# above): the declaration of the launcher never weakens the check, because a
+# broken entry point is a FAILURE whether it is the personal entry or a
+# declared one.
+#
+# The subject is PUBLISHED with the result of the check, so that a consumer
+# can tell WHICH launcher was accredited (the personal entry or an explicitly
+# declared one) reading only the output of the suite.
 # ---------------------------------------------------------------------------
 LAUNCHER_E2E_ROOT=""
 LAUNCHER_E2E_HOME=""
@@ -876,6 +886,9 @@ LAUNCHER_E2E_LAST_ERR=""
 LAUNCHER_E2E_LAST_REPORT=""
 REAL_LAUNCHER_DECLARED="no"
 REAL_LAUNCHER=""
+# The SUBJECT of the check, published with its result: which launcher was
+# accredited (the personal entry or an explicitly declared one).
+REAL_LAUNCHER_SUBJECT=""
 
 # The OBSERVER of the effective execution. It runs INSIDE the containment
 # (it is the command of the contained run) and it reports what the kernel
@@ -1332,9 +1345,9 @@ launcher_e2e_checks() {
   control_out="$(sed -n '1,5p' "$LAUNCHER_E2E_LAST_OUT" | tr '\n' ' ')"
 
   if [ "$control_rc" -eq 0 ] && printf '%s' "$control_out" | grep -qF "v$EXPECTED_VERSION"; then
-    pass "$REAL_LAUNCHER_CHECK (rc=0, salida: $control_out)"
+    pass "$REAL_LAUNCHER_CHECK (rc=0, salida: $control_out; launcher bajo prueba: $REAL_LAUNCHER_SUBJECT)"
   else
-    fail "$REAL_LAUNCHER_CHECK (rc=$control_rc, salida: $control_out)"
+    fail "$REAL_LAUNCHER_CHECK (rc=$control_rc, salida: $control_out; launcher bajo prueba: $REAL_LAUNCHER_SUBJECT)"
     sed -n '1,20p' "$LAUNCHER_E2E_LAST_ERR" | sed 's/^/      /' >&2
   fi
 
@@ -1582,14 +1595,24 @@ chmod 700 "$LAUNCHER_E2E_HOME" "$LAUNCHER_E2E_HOME/run" "$LAUNCHER_E2E_HOME/tmp"
 REAL_LAUNCHER_CHECK="el launcher real ARRANCA contra la instalacion fijada real y resuelve el ejecutable real"
 
 if [ -n "${FORGE_TEST_REAL_LAUNCHER:-}" ]; then
-  # A DECLARED launcher is the subject of the check (the SENSITIVITY proof
-  # needs a launcher other than the personal entry): it is ALWAYS
-  # applicable, so a broken one FAILS instead of being declared.
+  # A DECLARED launcher is the SUBJECT of the check (the SENSITIVITY proof
+  # needs a launcher other than the personal entry). The declaration selects
+  # the subject and NOTHING else: the applicability of the check depends on
+  # the INSTALLATION, so a broken entry point FAILS (declared or personal)
+  # instead of being declared.
   REAL_LAUNCHER_DECLARED="yes"
   REAL_LAUNCHER="$FORGE_TEST_REAL_LAUNCHER"
 else
   REAL_LAUNCHER_DECLARED="no"
   REAL_LAUNCHER="$FORGE_TEST_REAL_HOME/.local/bin/forge-opencode"
+fi
+
+# The SUBJECT is published with the result of the check: a consumer must be
+# able to tell WHICH launcher was accredited without reading this source.
+if [ "$REAL_LAUNCHER_DECLARED" = "yes" ]; then
+  REAL_LAUNCHER_SUBJECT="declarado (FORGE_TEST_REAL_LAUNCHER): $REAL_LAUNCHER"
+else
+  REAL_LAUNCHER_SUBJECT="entrada personal: $REAL_LAUNCHER"
 fi
 
 applicability_rc=0
@@ -1599,10 +1622,11 @@ case "$applicability_rc" in
     launcher_e2e_checks
     ;;
   3)
-    declare_check "$REAL_LAUNCHER_CHECK" "$LAUNCHER_E2E_CODE" "$LAUNCHER_E2E_DETAIL"
+    declare_check "$REAL_LAUNCHER_CHECK" "$LAUNCHER_E2E_CODE" \
+      "$LAUNCHER_E2E_DETAIL (launcher bajo prueba: $REAL_LAUNCHER_SUBJECT)"
     ;;
   *)
-    fail "la comprobacion end-to-end del launcher real no se puede acreditar: $LAUNCHER_E2E_DETAIL"
+    fail "la comprobacion end-to-end del launcher real no se puede acreditar: $LAUNCHER_E2E_DETAIL (launcher bajo prueba: $REAL_LAUNCHER_SUBJECT)"
     ;;
 esac
 
