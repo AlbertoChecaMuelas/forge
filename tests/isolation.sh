@@ -653,8 +653,32 @@ OPENCODE_EOF
 FORGE_OWN_HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FORGE_OWN_SIGNAL_PY="$FORGE_OWN_HELPERS_DIR/forge_own_signal.py"
 FORGE_CONTAINMENT_ENTRY="$FORGE_OWN_HELPERS_DIR/../tools/verification/forge-contained-run.sh"
-FORGE_CONTAINMENT_RECEIPT_DIR="/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs"
-FORGE_CONTAINMENT_CAPABILITY_FILE="/tmp/opencode/forge-contracts-v2/remediacion-contencion/capability.txt"
+
+# The ROOT of the receipts of the contained runs.
+#
+# It is NOT a fixed path of a machine. It is derived from THIS invocation
+# (the PID of the shell and the temporary directory of the caller), so that:
+#
+#   * the suites run in PARALLEL: two runs never share a root;
+#   * the suites run on a machine (or on a CI runner) where no directory of a
+#     previous qualification exists: a harness that demanded one would only
+#     prove that it runs on the machine that produced it.
+#
+# A consumer may DECLARE the root explicitly (FORGE_CONTAINMENT_RECEIPT_DIR):
+# the declared root wins and it is used verbatim.
+FORGE_CONTAINMENT_RECEIPT_DIR="${FORGE_CONTAINMENT_RECEIPT_DIR:-${TMPDIR:-/tmp}/forge-contained-receipts-$$}"
+
+# There is NO global artefact of "capacity" of the containment.
+#
+# The accreditation of the boundary is BY INVOCATION: the entry accredits its
+# own interior inside its private namespace, on every run, and the receipt of
+# THAT run is the evidence (ACCREDITATION, ACCREDITATION_REASON,
+# CONTAINMENT_EVIDENCE_CERTIFIABLE). A precondition that demanded a file
+# produced by a previous qualification would not measure the containment: it
+# would measure the presence of a file on a concrete machine, and it would
+# refuse to run anywhere else for a reason that has nothing to do with the
+# boundary.
+
 FORGE_CONTAINMENT_SCENARIO_TIMEOUT="${FORGE_CONTAINMENT_SCENARIO_TIMEOUT:-300}"
 FORGE_CONTAINMENT_CLOSE_TIMEOUT="${FORGE_CONTAINMENT_CLOSE_TIMEOUT:-10}"
 
@@ -927,26 +951,22 @@ forge_kill_own_identities() {
 
 # forge_containment_available
 #
-# Succeeds only when the entry, the receipt directory and the evidence of the
-# capacity of THIS machine are all present. It NEVER degrades to the host and
-# it NEVER runs the scenario outside the containment.
+# Succeeds only when the entry is present and the root of the receipts of
+# THIS invocation can be used. It NEVER degrades to the host and it NEVER
+# runs the scenario outside the containment.
+#
+# The accreditation of the boundary is BY INVOCATION and it is NOT a
+# precondition of this helper: the entry certifies its own interior on every
+# run and the receipt of that run is the evidence. This helper therefore
+# demands NO artefact produced by a previous qualification: such a demand
+# would only prove that the machine is the one that produced it.
 forge_containment_available() {
   if [ ! -f "$FORGE_CONTAINMENT_ENTRY" ]; then
     printf 'la entrada de contencion no existe (%s)\n' "$FORGE_CONTAINMENT_ENTRY" >&2
     return 1
   fi
-  if [ ! -f "$FORGE_CONTAINMENT_CAPABILITY_FILE" ]; then
-    printf 'no hay evidencia de capacidad de la contencion (%s)\n' \
-      "$FORGE_CONTAINMENT_CAPABILITY_FILE" >&2
-    return 1
-  fi
-  if ! grep -qx 'CAPABILITY=PASS' "$FORGE_CONTAINMENT_CAPABILITY_FILE" 2>/dev/null; then
-    printf 'la capacidad de la contencion no esta acreditada (%s)\n' \
-      "$FORGE_CONTAINMENT_CAPABILITY_FILE" >&2
-    return 1
-  fi
   if [ ! -d "$FORGE_CONTAINMENT_RECEIPT_DIR" ]; then
-    mkdir -p "$FORGE_CONTAINMENT_RECEIPT_DIR" 2>/dev/null || {
+    (umask 077 && mkdir -p -- "$FORGE_CONTAINMENT_RECEIPT_DIR") 2>/dev/null || {
       printf 'no se puede usar el directorio de recibos (%s)\n' \
         "$FORGE_CONTAINMENT_RECEIPT_DIR" >&2
       return 1

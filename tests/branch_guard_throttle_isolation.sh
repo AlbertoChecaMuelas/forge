@@ -190,8 +190,8 @@ warn_of() {
   (
     cd "$repo" || exit 1
     printf '{"tool_name":"Read","tool_input":{}}' \
-      | env -i PATH="$FIXED_PATH" TMPDIR="$tmpdir" HOME="$tmpdir" \
-          LC_ALL=C TZ=UTC /bin/bash "$BRANCH_GUARD" 2>&1 1>/dev/null
+      | { env -i PATH="$FIXED_PATH" TMPDIR="$tmpdir" HOME="$tmpdir" \
+          LC_ALL=C TZ=UTC /bin/bash "$BRANCH_GUARD" 1>/dev/null; } 2>&1
   ) > "$WORKDIR/guard-output.txt" 2>/dev/null
   GUARD_RC=$?
   return 0

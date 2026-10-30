@@ -57,6 +57,13 @@ The properties it checks (each one of them has a way of being FALSE):
         one is rejected).
   C4-4  The STABLE entry applies the SAME criterion to the auxiliary
         census: it accepts a green one and rejects an absent or a red one.
+  C5-1  The harness declares NO literal root of receipts: the root is
+        DECLARED by the consumer or derived from the invocation that
+        produced the receipts.
+  C5-2  The harness cites NO fixed path of a machine, not even in the
+        messages that ask for the controlled chain: a path of a concrete
+        machine would make the bank refuse to run anywhere else for a
+        reason that has nothing to do with its contract.
 
 Usage:
     python3 tests/forge_v2_contract_probe.py [--harness PATH] [--runner PATH]
@@ -69,6 +76,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -1306,6 +1314,56 @@ def build_proc_tree(root, pids=(), net="readable", namespace_id="pid:[4026531836
     return root
 
 
+def probe_c5(harness_path, harness_text):
+    """C5: the harness does not depend on a path of a MACHINE.
+
+    The root of the receipts of the containment is DECLARED by the consumer
+    or derived from the invocation that produced them. A literal path of a
+    concrete machine would make the bank refuse to run anywhere else (a CI
+    runner, for instance) for a reason that has nothing to do with the
+    contract of the bank, and it would hide the evidence of the run in a
+    directory that belongs to nobody.
+
+    The property is checked on the TEXT and on the AST of the harness: the
+    module is never imported.
+    """
+    try:
+        tree = ast.parse(harness_text)
+    except SyntaxError as exc:
+        check(
+            "C5-1 el arnes NO declara una raiz de recibos LITERAL: se declara o se deriva de la invocacion",
+            False,
+            "el arnes no se pudo parsear: %s" % exc,
+        )
+        return
+
+    literal_roots = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Name):
+                continue
+            if target.id != "CONTAINMENT_RECEIPT_DIR":
+                continue
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                literal_roots.append(node.value.value)
+    check(
+        "C5-1 el arnes NO declara una raiz de recibos LITERAL: se declara o se deriva de la invocacion",
+        not literal_roots,
+        "literales=%r" % (literal_roots,),
+    )
+
+    machine_paths = sorted(
+        set(re.findall(r"/tmp/opencode/forge-contracts-v2[^\s\"']*", harness_text))
+    )
+    check(
+        "C5-2 el arnes NO cita ninguna ruta fija de una maquina (ni en sus mensajes)",
+        not machine_paths,
+        "rutas=%r" % (machine_paths,),
+    )
+
+
 # ---------------------------------------------------------------------------
 # F3: the observation of the aftermath of the harness.
 #
@@ -1596,6 +1654,7 @@ def main(argv=None):
     )
     probe_f3(args.harness, harness_text)
     probe_f1(args.protected, protected_text)
+    probe_c5(args.harness, harness_text)
 
     failed = [item for item in CHECKS if not item["ok"]]
     payload = {"ok": not failed, "checks": CHECKS}

@@ -44,6 +44,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -142,9 +143,15 @@ verdict is nevertheless HARD: a red auxiliary control fails the run.
 EXTERNAL_ENTRYPOINT_TOKENS = ("cutover.sh", "ROLLBACK.sh", "dbtool")
 
 CONTAINMENT_ENTRY_REL = os.path.join("tools", "verification", "forge-contained-run.sh")
-CONTAINMENT_RECEIPT_DIR = "/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs"
-"""The ONLY directory of receipts the containment accepts. The entry refuses
-any other one, so the evidence of this bank cannot end up somewhere else."""
+CONTAINMENT_RECEIPT_DIR = os.environ.get("FORGE_CONTAINMENT_RECEIPT_DIR", "").strip()
+"""The directory of receipts that the inner containment invocation uses.
+
+It is NOT a path of a machine: the consumer may DECLARE it (and then the
+declaration is the one that is used) and, when it does not, the harness
+derives a directory of ITS OWN invocation (the "receipts" directory of the
+run root). The entry creates the directory when it does not exist, so the
+evidence of this bank always lands in a place that belongs to the run that
+produced it and never in a directory of a machine that may not exist."""
 
 CONTAINMENT_GUARD_REL = os.path.join("tools", "verification", "require-v2-containment.sh")
 """The helper of admission of the containment.
@@ -3254,7 +3261,7 @@ def role_suite(args):
         print(
             "Accion: invoque la cadena completa mediante "
             "tools/verification/forge-contained-run.sh con --receipt-dir "
-            "/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs, un "
+            "<directorio de recibos nuevo, o el que declare la invocacion>, un "
             "--scenario-timeout/--close-timeout revisado y la orden completa tras --."
         )
         return ADMISSION_DENIED_RC
@@ -3581,7 +3588,7 @@ def role_supervisor(args):
         print(
             "Accion: invoque la cadena completa mediante "
             "tools/verification/forge-contained-run.sh con --receipt-dir "
-            "/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs, un "
+            "<directorio de recibos nuevo, o el que declare la invocacion>, un "
             "--scenario-timeout/--close-timeout revisado y la orden completa tras --."
         )
         return ADMISSION_DENIED_RC
@@ -3680,11 +3687,29 @@ def role_supervisor(args):
             % expected_scenario_rc
         )
         return 2
+    # The directory of receipts of the INNER invocation.
+    #
+    # It is NOT a path of a machine: the consumer may DECLARE one and, when
+    # it does not, the harness creates a directory of ITS OWN invocation.
+    #
+    # It is deliberately a SIBLING of the run root and NOT a child of it:
+    # the run root of the supervisor and the run root of the suite are
+    # named with the PID of each role, and the PIDs of two roles CAN
+    # coincide (each role lives in its own PID namespace, where the
+    # numbering restarts). If the receipts lived inside the run root, the
+    # cleanup of the suite could remove the receipt of the supervisor and
+    # the evidence of the invocation would vanish with it.
+    if CONTAINMENT_RECEIPT_DIR:
+        containment_receipt_dir = CONTAINMENT_RECEIPT_DIR
+    else:
+        containment_receipt_dir = tempfile.mkdtemp(
+            prefix="receipts-supervisor-", dir=BATCH_ROOT
+        )
     command = [
         "/bin/bash",
         containment_entry,
         "--receipt-dir",
-        CONTAINMENT_RECEIPT_DIR,
+        containment_receipt_dir,
         "--receipt-out",
         receipt_pointer,
         "--scenario-timeout",

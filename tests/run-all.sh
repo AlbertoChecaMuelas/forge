@@ -424,6 +424,7 @@ if [ "$CLEANUP_STATE" = "OBSERVING" ]; then
 elif [ -n "$CLEANUP_MARKER" ]; then
   # The observation could NOT be performed: the declaration is UNKNOWN and
   # the marker is left absent. An unknown cleanup is never a PASS.
+  # shellcheck disable=SC2034  # estado documentado del agregado (no se lee)
   CLEANUP_AGGREGATE="UNKNOWN"
   echo ""
   echo " Limpieza del producto: UNKNOWN (no se pudo observar: $CLEANUP_STATE)"

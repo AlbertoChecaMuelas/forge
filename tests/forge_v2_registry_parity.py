@@ -84,7 +84,21 @@ NAMESPACE_VARIABLE = "FORGE_CONTAINED_RUN_PID_NAMESPACE"
 RECEIPT_VARIABLE = "FORGE_CONTAINED_RUN_RECEIPT"
 RUN_ID_VARIABLE = "FORGE_CONTAINED_RUN_ID"
 ACCREDITATION_VARIABLE = "FORGE_CONTAINED_RUN_ACCREDITATION_FILE"
-RECEIPT_ROOT = "/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs"
+
+# The root of the receipts is NOT a path of a machine.
+#
+# The detector runs INSIDE the containment of the invocation that published
+# its receipt, and that receipt is the one the entry published in the "run-*"
+# directory that it created. The criterion is therefore STRUCTURAL: the
+# receipt of an invocation is an ABSOLUTE path whose last component is
+# "receipt.txt" and whose parent directory is one of those "run-*" ones.
+#
+# A consumer MAY declare the root explicitly (FORGE_CONTAINED_RECEIPT_ROOT);
+# when it does, the declared root is ALSO required. The declaration is
+# optional on purpose: the detector has to work on any machine, including a
+# CI runner where no directory of a previous qualification exists.
+RECEIPT_ROOT = os.environ.get("FORGE_CONTAINED_RECEIPT_ROOT", "").rstrip("/")
+RECEIPT_RUN_DIR_PREFIX = "run-"
 
 # The RC of a detector that does NOT run because the boundary is not
 # accredited: the same code that the gate of admission uses.
@@ -125,11 +139,20 @@ def accredited_boundary():
     run_id = os.environ.get(RUN_ID_VARIABLE, "")
     if not receipt or not run_id:
         return None, "falta el recibo o el identificador de la invocacion"
-    if not receipt.startswith(RECEIPT_ROOT + "/run-") or not receipt.endswith(
-        "/receipt.txt"
+    # The receipt of THIS invocation: an absolute path, published by the
+    # entry in the "run-*" directory that it created. The root is derived
+    # from the receipt itself, so the criterion does not depend on a path of
+    # a machine (a declared root, when there is one, is ALSO required).
+    receipt_dir = os.path.dirname(receipt)
+    if (
+        not receipt.startswith("/")
+        or not receipt.endswith("/receipt.txt")
+        or not os.path.basename(receipt_dir).startswith(RECEIPT_RUN_DIR_PREFIX)
     ):
         return None, "la ruta del recibo no pertenece a una invocacion autorizada"
-    if os.path.basename(os.path.dirname(receipt)) != run_id:
+    if RECEIPT_ROOT and not receipt.startswith(RECEIPT_ROOT + "/" + RECEIPT_RUN_DIR_PREFIX):
+        return None, "la ruta del recibo no pertenece a una invocacion autorizada"
+    if os.path.basename(receipt_dir) != run_id:
         return None, "el identificador del recibo no coincide con el directorio"
     if not os.path.isfile(receipt):
         return None, "el recibo de la invocacion no existe"

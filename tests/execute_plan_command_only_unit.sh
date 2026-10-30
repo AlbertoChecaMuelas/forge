@@ -39,7 +39,6 @@ cd "$(dirname "$0")/.."
 
 FORGE_ROOT="$(pwd)"
 
-INSTALLER="$FORGE_ROOT/open-code/install-opencode.sh"
 COMMAND_SOURCE="$FORGE_ROOT/open-code/commands/execute-plan.md"
 
 # Optional mutation applied to the COPY of the installer inside the sandbox.

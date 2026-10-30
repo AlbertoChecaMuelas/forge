@@ -18,7 +18,8 @@ import sys
 from pathlib import Path
 
 
-BASE = Path("/tmp/opencode/forge-v2-remediation")
+TEMP_ROOT = Path(os.environ.get("TMPDIR") or "/tmp")
+BASE = Path(os.environ.get("FORGE_V2_REMEDIATION_ROOT") or (TEMP_ROOT / "forge-v2-remediation"))
 SANDBOX_ROOT = BASE / "sandbox"
 SYNTHETIC_ROOT = SANDBOX_ROOT / "step-4.1-synthetic"
 EXPECTED_UID = os.getuid()
@@ -46,21 +47,15 @@ def check_owned_private_directory(path: Path, *, may_create: bool = False) -> No
         fail(f"directory must be mode 0700; refusing to chmod existing path: {path}")
 
 
-def check_temp_parent() -> None:
-    path = Path("/tmp")
+def check_temp_parent(path: Path) -> None:
+    path = path.parent
     if path.is_symlink():
-        fail("refusing symlink /tmp")
+        fail(f"refusing symlink temporary parent: {path}")
     info = path.stat(follow_symlinks=False)
-    if not stat.S_ISDIR(info.st_mode) or not info.st_mode & stat.S_ISVTX:
-        fail("/tmp must be a sticky directory")
-
-
-def check_owned_directory(path: Path) -> None:
-    if path.is_symlink():
-        fail(f"refusing symlink directory: {path}")
-    info = path.stat(follow_symlinks=False)
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != EXPECTED_UID:
-        fail(f"directory is not owned by uid {EXPECTED_UID}: {path}")
+    private_owned = info.st_uid == EXPECTED_UID and stat.S_IMODE(info.st_mode) & 0o077 == 0
+    sticky = bool(info.st_mode & stat.S_ISVTX)
+    if not stat.S_ISDIR(info.st_mode) or not (private_owned or sticky):
+        fail(f"temporary parent must be user-private or sticky: {path}")
 
 
 def process_references_to_sandbox() -> list[dict[str, object]]:
@@ -132,8 +127,7 @@ def main() -> int:
     if len(sys.argv) != 1:
         fail("usage: prepare-sandbox.py")
 
-    check_temp_parent()
-    check_owned_directory(Path("/tmp/opencode"))
+    check_temp_parent(BASE)
     for path in (BASE, SANDBOX_ROOT):
         check_owned_private_directory(path)
 

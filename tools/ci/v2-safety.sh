@@ -77,7 +77,7 @@ if ! mkdir -p -- "$artifacts_parent" || ! mkdir -m 700 -- "$artifacts_parent/$ar
   exit 1
 fi
 ARTIFACTS_DIR="$(cd -- "$artifacts_parent/$artifacts_name" && pwd -P)"
-mkdir -m 700 -- "$ARTIFACTS_DIR/scenarios" "$ARTIFACTS_DIR/logs"
+mkdir -m 700 -- "$ARTIFACTS_DIR/scenarios" "$ARTIFACTS_DIR/logs" "$ARTIFACTS_DIR/controls"
 
 PYTHON_BIN="$(command -v python3 2>/dev/null || true)"
 UNSHARE_BIN="$(command -v unshare 2>/dev/null || true)"
@@ -791,7 +791,6 @@ run_guard_control() {
   local control_log="$ARTIFACTS_DIR/logs/$variant.log"
   local control_runner_rc verify_rc
 
-  mkdir -p -m 700 -- "$ARTIFACTS_DIR/controls"
   if [[ -e "$control_dir" || -L "$control_dir" ]]; then
     echo "FALLO: la evidencia del control ya existe: $control_dir" >&2
     return 1

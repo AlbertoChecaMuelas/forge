@@ -136,8 +136,22 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 FORGE_ROOT="$(pwd)"
-WORKDIR="$(mktemp -d /tmp/opencode/forge-contained-sensitivity.XXXXXX)" || exit 1
-RECEIPT_ROOT="/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs"
+# The ROOT of the fixtures of THIS run.
+#
+# It is NOT a fixed path of a machine: it is derived from the temporary
+# directory of the caller. The directory is CREATED here: `mktemp -d` does
+# not create its parent and a harness that assumes one fails on a machine
+# (or on a CI runner) that does not have it.
+TMPDIR_BASE="${FORGE_TEST_TMP_ROOT:-${TMPDIR:-/tmp}}"
+mkdir -p "$TMPDIR_BASE" 2>/dev/null || true
+WORKDIR="$(mktemp -d "$TMPDIR_BASE/forge-contained-sensitivity.XXXXXX")" || exit 1
+# The ROOT of the receipts of the contained runs: a directory of THIS run,
+# derived from the PID of the harness, so that two harnesses never share it.
+RECEIPT_ROOT="$TMPDIR_BASE/forge-contained-sensitivity-receipts.$$"
+# The root of the receipts is DECLARED to the pieces that have to publish
+# theirs (the runner of the detector), so that no one of them has to know a
+# path of a machine.
+export FORGE_TEST_RECEIPT_ROOT="$RECEIPT_ROOT"
 ENTRY="${FORGE_TEST_ENTRY:-$FORGE_ROOT/tools/verification/forge-contained-run.sh}"
 ISOLATION="$FORGE_ROOT/tests/isolation.sh"
 AGGREGATE="$FORGE_ROOT/tests/forge_run_all_cleanup.py"
@@ -213,6 +227,11 @@ prepare_copies() {
   # mutante N7 la vuelve a abrir un socket.
   cp "$FORGE_ROOT/tests/opencode_install_integration.sh" \
     "$directory/opencode_install_integration.sh" || return 1
+  # La suite de la instalacion (la que instalaba la trampa EXIT que leia un
+  # 'local' de la funcion que la instalaba): el mutante G9 la devuelve a ese
+  # estado y la bateria tiene que detectarlo.
+  cp "$FORGE_ROOT/tests/install_integration.sh" \
+    "$directory/install_integration.sh" || return 1
   # The gate of admission (the kernel handle of the invoking namespace),
   # the harness and the runner of the V2 bank and the probe of its
   # contract: they are the pieces that the new checks measure.
@@ -251,8 +270,12 @@ detector="$2"
 identities="$3"
 result="$4"
 entry="${FORGE_TEST_ENTRY:?}"
-receipt_root=/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs
-run_dir="$(mktemp -d /tmp/opencode/forge-registry-run.XXXXXX)" || exit 70
+# The root of the receipts is DECLARED by the caller: it is a directory of
+# THIS invocation and not a path of a machine. The fallback (a directory
+# unique to this process, under the temporary directory of the caller) keeps
+# the runner usable on its own.
+receipt_root="${FORGE_TEST_RECEIPT_ROOT:-${TMPDIR:-/tmp}/forge-contained-sensitivity-receipts-$$}"
+run_dir="$(mktemp -d "${TMPDIR:-/tmp}/forge-registry-run.XXXXXX")" || exit 70
 
 bash "$entry" \
   --receipt-dir "$receipt_root" \
@@ -572,14 +595,18 @@ EOF
 
   # The receipt of the failed battery runs is preserved: the evidence of a
   # failed run is never deleted. The paths are the ones that the battery
-  # itself published: the receipt root is never enumerated.
+  # itself published: the receipt root is never enumerated and it is NOT a
+  # path of a machine. The pattern is the NAMING CONVENTION of the entry
+  # (a "run-*" directory with a "receipt.txt" inside), so the root is
+  # derived from the real output of the run.
   local preserved=YES checked=0 receipt
   while IFS= read -r receipt; do
     [ -n "$receipt" ] || continue
     checked=$((checked + 1))
     [ -s "$receipt" ] || preserved=NO
   done <<EOF
-$(grep -ho '/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs/run-[^ ]*/receipt.txt' "$log" 2>/dev/null | sort -u)
+$(grep -hoE '(^|[[:space:]])/[^[:space:]]*/run-[^[:space:]]*/receipt\.txt' "$log" 2>/dev/null \
+  | sed -E 's/^[[:space:]]+//' | sort -u)
 EOF
   if [ "$preserved" = "YES" ]; then
     pass "el mutante $label preservo los recibos de sus corridas fallidas ($checked comprobados)"
@@ -3416,6 +3443,326 @@ else
     check_mutant "M32" "$m32/entry.sh" "$m32/isolation.sh" \
       "test_the_network_restriction_states_the_interpreters_that_it_reaches"
   survivor_probe "$m32/entry.sh" "M32"
+fi
+
+# ---------------------------------------------------------------------------
+# The G VECTOR: the corrections that make the battery work on ANY machine.
+#
+# The G mutants restore, on COPIES, the defects that the corrections of this
+# lot removed: the precondition of a GLOBAL artefact of capacity, the
+# dependence on a fixed root of receipts of a machine, the substitution of
+# the RC of the child by the 124 of the wrapper and the EXIT trap that reads
+# a 'local' of the function that installed it.
+#
+# The copies live OUTSIDE the repository: the repository is never modified.
+# ---------------------------------------------------------------------------
+echo "--- G1: el arnes vuelve a exigir un artefacto global de capacidad"
+g1="$WORKDIR/g1"
+prepare_copies "$g1" || exit 1
+python3 - "$g1/isolation.sh" <<'PATCH_EOF'
+import sys
+
+path = sys.argv[1]
+source = open(path, encoding="utf-8").read()
+
+OLD = """  if [ ! -d "$FORGE_CONTAINMENT_RECEIPT_DIR" ]; then
+    (umask 077 && mkdir -p -- "$FORGE_CONTAINMENT_RECEIPT_DIR") 2>/dev/null || {"""
+
+NEW = """  if [ ! -f "/tmp/opencode/forge-contracts-v2/remediacion-contencion/capability.txt" ]; then
+    printf 'no hay evidencia de capacidad de la contencion\\n' >&2
+    return 1
+  fi
+  if [ ! -d "$FORGE_CONTAINMENT_RECEIPT_DIR" ]; then
+    (umask 077 && mkdir -p -- "$FORGE_CONTAINMENT_RECEIPT_DIR") 2>/dev/null || {"""
+
+if source.count(OLD) != 1:
+    sys.stderr.write("G1: ancla no encontrada o ambigua\\n")
+    sys.exit(3)
+open(path, "w", encoding="utf-8").write(source.replace(OLD, NEW, 1))
+PATCH_EOF
+if [ $? -ne 0 ]; then
+  fail "G1: no se pudo aplicar la mutacion a la copia"
+else
+  check_mutant "G1" "$g1/entry.sh" "$g1/isolation.sh" \
+    "test_the_isolation_helper_does_not_name_a_path_of_a_machine" \
+    "test_a_consumer_cannot_run_outside_the_containment" \
+    "test_the_accreditation_is_by_invocation"
+  survivor_probe "$g1/entry.sh" "G1"
+fi
+
+# ---------------------------------------------------------------------------
+echo "--- G2: el arnes deja de crear su propia raiz de recibos"
+g2="$WORKDIR/g2"
+prepare_copies "$g2" || exit 1
+python3 - "$g2/isolation.sh" <<'PATCH_EOF'
+import sys
+
+path = sys.argv[1]
+source = open(path, encoding="utf-8").read()
+
+OLD = """  if [ ! -d "$FORGE_CONTAINMENT_RECEIPT_DIR" ]; then
+    (umask 077 && mkdir -p -- "$FORGE_CONTAINMENT_RECEIPT_DIR") 2>/dev/null || {
+      printf 'no se puede usar el directorio de recibos (%s)\\n' \\
+        "$FORGE_CONTAINMENT_RECEIPT_DIR" >&2
+      return 1
+    }
+  fi"""
+
+NEW = """  if [ ! -d "$FORGE_CONTAINMENT_RECEIPT_DIR" ]; then
+    printf 'no se puede usar el directorio de recibos (%s)\\n' \\
+      "$FORGE_CONTAINMENT_RECEIPT_DIR" >&2
+    return 1
+  fi"""
+
+if source.count(OLD) != 1:
+    sys.stderr.write("G2: ancla no encontrada o ambigua\\n")
+    sys.exit(3)
+open(path, "w", encoding="utf-8").write(source.replace(OLD, NEW, 1))
+PATCH_EOF
+if [ $? -ne 0 ]; then
+  fail "G2: no se pudo aplicar la mutacion a la copia"
+else
+  check_mutant "G2" "$g2/entry.sh" "$g2/isolation.sh" \
+    "test_a_consumer_cannot_run_outside_the_containment"
+  survivor_probe "$g2/entry.sh" "G2"
+fi
+
+# ---------------------------------------------------------------------------
+echo "--- G3: la entrada vuelve a exigir una raiz de recibos fija"
+g3="$WORKDIR/g3"
+prepare_copies "$g3" || exit 1
+python3 - "$g3/entry.sh" <<'PATCH_EOF'
+import sys
+
+path = sys.argv[1]
+source = open(path, encoding="utf-8").read()
+
+OLD = 'valid_seconds "${scenario_timeout:-}" 3600 || { usage; exit 64; }'
+NEW = (
+    '[[ $receipt_root == "/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs" ]]'
+    ' || { usage; exit 64; }\n'
+    + OLD
+)
+
+if source.count(OLD) != 1:
+    sys.stderr.write("G3: ancla no encontrada o ambigua\\n")
+    sys.exit(3)
+open(path, "w", encoding="utf-8").write(source.replace(OLD, NEW, 1))
+PATCH_EOF
+if [ $? -ne 0 ]; then
+  fail "G3: no se pudo aplicar la mutacion a la copia"
+else
+  check_mutant "G3" "$g3/entry.sh" "$g3/isolation.sh" \
+    "test_a_normal_exit_is_certifiable" \
+    "test_the_boundary_and_the_closure_are_accredited"
+  # The mutante rechaza la raiz de recibos ANTES de empezar: no hay entorno
+  # contenido que pueda sobrevivir y no hay recibo que conservar (la sonda de
+  # supervivientes no aplica a un mutante que falla cerrado en la interfaz).
+fi
+
+# ---------------------------------------------------------------------------
+echo "--- G4: la puerta de admision vuelve a exigir una raiz fija"
+g4="$WORKDIR/g4"
+prepare_copies "$g4" || exit 1
+python3 - "$g4/require-v2-containment.sh" <<'PATCH_EOF'
+import sys
+
+path = sys.argv[1]
+source = open(path, encoding="utf-8").read()
+
+OLD = """case "$receipt" in
+  /*/run-*/receipt.txt) ;;"""
+
+NEW = """case "$receipt" in
+  "/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs"/run-*/receipt.txt) ;;"""
+
+if source.count(OLD) != 1:
+    sys.stderr.write("G4: ancla no encontrada o ambigua\\n")
+    sys.exit(3)
+open(path, "w", encoding="utf-8").write(source.replace(OLD, NEW, 1))
+PATCH_EOF
+if [ $? -ne 0 ]; then
+  fail "G4: no se pudo aplicar la mutacion a la copia"
+else
+  check_mutant "G4" "$g4/entry.sh" "$g4/isolation.sh" \
+    "test_the_admission_requires_the_kernel_handle_of_the_invoker"
+  survivor_probe "$g4/entry.sh" "G4"
+fi
+
+# ---------------------------------------------------------------------------
+echo "--- G5: el detector del registro vuelve a exigir una raiz fija"
+g5="$WORKDIR/g5"
+mkdir -p "$g5" || exit 1
+cp "$V2_REGISTRY_DETECTOR" "$g5/forge_v2_registry_parity.py" || exit 1
+python3 - "$g5/forge_v2_registry_parity.py" <<'PATCH_EOF'
+import sys
+
+path = sys.argv[1]
+source = open(path, encoding="utf-8").read()
+
+OLD = """    if (
+        not receipt.startswith("/")
+        or not receipt.endswith("/receipt.txt")
+        or not os.path.basename(receipt_dir).startswith(RECEIPT_RUN_DIR_PREFIX)
+    ):
+        return None, "la ruta del recibo no pertenece a una invocacion autorizada\""""
+
+NEW = """    if (
+        not receipt.startswith(
+            "/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs/run-"
+        )
+        or not receipt.endswith("/receipt.txt")
+    ):
+        return None, "la ruta del recibo no pertenece a una invocacion autorizada\""""
+
+if source.count(OLD) != 1:
+    sys.stderr.write("G5: ancla no encontrada o ambigua\\n")
+    sys.exit(3)
+open(path, "w", encoding="utf-8").write(source.replace(OLD, NEW, 1))
+PATCH_EOF
+if [ $? -ne 0 ]; then
+  fail "G5: no se pudo aplicar la mutacion a la copia"
+else
+  g5_control_result="$WORKDIR/g5-control-result.txt"
+  g5_mutant_result="$WORKDIR/g5-mutant-result.txt"
+  : > "$g5_control_result"
+  : > "$g5_mutant_result"
+  check_external_battery "G5" "$WORKDIR/battery-g5.log" "$WORKDIR/battery-g5-control.log" \
+    "the boundary is not accredited" \
+    --control env FORGE_TEST_ENTRY="$ENTRY" \
+      "$REGISTRY_RUNNER" "$V2_SCENARIOS" "$V2_REGISTRY_DETECTOR" \
+        "$WORKDIR/g5-control-identities.txt" "$g5_control_result" \
+    --mutant env FORGE_TEST_ENTRY="$ENTRY" \
+      "$REGISTRY_RUNNER" "$V2_SCENARIOS" "$g5/forge_v2_registry_parity.py" \
+        "$WORKDIR/g5-mutant-identities.txt" "$g5_mutant_result"
+fi
+
+# ---------------------------------------------------------------------------
+echo "--- G6: el arnes del banco vuelve a citar una ruta fija de una maquina"
+g6="$WORKDIR/g6"
+prepare_copies "$g6" || exit 1
+python3 - "$g6/forge_v2_safety_harness.py" <<'PATCH_EOF'
+import sys
+
+path = sys.argv[1]
+source = open(path, encoding="utf-8").read()
+
+pairs = [
+    (
+        'CONTAINMENT_RECEIPT_DIR = os.environ.get("FORGE_CONTAINMENT_RECEIPT_DIR", "").strip()',
+        'CONTAINMENT_RECEIPT_DIR = '
+        '"/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs"',
+    ),
+    (
+        '"<directorio de recibos nuevo, o el que declare la invocacion>, un "',
+        '"/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs, un "',
+    ),
+]
+for old, new in pairs:
+    if source.count(old) < 1:
+        sys.stderr.write("G6: ancla no encontrada: %r\\n" % old)
+        sys.exit(3)
+    source = source.replace(old, new)
+
+open(path, "w", encoding="utf-8").write(source)
+PATCH_EOF
+if [ $? -ne 0 ]; then
+  fail "G6: no se pudo aplicar la mutacion a la copia"
+else
+  check_mutant "G6" "$g6/entry.sh" "$g6/isolation.sh" \
+    "test_the_exit_code_of_the_eliminated_scenario_is_the_observed_signal" \
+    "test_the_closure_verdict_requires_every_link_and_observes_the_absence"
+  survivor_probe "$g6/entry.sh" "G6"
+fi
+
+# ---------------------------------------------------------------------------
+echo "--- G7: el 124 del envoltorio sustituye el RC real del hijo"
+g7="$WORKDIR/g7"
+prepare_copies "$g7" || exit 1
+python3 - "$g7/entry.sh" <<'PATCH_EOF'
+import sys
+
+path = sys.argv[1]
+source = open(path, encoding="utf-8").read()
+
+OLD = """elif /usr/bin/grep -Fq 'sending signal TERM' "$timeout_log" 2>/dev/null; then
+  scenario_status=TIMEOUT
+  wrapper_rc=124"""
+
+NEW = """elif /usr/bin/grep -Fq 'sending signal TERM' "$timeout_log" 2>/dev/null; then
+  scenario_status=TIMEOUT
+  scenario_rc=124
+  wrapper_rc=124"""
+
+if source.count(OLD) != 1:
+    sys.stderr.write("G7: ancla no encontrada o ambigua\\n")
+    sys.exit(3)
+open(path, "w", encoding="utf-8").write(source.replace(OLD, NEW, 1))
+PATCH_EOF
+if [ $? -ne 0 ]; then
+  fail "G7: no se pudo aplicar la mutacion a la copia"
+else
+  check_mutant "G7" "$g7/entry.sh" "$g7/isolation.sh" \
+    "test_the_sigkill_is_published_as_minus_nine_and_the_wrapper_124_does_not_substitute_it" \
+    "test_a_scenario_that_ignores_term_is_closed_by_kill_and_observed"
+  survivor_probe "$g7/entry.sh" "G7"
+fi
+
+# ---------------------------------------------------------------------------
+echo "--- G8: la conversion del RC acepta el 124 del envoltorio como un -9"
+g8="$WORKDIR/g8"
+prepare_copies "$g8" || exit 1
+python3 - "$g8/forge_v2_safety_harness.py" <<'PATCH_EOF'
+import sys
+
+path = sys.argv[1]
+source = open(path, encoding="utf-8").read()
+
+OLD = """    # The POSITIVE form: an exit status, or the 128+N of the shell.
+    if number < 128:
+        return number"""
+
+NEW = """    # The POSITIVE form: an exit status, or the 128+N of the shell.
+    if number < 128:
+        return -9 if number == 124 else number"""
+
+if source.count(OLD) != 1:
+    sys.stderr.write("G8: ancla no encontrada o ambigua\\n")
+    sys.exit(3)
+open(path, "w", encoding="utf-8").write(source.replace(OLD, NEW, 1))
+PATCH_EOF
+if [ $? -ne 0 ]; then
+  fail "G8: no se pudo aplicar la mutacion a la copia"
+else
+  check_mutant "G8" "$g8/entry.sh" "$g8/isolation.sh" \
+    "test_the_sigkill_is_published_as_minus_nine_and_the_wrapper_124_does_not_substitute_it"
+  survivor_probe "$g8/entry.sh" "G8"
+fi
+
+# ---------------------------------------------------------------------------
+echo "--- G9: una trampa EXIT vuelve a leer un 'local' de su funcion"
+g9="$WORKDIR/g9"
+prepare_copies "$g9" || exit 1
+python3 - "$g9/install_integration.sh" <<'PATCH_EOF'
+import sys
+
+path = sys.argv[1]
+source = open(path, encoding="utf-8").read()
+
+OLD = 'install_exit_cleanup "$TMPHOME"'
+NEW = "trap 'rm -rf \"$TMPHOME\"' EXIT"
+
+if source.count(OLD) < 1:
+    sys.stderr.write("G9: ancla no encontrada\\n")
+    sys.exit(3)
+open(path, "w", encoding="utf-8").write(source.replace(OLD, NEW))
+PATCH_EOF
+if [ $? -ne 0 ]; then
+  fail "G9: no se pudo aplicar la mutacion a la copia"
+else
+  check_mutant "G9" "$g9/entry.sh" "$g9/isolation.sh" \
+    "test_no_exit_trap_of_the_suites_reads_a_variable_out_of_scope"
+  survivor_probe "$g9/entry.sh" "G9"
 fi
 
 # ---------------------------------------------------------------------------

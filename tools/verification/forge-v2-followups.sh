@@ -3,15 +3,19 @@
 set -euo pipefail
 umask 077
 
-REPO=/home/espinilleitor/repos/own/forge
-EXTERNAL=/home/espinilleitor/forge-v2-cutover-20261024
-PREVIOUS_EVIDENCE=/tmp/opencode/forge-v2-followups
-BASE=/tmp/opencode/forge-v2-coverage-closure-20261025
+REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+FORGE_V2_DATA_ROOT="${FORGE_V2_DATA_ROOT:-${TMPDIR:-/tmp}/forge-v2-followups}"
+FORGE_V2_REMEDIATION_ROOT="${FORGE_V2_REMEDIATION_ROOT:-${TMPDIR:-/tmp}/forge-v2-remediation}"
+export FORGE_V2_REMEDIATION_ROOT
+EXTERNAL="${FORGE_V2_EXTERNAL_ROOT:-$REPO/tools/cutover/forge-v2}"
+PREVIOUS_EVIDENCE="${FORGE_V2_PREVIOUS_EVIDENCE:-$FORGE_V2_DATA_ROOT/previous-evidence}"
+BASE="${FORGE_V2_COVERAGE_CLOSURE_ROOT:-$FORGE_V2_DATA_ROOT/coverage-closure}"
 RUNS="$BASE/runs"
-BACKUP=/tmp/opencode/forge-v2-remediation/backup
-CHECKPOINT=/tmp/opencode/forge-v2-followups-checkpoint/checkpoint.commit
-EXTERNAL_BACKUP=/tmp/opencode/forge-v2-followups-checkpoint/external
-SYNTHETIC=/tmp/opencode/forge-v2-remediation/sandbox/step-4.1-synthetic
+BACKUP="${FORGE_V2_REMEDIATION_BACKUP:-$FORGE_V2_REMEDIATION_ROOT/backup}"
+CHECKPOINT_ROOT="${FORGE_V2_CHECKPOINT_ROOT:-$FORGE_V2_DATA_ROOT/checkpoint}"
+CHECKPOINT="${FORGE_V2_CHECKPOINT_FILE:-$CHECKPOINT_ROOT/checkpoint.commit}"
+EXTERNAL_BACKUP="${FORGE_V2_EXTERNAL_BACKUP:-$CHECKPOINT_ROOT/external}"
+SYNTHETIC="$FORGE_V2_REMEDIATION_ROOT/sandbox/step-4.1-synthetic"
 CHECKPOINT_DIR="${FORGE_V2_CLOSURE_CHECKPOINT:-}"
 FORGE_V2_EXTERNAL_ROOT="${FORGE_V2_EXTERNAL_ROOT:-$EXTERNAL}"
 FORGE_V2_REAL_DB="${FORGE_V2_REAL_DB:-$HOME/.local/share/opencode/opencode.db}"
@@ -32,9 +36,12 @@ RESIDUAL_PID=530393
 RESIDUAL_START_TICKS=26522468
 RESIDUAL_BOOT_ID=3df94600-d3e9-4486-879b-452396bca532
 RESIDUAL_UID=1000
-RESIDUAL_EXE='/tmp/opencode/cutover-lab/xdg/data/forge/opencode-v2/node_modules/@opencode/cli/bin/opencode.exe (deleted)'
+RESIDUAL_ROOT="${FORGE_V2_RESIDUAL_ROOT:-${TMPDIR:-/tmp}/cutover-lab/xdg/data/forge/opencode-v2}"
+RESIDUAL_EXE="${FORGE_V2_RESIDUAL_EXE:-$RESIDUAL_ROOT/node_modules/@opencode/cli/bin/opencode.exe (deleted)}"
+RESIDUAL_BINARY="${FORGE_V2_RESIDUAL_BINARY:-$RESIDUAL_ROOT/node_modules/.bin/opencode}"
+export FORGE_V2_RESIDUAL_EXE="$RESIDUAL_EXE" FORGE_V2_RESIDUAL_BINARY="$RESIDUAL_BINARY"
 RESIDUAL_CMDLINE=(
-  '/tmp/opencode/cutover-lab/xdg/data/forge/opencode-v2/node_modules/.bin/opencode'
+  "$RESIDUAL_BINARY"
   serve --hostname 127.0.0.1 --port 34765 --print-logs
 )
 
@@ -1236,9 +1243,9 @@ else
     "$EXPECTED_CHECKPOINT" "$CURRENT_HEAD"
   exit 1
 fi
-test -s /tmp/opencode/forge-v2-followups-checkpoint/external.sha256
-test -s /tmp/opencode/forge-v2-followups-checkpoint/approved.patch
-test -s /tmp/opencode/forge-v2-remediation/backup/SHA256SUMS
+test -s "$CHECKPOINT_ROOT/external.sha256"
+test -s "$CHECKPOINT_ROOT/approved.patch"
+test -s "$BACKUP/SHA256SUMS"
 
 if ! check_residual_pid preflight "$RUN_DIR/pid-530393-preflight.tsv"; then
   exit 1
@@ -1289,6 +1296,7 @@ fi
 
 python3 - "$PREVIOUS_EVIDENCE/external-after.sha256" "$CHECKPOINT_DIR" "$RUN_DIR/checkpoint-pid-validation.json" <<'PY'
 import json
+import os
 import pathlib
 import sys
 
@@ -1318,10 +1326,10 @@ if checkpoint_dir:
     checkpoint = json.loads(pid_path.read_text(encoding="utf-8"))
     identity = checkpoint.get("identity") or {}
     expected_cmdline = [
-        "/tmp/opencode/cutover-lab/xdg/data/forge/opencode-v2/node_modules/.bin/opencode",
+        os.environ["FORGE_V2_RESIDUAL_BINARY"],
         "serve", "--hostname", "127.0.0.1", "--port", "34765", "--print-logs",
     ]
-    expected_exe = "/tmp/opencode/cutover-lab/xdg/data/forge/opencode-v2/node_modules/@opencode/cli/bin/opencode.exe (deleted)"
+    expected_exe = os.environ["FORGE_V2_RESIDUAL_EXE"]
     service = checkpoint.get("service_expected") or {}
     listen_rows = service.get("verified_listen_rows") or []
     expected_listen_row = any(
@@ -1405,7 +1413,7 @@ for directory in home config data state cache; do
   test -d "$SYNTHETIC/$directory"
 done
 
-PINNED_BINARY=/home/espinilleitor/.local/share/forge/opencode-v2/node_modules/.bin/opencode
+PINNED_BINARY="${FORGE_V2_PINNED_BINARY:-$HOME/.local/share/forge/opencode-v2/node_modules/.bin/opencode}"
 test -x "$PINNED_BINARY"
 env -i \
   HOME="$SYNTHETIC/home" \

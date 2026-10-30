@@ -3087,7 +3087,7 @@ test_launcher_isolates_mcp_list_from_the_shared_service() {
   local sandbox home fixture_repo launcher install_rc=0 launch_rc=0
   local pinned_binary log_file decoy_registry decoy_before decoy_after
   local db resolved resolved_registry mcp_line state_of_mcp db_of_mcp
-  local sockets_file sockets_count
+  local sockets_count
   sandbox="$(mktemp -d "$TEST_TMP_ROOT/mcp-isolation.XXXXXX")"
   home="$sandbox/home"
   TMP_TEST_HOME="$home"

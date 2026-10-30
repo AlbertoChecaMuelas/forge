@@ -6,15 +6,13 @@
 # tools/verification/V2-CONTAINMENT-CONTRACT.md.
 set -u
 
-readonly RECEIPT_ROOT='/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs'
-readonly EXPECTED_RECEIPT_ROOT="$RECEIPT_ROOT"
 readonly INVOKER_PID_NAMESPACE_FD=8
 
 fail() {
   printf 'BLOCKED: %s\n' "$1" >&2
   printf '%s\n' \
     'Accion: use la cadena controlada mediante tools/verification/forge-contained-run.sh,' \
-    'con --receipt-dir /tmp/opencode/forge-contracts-v2/remediacion-contencion/runs,' \
+    'con --receipt-dir <directorio nuevo o autorizado> (o deja que la entrada cree uno bajo TMPDIR),' \
     'un --scenario-timeout/--close-timeout revisado y la orden completa tras --. Esta puerta solo comprueba coherencia de namespaces; FD 8 no autentica procedencia ni direccion de frontera.' >&2
   exit 78
 }
@@ -44,8 +42,8 @@ mount_namespace=${FORGE_CONTAINED_RUN_MOUNT_NAMESPACE:-}
 product_cleanup_file=${FORGE_PRODUCT_CLEANUP_RESULT_FILE:-}
 
 case "$receipt" in
-  "$EXPECTED_RECEIPT_ROOT"/run-*/receipt.txt) ;;
-  *) fail 'falta un recibo en la ruta fijada por el contrato.' ;;
+  /*/run-*/receipt.txt) ;;
+  *) fail 'falta el recibo de la invocacion actual en su directorio run.' ;;
 esac
 
 run_dir=${receipt%/receipt.txt}

@@ -5,7 +5,6 @@
 # scenario timeout runs inside PID 1 so no timeout process can kill unshare
 # before unshare has waited for PID 1.
 
-readonly RECEIPT_ROOT='/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs'
 readonly UN_SHARE='/usr/bin/unshare'
 readonly SETSID='/usr/bin/setsid'
 readonly TIMEOUT='/usr/bin/timeout'
@@ -29,7 +28,7 @@ unset FORGE_CONTAINED_RUN_SIGNAL_DEFAULTED_PID
 
 usage() {
   printf '%s\n' \
-    'Usage: bash tools/verification/forge-contained-run.sh --receipt-dir /tmp/opencode/forge-contracts-v2/remediacion-contencion/runs [--receipt-out <file>] --scenario-timeout <1..3600> --close-timeout <1..60> -- <command> [args...]' >&2
+    'Usage: bash tools/verification/forge-contained-run.sh [--receipt-dir <directory>] [--receipt-out <file>] --scenario-timeout <1..3600> --close-timeout <1..60> -- <command> [args...]' >&2
 }
 
 valid_seconds() {
@@ -37,6 +36,7 @@ valid_seconds() {
 }
 
 receipt_root=''
+receipt_root_explicit=NO
 receipt_out=''
 scenario_timeout=''
 close_timeout=''
@@ -47,7 +47,9 @@ while (($#)); do
     --receipt-dir)
       (($# >= 2)) || { usage; exit 64; }
       [[ -z $receipt_root ]] || { usage; exit 64; }
+      [[ -n $2 ]] || { usage; exit 64; }
       receipt_root=$2
+      receipt_root_explicit=YES
       shift 2
       ;;
     --receipt-out)
@@ -80,7 +82,6 @@ while (($#)); do
   esac
 done
 
-[[ $receipt_root == "$RECEIPT_ROOT" ]] || { usage; exit 64; }
 valid_seconds "${scenario_timeout:-}" 3600 || { usage; exit 64; }
 valid_seconds "${close_timeout:-}" 60 || { usage; exit 64; }
 ((${#scenario_argv[@]} > 0)) || { usage; exit 64; }
@@ -139,10 +140,25 @@ if ! exec 8</proc/self/ns/pid; then
 fi
 
 umask 077
+if [[ $receipt_root_explicit == NO ]]; then
+  default_tmp_root=${TMPDIR:-/tmp}
+  [[ -d $default_tmp_root ]] || {
+    printf 'Default temporary directory is unavailable: %s\n' "$default_tmp_root" >&2
+    exit 73
+  }
+  receipt_root=$(/usr/bin/mktemp -d -- "$default_tmp_root/forge-contained-run-receipts.XXXXXXXX") || {
+    printf 'Cannot create a private default receipt directory under %s\n' "$default_tmp_root" >&2
+    exit 73
+  }
+fi
 if ! mkdir -p -- "$receipt_root"; then
   printf 'Cannot create receipt root: %s\n' "$receipt_root" >&2
   exit 73
 fi
+receipt_root=$(cd -- "$receipt_root" && pwd -P) || {
+  printf 'Cannot resolve receipt root: %s\n' "$receipt_root" >&2
+  exit 73
+}
 
 started_at=$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%SZ') || exit 70
 run_dir=$(/usr/bin/mktemp -d -- "$receipt_root/run-${started_at//[-:]/}-$$-XXXXXXXX") || {
@@ -500,7 +516,9 @@ write_status setup.status PASS || exit 70
 
 if [ "$interruption" != NONE ]; then finish_pid1; fi
 
-/usr/bin/timeout --foreground --verbose --signal=TERM \
+# Preserve GNU timeout's child's wait status: a process escalated to SIGKILL
+# must be recorded as 137, not replaced with timeout's synthetic 124.
+/usr/bin/timeout --foreground --verbose --preserve-status --signal=TERM \
   --kill-after="${FORGE_CONTAINED_CLOSE_TIMEOUT:-1}s" \
   "${FORGE_CONTAINED_SCENARIO_TIMEOUT:-1}s" \
   /bin/sh -c 'exec "$@" >&3 2>&4 3>&- 4>&- 5<&-' forge-contained-scenario \

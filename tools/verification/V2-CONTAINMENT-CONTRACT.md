@@ -26,6 +26,12 @@ certificación. Sólo es evidencia aceptable una ejecución iniciada por la entr
 confiable y vinculada a su cierre exterior confirmado. Un `PASS` directo del
 consumidor no certifica contención.
 
+La frontera PID/proc se acredita **en cada invocación** antes de ejecutar el
+escenario. No requiere un `capability.txt` preexistente ni otro artefacto global.
+Los recibos se escriben bajo el directorio `--receipt-dir` indicado por el
+consumidor; si se omite, la entrada crea un directorio único y privado bajo
+`${TMPDIR:-/tmp}`.
+
 ## Requisito adversarial no satisfecho
 
 Impedir invocaciones del host deliberadamente falsificadas por el mismo usuario

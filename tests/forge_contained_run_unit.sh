@@ -160,11 +160,38 @@ unset FORGE_PRODUCT_CLEANUP_DECLARATIONS_FILE
 # is used by every helper and not only by the direct invocations.
 FORGE_CONTAINMENT_ENTRY="$FORGE_TEST_ENTRY"
 
+# The helpers of the isolation read the ROOT of the receipts from this
+# variable. It is pointed at the root of THIS battery right after the
+# source, so that the direct invocations and the helper publish their
+# receipts in the SAME place: one directory per battery, derived from this
+# invocation and not from a machine.
+FORGE_CONTAINMENT_RECEIPT_DIR=""
+
 FAIL=0
 PASS=0
-TMPDIR_BASE="/tmp/opencode"
+# The ROOT of the fixtures of THIS run.
+#
+# It is NOT a fixed path of a machine: it is derived from the temporary
+# directory of the caller, so that the battery runs in parallel and on a
+# machine (or on a CI runner) where no directory of a previous qualification
+# exists. The directory is CREATED here: `mktemp -d` does not create its
+# parent and a battery that assumes one fails on a machine that does not have
+# it.
+TMPDIR_BASE="${FORGE_TEST_TMP_ROOT:-${TMPDIR:-/tmp}}"
+mkdir -p "$TMPDIR_BASE" 2>/dev/null || true
 ENTRY="$FORGE_TEST_ENTRY"
-RECEIPT_ROOT="/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs"
+# The ROOT of the receipts of the contained runs.
+#
+# It is NOT a path of a machine: it is a directory of THIS run, derived from
+# the PID of the battery, so that two batteries never share it. It lives
+# OUTSIDE the work directory on purpose: the receipts of the runs that could
+# NOT be certified are the evidence of a failure and they are never deleted
+# to make a run look clean.
+RECEIPT_ROOT="${TMPDIR_BASE}/forge-contained-receipts.$$"
+# The helper of the isolation publishes its receipts in the SAME root: the
+# evidence of the whole battery lives in one place and it does not depend on
+# any directory of a machine.
+FORGE_CONTAINMENT_RECEIPT_DIR="$RECEIPT_ROOT"
 
 # The result of every check is ALSO written in this file. The checks run
 # each one in a subshell (see run_test), so the counters of the shell are
@@ -831,15 +858,45 @@ test_the_interface_fails_closed() {
     fail "una invocacion sin orden deberia rechazarse con RC 64 (rc=$ENTRY_RC)"
   fi
 
-  # A receipt directory that is not the authorized one is rejected: there is
-  # no place to hide the evidence.
+  # The root of the receipts is DECLARED by the invocation and it is CREATED
+  # when it does not exist: the evidence of a run lands where the run said,
+  # on any machine (a developer one or a CI runner). There is no "root
+  # autorizado" of a machine any more, because the accreditation of the
+  # boundary is BY INVOCATION.
+  #
+  # A DECLARATION that cannot be used is still rejected: the evidence cannot
+  # land nowhere and it cannot land in two places at once.
   rm -f "$WORKDIR/pointer.txt"
+  local declared_rc=0
   bash "$ENTRY" --receipt-dir "$WORKDIR/elsewhere" --receipt-out "$WORKDIR/pointer.txt" \
+    --scenario-timeout 20 --close-timeout 3 -- /bin/true >/dev/null 2>&1 || declared_rc=$?
+  local declared_receipt=""
+  [ -s "$WORKDIR/pointer.txt" ] && IFS= read -r declared_receipt < "$WORKDIR/pointer.txt"
+  if [ -n "$declared_receipt" ] && [ -s "$declared_receipt" ] \
+    && [ -d "$WORKDIR/elsewhere" ] \
+    && [ "${declared_receipt#"$WORKDIR/elsewhere/"}" != "$declared_receipt" ]; then
+    pass "un directorio de recibos DECLARADO por la invocacion se acepta y se crea: la evidencia no depende de una maquina"
+  else
+    fail "un directorio de recibos declarado por la invocacion deberia aceptarse y crearse (rc=$declared_rc recibo=$declared_receipt)"
+  fi
+
+  rm -f "$WORKDIR/pointer.txt"
+  bash "$ENTRY" --receipt-dir "" --receipt-out "$WORKDIR/pointer.txt" \
     --scenario-timeout 20 --close-timeout 3 -- /bin/true >/dev/null 2>&1
   if [ "$?" -eq 64 ]; then
-    pass "un directorio de recibos no autorizado se rechaza con RC 64"
+    pass "un directorio de recibos VACIO se rechaza con RC 64"
   else
-    fail "un directorio de recibos no autorizado deberia rechazarse con RC 64"
+    fail "un directorio de recibos vacio deberia rechazarse con RC 64"
+  fi
+
+  rm -f "$WORKDIR/pointer.txt"
+  bash "$ENTRY" --receipt-dir "$WORKDIR/elsewhere" --receipt-dir "$WORKDIR/elsewhere-2" \
+    --receipt-out "$WORKDIR/pointer.txt" \
+    --scenario-timeout 20 --close-timeout 3 -- /bin/true >/dev/null 2>&1
+  if [ "$?" -eq 64 ]; then
+    pass "un directorio de recibos DUPLICADO se rechaza con RC 64"
+  else
+    fail "un directorio de recibos duplicado deberia rechazarse con RC 64"
   fi
 }
 
@@ -1302,16 +1359,26 @@ KILLER_SCENARIO_EOF
 # 9. The consumers of the entry cannot run a scenario outside it.
 # ---------------------------------------------------------------------------
 test_a_consumer_cannot_run_outside_the_containment() {
-  # Without the evidence of the capacity of this machine, the entry is not
-  # available and the consumer fails: there is no fallback to the host.
-  local saved_capability="${FORGE_CONTAINMENT_CAPABILITY_FILE}"
-  FORGE_CONTAINMENT_CAPABILITY_FILE="$WORKDIR/no-capability.txt"
+  # The accreditation of the boundary is BY INVOCATION: the entry certifies
+  # its own interior on every run and the receipt of THAT run is the
+  # evidence. The consumer therefore demands NO artefact produced by a
+  # previous qualification: such a demand would only prove that the machine
+  # is the one that produced it, and it would refuse to run on ANY other
+  # machine (a CI runner, for instance) for a reason that has nothing to do
+  # with the containment.
+  local saved_root="${FORGE_CONTAINMENT_RECEIPT_DIR}"
+  FORGE_CONTAINMENT_RECEIPT_DIR="$WORKDIR/receipts-de-esta-invocacion"
   if forge_containment_available; then
-    fail "la contencion se declaro disponible sin evidencia de capacidad"
+    pass "la contencion esta disponible sin NINGUN artefacto global: la acreditacion es por invocacion"
   else
-    pass "sin evidencia de capacidad la contencion no esta disponible: no hay degradacion al host"
+    fail "la contencion NO esta disponible sin ningun artefacto global"
   fi
-  FORGE_CONTAINMENT_CAPABILITY_FILE="$saved_capability"
+  if [ -d "$FORGE_CONTAINMENT_RECEIPT_DIR" ]; then
+    pass "el directorio de recibos se crea en la ruta que declara ESTA invocacion"
+  else
+    fail "el directorio de recibos no se creo en la ruta que declara ESTA invocacion"
+  fi
+  FORGE_CONTAINMENT_RECEIPT_DIR="$saved_root"
 
   # A scenario that does not exist is refused before any work.
   local rc=0
@@ -1320,6 +1387,101 @@ test_a_consumer_cannot_run_outside_the_containment() {
     pass "un escenario inexistente se rechaza antes de ejecutar nada (rc=$rc)"
   else
     fail "un escenario inexistente no se rechazo"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 9.bis The accreditation of the boundary is BY INVOCATION.
+#
+# The property is proved with REAL invocations of the entry:
+#
+#   (a) an invocation whose boundary CANNOT be accredited FAILS CLOSED: the
+#       scenario does NOT run, the RC is 70 and the receipt records
+#       ACCREDITATION=FAILED, SCENARIO_STATUS=NOT_STARTED and an evidence
+#       that is NOT certifiable;
+#   (b) an invocation whose boundary IS accredited CERTIFIES: the receipt
+#       records ACCREDITATION=PASS and CONTAINMENT_EVIDENCE_CERTIFIABLE=YES.
+#
+# NEITHER of them reads an artefact of a previous qualification: the verdict
+# is the one of the invocation that produced it. A harness that demanded a
+# global artefact would prove something else entirely (that the machine is
+# the one that produced it), and it would refuse to run anywhere else.
+# ---------------------------------------------------------------------------
+test_the_accreditation_is_by_invocation() {
+  # (a) An invocation WITHOUT a private /proc cannot accredit its boundary.
+  local copy="$WORKDIR/entry-without-private-proc.sh"
+  if ! patch_entry_copy "$ENTRY" "$copy" "no-mount-proc"; then
+    fail "no se pudo preparar la copia sin /proc privado"
+    return
+  fi
+  if cmp -s "$ENTRY" "$copy"; then
+    fail "la copia sin /proc privado es IDENTICA a la entrada: el parche no se aplico"
+    return
+  fi
+
+  local marker="$WORKDIR/marker-by-invocation.txt"
+  local pointer="$WORKDIR/ptr-by-invocation.txt"
+  rm -f "$marker" "$pointer"
+  write_marker_scenario "$WORKDIR/marker-by-invocation-scenario.sh"
+
+  local rc=0
+  bash "$copy" \
+    --receipt-dir "$RECEIPT_ROOT" \
+    --receipt-out "$pointer" \
+    --scenario-timeout 20 \
+    --close-timeout 3 \
+    -- /bin/sh "$WORKDIR/marker-by-invocation-scenario.sh" "$marker" \
+    >"$WORKDIR/out-by-invocation.txt" 2>"$WORKDIR/err-by-invocation.txt" || rc=$?
+
+  if [ ! -s "$marker" ]; then
+    pass "una invocacion que NO acredita su frontera NO ejecuta el escenario"
+  else
+    fail "una invocacion que NO acredita su frontera EJECUTO el escenario: el marcador existe"
+  fi
+  if [ "$rc" -eq 70 ]; then
+    pass "una invocacion que NO acredita su frontera falla CERRADO (rc=70)"
+  else
+    fail "una invocacion que NO acredita su frontera deberia fallar cerrado (rc=$rc)"
+  fi
+
+  local receipt=""
+  [ -s "$pointer" ] && IFS= read -r receipt < "$pointer"
+  if [ -z "$receipt" ] || [ ! -s "$receipt" ]; then
+    fail "la invocacion no acreditada no dejo recibo: la evidencia no puede faltar"
+    return
+  fi
+  if [ "$(forge_receipt_read "$receipt" ACCREDITATION 2>/dev/null || true)" = "FAILED" ] \
+    && [ "$(forge_receipt_read "$receipt" SCENARIO_STATUS 2>/dev/null || true)" = "NOT_STARTED" ] \
+    && [ "$(forge_receipt_read "$receipt" CONTAINMENT_EVIDENCE_CERTIFIABLE 2>/dev/null || true)" = "NO" ]; then
+    pass "el recibo de la invocacion no acreditada registra ACCREDITATION=FAILED, NOT_STARTED y evidencia NO certificable"
+  else
+    fail "el recibo de la invocacion no acreditada no registra el estado correcto"
+    forge_receipt_summary "$receipt" >&2 || true
+  fi
+
+  # (b) An invocation that accredits its boundary CERTIFIES, and the verdict
+  #     comes from THAT invocation.
+  local scenario rc_ok=0
+  scenario="$(forge_contained_scenario "$WORKDIR/home")" || {
+    fail "no se pudo preparar el escenario contenido"
+    return
+  }
+  forge_contained_run "$scenario" /bin/true >/dev/null 2>&1 || rc_ok=$?
+  rm -f "$scenario"
+
+  local receipt_ok="$FORGE_CONTAINMENT_LAST_RECEIPT"
+  if [ -z "$receipt_ok" ] || [ ! -s "$receipt_ok" ]; then
+    fail "la invocacion acreditada no dejo recibo"
+    return
+  fi
+  if [ "$rc_ok" -eq 0 ] \
+    && [ "$(forge_receipt_read "$receipt_ok" ACCREDITATION 2>/dev/null || true)" = "PASS" ] \
+    && [ "$(forge_receipt_read "$receipt_ok" SCENARIO_STATUS 2>/dev/null || true)" = "COMPLETED" ] \
+    && [ "$(forge_receipt_read "$receipt_ok" CONTAINMENT_EVIDENCE_CERTIFIABLE 2>/dev/null || true)" = "YES" ]; then
+    pass "una invocacion que acredita su frontera CERTIFICA: el veredicto es el de ESA invocacion"
+  else
+    fail "una invocacion que acredita su frontera NO certifica"
+    forge_receipt_summary "$receipt_ok" >&2 || true
   fi
 }
 
@@ -4690,6 +4852,193 @@ test_the_bank_contract_of_the_eliminated_scenario_expects_the_sigkill() {
 }
 
 # ---------------------------------------------------------------------------
+# 45. The EXIT traps of the suites do not read a variable OUT OF SCOPE.
+#
+# An EXIT trap whose body reads a `local` of the function that installed it
+# fails with "unbound variable" when the shell leaves that function, and that
+# failure is surfaced AFTER the real diagnostic: the reader sees the message
+# of the trap instead of the message of the test that failed, and the CAUSE
+# is masked by an error that says nothing about the cause.
+#
+# The check is STATIC and it covers EVERY suite of the tree: a trap that
+# reads a `local` is a defect wherever it is. It has TWO parts:
+#
+#   a) a trap that reads a variable declared `local` in the function that
+#      installs it is a DEFECT: the variable does not exist any more when
+#      the trap fires;
+#   b) a trap that reads a variable that the file NEVER assigns is a DEFECT
+#      as well: the variable is unbound when the trap fires.
+#
+# The tree that is scanned is the directory of the helper UNDER TEST, so the
+# sensitivity harness can point the battery at a mutated copy and see the
+# detector react.
+# ---------------------------------------------------------------------------
+test_no_exit_trap_of_the_suites_reads_a_variable_out_of_scope() {
+  local tree
+  tree="$(dirname "$FORGE_TEST_ISOLATION")"
+
+  local report="$WORKDIR/trap-scope.json"
+  local rc=0
+  python3 - "$tree" > "$report" 2>"$WORKDIR/trap-scope.err" <<'PY_EOF' || rc=$?
+import json
+import os
+import re
+import sys
+
+tree = sys.argv[1]
+FUNCTION_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*\{")
+LOCAL_RE = re.compile(r"^\s*local\s+(.*)$")
+TRAP_RE = re.compile(r"trap\s+'([^']*)'\s+EXIT\b")
+NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+VAR_RE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
+ASSIGN_RE = re.compile(
+    r"^\s*(?:local\s+|export\s+|declare\s+|readonly\s+)?([A-Za-z_][A-Za-z0-9_]*)="
+)
+# A heredoc: its BODY is a fixture, not code of the file. A here-STRING
+# (<<<) is NOT a heredoc and the negative lookbehind keeps it out.
+HEREDOC_RE = re.compile(r"(?<!<)<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+problems = []
+scanned = 0
+traps = 0
+for name in sorted(os.listdir(tree)):
+    if not name.endswith(".sh"):
+        continue
+    path = os.path.join(tree, name)
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as stream:
+            lines = stream.read().splitlines()
+    except OSError:
+        continue
+    scanned += 1
+    assigned = set()
+    for line in lines:
+        for match in ASSIGN_RE.finditer(line):
+            assigned.add(match.group(1))
+    stack = []
+    heredoc = None
+    for number, line in enumerate(lines, 1):
+        if heredoc is not None:
+            if line.strip() == heredoc:
+                heredoc = None
+            continue
+        if line.strip().startswith("#"):
+            continue
+        match = HEREDOC_RE.search(line)
+        if match:
+            heredoc = match.group(2)
+            continue
+        if FUNCTION_RE.match(line):
+            stack.append(set())
+            continue
+        if stack and line.strip() == "}":
+            stack.pop()
+            continue
+        if stack:
+            match = LOCAL_RE.match(line)
+            if match:
+                for token in match.group(1).split():
+                    token = token.split("=")[0]
+                    if NAME_RE.fullmatch(token):
+                        stack[-1].add(token)
+        match = TRAP_RE.search(line)
+        if not match:
+            continue
+        traps += 1
+        body = match.group(1)
+        for variable in VAR_RE.findall(body):
+            if stack and variable in stack[-1]:
+                problems.append({
+                    "file": name,
+                    "line": number,
+                    "variable": variable,
+                    "reason": "la trampa lee un 'local' de la funcion que la instalo",
+                    "body": body,
+                })
+            elif variable not in assigned:
+                problems.append({
+                    "file": name,
+                    "line": number,
+                    "variable": variable,
+                    "reason": "la trampa lee una variable que el fichero nunca asigna",
+                    "body": body,
+                })
+print(json.dumps({"scanned": scanned, "traps": traps, "problems": problems},
+                 indent=2, sort_keys=True))
+PY_EOF
+  if [ "$rc" -ne 0 ]; then
+    fail "el escaner de las trampas EXIT fallo (rc=$rc): su salida no prueba nada"
+    sed -n '1,10p' "$WORKDIR/trap-scope.err" | sed 's/^/      /' >&2
+    return
+  fi
+  if [ ! -s "$report" ]; then
+    fail "el escaner de las trampas EXIT no produjo ninguna salida: no prueba nada"
+    return
+  fi
+
+  local summary problems_count
+  summary="$(python3 - "$report" <<'PY_EOF'
+import json
+import sys
+payload = json.load(open(sys.argv[1]))
+print("%s|%s|%s" % (payload["scanned"], payload["traps"], len(payload["problems"])))
+PY_EOF
+)"
+  if [ -z "$summary" ]; then
+    fail "el escaner de las trampas EXIT no produjo un resumen legible: no prueba nada"
+    return
+  fi
+  problems_count="${summary##*|}"
+  if [ "$problems_count" -eq 0 ]; then
+    pass "ninguna trampa EXIT de $tree lee una variable fuera de su ambito (ficheros=$summary)"
+  else
+    fail "hay trampas EXIT que leen una variable fuera de su ambito en $tree: el error 'unbound variable' taparia la causa real"
+    python3 - "$report" <<'PY_EOF' 2>/dev/null || true
+import json
+import sys
+payload = json.load(open(sys.argv[1]))
+for item in payload["problems"]:
+    print("      %s:%s lee $%s (%s)" % (
+        item["file"], item["line"], item["variable"], item["reason"]))
+PY_EOF
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 46. The isolation helper does not NAME a path of a machine.
+#
+# The harness has to run on ANY machine: on a developer one and on a CI
+# runner where no directory of a previous qualification exists. A literal
+# path of a concrete machine (the root of the evidence of a previous
+# qualification, for instance) would make the harness refuse to run there
+# for a reason that has nothing to do with the containment, and it would
+# hide the evidence of the run in a directory that belongs to nobody.
+#
+# The check is STATIC: the helper under test must not name a path of the
+# evidence root of this machine in its CODE. The COMMENTS may cite the
+# documentation of a past lot: a comment does not make the harness depend
+# on anything.
+# ---------------------------------------------------------------------------
+test_the_isolation_helper_does_not_name_a_path_of_a_machine() {
+  local isolation="$FORGE_TEST_ISOLATION"
+  if [ ! -f "$isolation" ]; then
+    fail "no se encuentra el helper de aislamiento ($isolation)"
+    return
+  fi
+
+  local hits count
+  hits="$(grep -n '/tmp/opencode' "$isolation" 2>/dev/null \
+    | grep -v '^[0-9][0-9]*:[[:space:]]*#' || true)"
+  count="$(printf '%s' "$hits" | grep -c ':' || true)"
+  if [ "$count" -eq 0 ]; then
+    pass "el helper de aislamiento NO nombra ninguna ruta de una maquina: el arnes corre en cualquier maquina"
+  else
+    fail "el helper de aislamiento nombra $count ruta(s) de una maquina: el arnes no correria en un CI sin ese directorio"
+    printf '%s\n' "$hits" | sed 's/^/      /' >&2
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # 41. The ADMISSION gate requires the KERNEL handle of the invoking
 #     namespace.
 #
@@ -4729,7 +5078,10 @@ test_the_admission_requires_the_kernel_handle_of_the_invoker() {
 set -u
 guard="$1"
 out="$2"
-receipt_root=/tmp/opencode/forge-contracts-v2/remediacion-contencion/runs
+# The root of the receipts of THIS run: it is DECLARED by the invocation, it
+# is not a path of a machine. The planted receipt lives in a "run-*" directory
+# because that is the naming convention of the entry.
+receipt_root="$3"
 run_id="run-admission-fixture-$$"
 run_dir="$receipt_root/$run_id"
 mkdir -p "$run_dir" || exit 1
@@ -4782,7 +5134,7 @@ PROBE_EOF
   }
   out="$WORKDIR/admission-results.txt"
   rm -f "$out"
-  forge_contained_run "$scenario" /bin/sh "$probe" "$guard" "$out" \
+  forge_contained_run "$scenario" /bin/sh "$probe" "$guard" "$out" "$RECEIPT_ROOT" \
     >"$WORKDIR/admission.out" 2>"$WORKDIR/admission.err" || rc=$?
   rm -f "$scenario"
 
@@ -4896,6 +5248,136 @@ PY_EOF
     pass "la conversion del RC en aislamiento: -9 y 137 son el mismo hecho, un valor ausente o invalido NO es un RC y un estado INVALID no se reinterpreta como otra senal"
   else
     fail "la conversion del RC en aislamiento no cumple el contrato (obtenido: $value; se esperaba -9|-9|None|None|None|None|-15)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 44. The child that dies by SIGKILL is published as -9, and the 124 of the
+#     WRAPPER never substitutes the real RC of the suite.
+#
+# Two observations are in play and they are NOT interchangeable:
+#
+#   * the RC of the CHILD (the one that the entry waits for and records as
+#     SCENARIO_RC): a child that the bounded close kills with SIGKILL is
+#     137, and the harness normalises it to -9 (the convention of the
+#     signals);
+#   * the 124 of the WRAPPER: it is the code that GNU timeout uses for "the
+#     command timed out". It describes the TIMEOUT of the wrapper, not the
+#     TERMINATION of the child.
+#
+# If the 124 of the wrapper could stand for the RC of the child, the bank
+# would certify a scenario that was merely SLOW as one whose group was
+# KILLED, and the contract of the scenario `no-pidfd-hang` (the positive
+# evidence that the bounded close killed the group) would be lost.
+#
+# The check is made at its SOURCE (the conversion is extracted from the
+# text of the harness and executed in isolation; the module is never
+# imported) and END TO END, with a REAL invocation of the entry whose child
+# ignores the TERM of the bounded close and is therefore killed by SIGKILL.
+# ---------------------------------------------------------------------------
+test_the_sigkill_is_published_as_minus_nine_and_the_wrapper_124_does_not_substitute_it() {
+  local harness="$FORGE_TEST_V2_HARNESS"
+  if [ ! -f "$harness" ]; then
+    fail "no se encuentra el arnes del banco V2 ($harness)"
+    return
+  fi
+
+  # (a) The conversion: 137 is the SIGKILL and 124 is NOT.
+  local value
+  value="$(python3 - "$harness" <<'PY_EOF'
+import ast, pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+tree = ast.parse(source)
+namespace = {}
+for node in tree.body:
+    if not isinstance(node, ast.Assign):
+        continue
+    for target in node.targets:
+        if isinstance(target, ast.Name) and target.id == "MAX_SIGNAL":
+            namespace["MAX_SIGNAL"] = ast.literal_eval(node.value)
+if "MAX_SIGNAL" not in namespace:
+    print("MAX_SIGNAL=AUSENTE")
+    raise SystemExit(0)
+for node in tree.body:
+    if isinstance(node, ast.FunctionDef) and node.name == "exit_code_of":
+        exec(compile(ast.Module(body=[node], type_ignores=[]), "<harness>", "exec"), namespace)
+convert = namespace["exit_code_of"]
+print("%s|%s|%s" % (
+    convert("137"),
+    convert("124"),
+    convert("-9"),
+))
+PY_EOF
+)"
+  if [ "$value" = "-9|124|-9" ]; then
+    pass "la conversion distingue el SIGKILL (137 -> -9) del codigo del envoltorio (124 -> 124): el 124 NO es un -9"
+  else
+    fail "la conversion NO distingue el SIGKILL del codigo del envoltorio (obtenido: $value; se esperaba -9|124|-9)"
+  fi
+
+  # (b) END TO END: a child that ignores the TERM of the bounded close is
+  #     killed by SIGKILL, the receipt records the REAL RC of the child
+  #     (137) and the wrapper keeps its own classification (124).
+  local hb="$WORKDIR/hb-sigkill.txt"
+  local ready="$WORKDIR/ready-sigkill.txt"
+  local pointer="$WORKDIR/ptr-sigkill.txt"
+  rm -f "$hb" "$ready" "$pointer"
+  write_term_ignoring_scenario "$WORKDIR/sigkill-scenario.sh"
+
+  local rc=0
+  bash "$ENTRY" \
+    --receipt-dir "$RECEIPT_ROOT" \
+    --receipt-out "$pointer" \
+    --scenario-timeout 3 \
+    --close-timeout 1 \
+    -- /bin/sh "$WORKDIR/sigkill-scenario.sh" "$hb" "$ready" \
+    >"$WORKDIR/out-sigkill.txt" 2>"$WORKDIR/err-sigkill.txt" || rc=$?
+
+  if [ "$rc" -eq 124 ]; then
+    pass "el envoltorio conserva su propia clasificacion del timeout (rc=124)"
+  else
+    fail "el envoltorio deberia clasificar el timeout con 124 (rc=$rc)"
+  fi
+
+  local receipt=""
+  [ -s "$pointer" ] && IFS= read -r receipt < "$pointer"
+  if [ -z "$receipt" ] || [ ! -s "$receipt" ]; then
+    fail "la corrida del escenario eliminado por SIGKILL no dejo recibo"
+    return
+  fi
+  local scenario_rc
+  scenario_rc="$(forge_receipt_read "$receipt" SCENARIO_RC 2>/dev/null || true)"
+  if [ "$scenario_rc" = "137" ]; then
+    pass "el recibo publica el RC REAL del hijo muerto por SIGKILL (SCENARIO_RC=137), no el 124 del envoltorio"
+  else
+    fail "el recibo no publica el RC real del hijo muerto por SIGKILL (SCENARIO_RC=$scenario_rc; se esperaba 137)"
+    forge_receipt_summary "$receipt" >&2 || true
+  fi
+
+  # (c) The published RC is the one that the bank converts, and the bank
+  #     NEVER accepts the 124 of the wrapper for the eliminated scenario.
+  local converted
+  converted="$(python3 - "$harness" "$scenario_rc" <<'PY_EOF'
+import ast, pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+tree = ast.parse(source)
+namespace = {}
+for node in tree.body:
+    if not isinstance(node, ast.Assign):
+        continue
+    for target in node.targets:
+        if isinstance(target, ast.Name) and target.id == "MAX_SIGNAL":
+            namespace["MAX_SIGNAL"] = ast.literal_eval(node.value)
+for node in tree.body:
+    if isinstance(node, ast.FunctionDef) and node.name == "exit_code_of":
+        exec(compile(ast.Module(body=[node], type_ignores=[]), "<harness>", "exec"), namespace)
+print(namespace["exit_code_of"](sys.argv[2]))
+PY_EOF
+)"
+  if [ "$converted" = "-9" ]; then
+    pass "el RC publicado por el recibo se convierte en -9: el banco ve la muerte por SIGKILL"
+  else
+    fail "el RC publicado por el recibo no se convierte en -9 (obtenido: $converted)"
   fi
 }
 
@@ -6283,6 +6765,7 @@ run_test test_the_registry_rejects_absent_and_corrupted_evidence
 run_test test_signal_is_bound_to_the_identity
 run_test test_the_killer_refuses_the_protected_pid_and_the_non_own
 run_test test_a_consumer_cannot_run_outside_the_containment
+run_test test_the_accreditation_is_by_invocation
 run_test test_a_normal_exit_is_certifiable
 run_test test_the_captured_stderr_is_only_the_stderr_of_the_scenario
 run_test test_a_failure_keeps_its_own_rc
@@ -6301,6 +6784,8 @@ run_test test_a_receipt_with_a_duplicated_field_is_rejected
 run_test test_the_legacy_certifiable_key_is_not_an_alias
 run_test test_the_protected_snapshot_never_reads_the_content_of_a_personal_tree
 run_test test_the_isolation_helper_has_a_single_definition_of_the_entry
+run_test test_no_exit_trap_of_the_suites_reads_a_variable_out_of_scope
+run_test test_the_isolation_helper_does_not_name_a_path_of_a_machine
 run_test test_the_definition_scanner_decides_by_the_lexical_context
 run_test test_the_declared_path_of_the_scenario_is_used
 run_test test_an_eliminated_scenario_leaves_no_residue
@@ -6321,6 +6806,7 @@ run_test test_the_battery_of_the_suites_uses_no_network
 run_test test_the_bank_contract_of_the_eliminated_scenario_expects_the_sigkill
 run_test test_the_admission_requires_the_kernel_handle_of_the_invoker
 run_test test_the_exit_code_of_the_eliminated_scenario_is_the_observed_signal
+run_test test_the_sigkill_is_published_as_minus_nine_and_the_wrapper_124_does_not_substitute_it
 run_test test_the_closure_verdict_requires_every_link_and_observes_the_absence
 run_test test_the_cleanup_verdict_requires_the_verified_absence_in_both_entries
 run_test test_the_observations_distinguish_an_absent_resource_from_an_impossible_one
