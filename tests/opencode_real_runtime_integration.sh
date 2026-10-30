@@ -22,6 +22,43 @@
 #   7. the resolution logic itself is controlled in suite: the user wrapper is
 #      rejected in both shapes (regular file and symbolic link) and the binary
 #      declared by the package resolves when the npm tree has no <prefix>/bin.
+#   8. the REAL launcher is EXECUTED against the REAL pinned installation: it
+#      must START and resolve the real executable, and the regression that
+#      compared the registered executable against a FIXED path must be
+#      DETECTED with a mutant of the launcher.
+#
+# The end-to-end check of the real launcher (8) is CONDITIONAL: it applies
+# only when there is a pinned Forge installation WITH a manifest (there is
+# none in CI: the runtime is the global installation of npm and there is no
+# pinned Forge prefix). When it does not apply it is DECLARED with its
+# reason and it is NOT counted as passed. The launcher under test can be
+# DECLARED (FORGE_TEST_REAL_LAUNCHER) to measure the sensitivity of the
+# check with a launcher other than the personal entry.
+#
+# The ORDER of that resolution is part of the contract: the INSTALLATION is
+# resolved FIRST (the manifest, the target opencode and the pinned package)
+# and the ENTRY POINT is examined AFTER. An applicable installation whose
+# launcher is absent, dangling or not executable is a FAILURE and never a
+# declaration: the declaration is reserved for the ABSENCE of the
+# installation, because a broken entry point is exactly the regression this
+# check exists to protect.
+#
+# The identity of the executed executable is NOT inferred from what the
+# launcher PRINTS. Every invocation runs under an OBSERVER
+# (tests/forge_process_observer.py) that reports, with evidence that does
+# not depend on the output:
+#
+#   * the executable the kernel REALLY loaded (the resolved path of the
+#     image and the argv that was executed), which is the proof that the
+#     launcher resolved the executable of the pinned installation and not
+#     another OpenCode of the same version;
+#   * every file the invocation OPENED, so the absence of a database
+#     opening is OBSERVED and not inferred from the files that survived;
+#   * every socket and every connect() of the invocation.
+#
+# The comparison of the output of the launcher with the output of the
+# direct execution of the pinned executable is an ADDITIONAL check: it is
+# never the proof of the identity.
 #
 # The binary is resolved in this order:
 #
@@ -59,6 +96,21 @@
 # real one, but everything it reads (the overlay, its forge-guard, the
 # configuration and the database) belongs to the sandbox.
 #
+# The LIMITS of the containment are stated with EVIDENCE and never assumed:
+#
+#   * the containment gives a PRIVATE PID NAMESPACE, a private /proc, a
+#     clean environment (HOME, XDG_*, TMPDIR redirected and the credentials
+#     unset) and a bounded lifetime;
+#   * it does NOT create a NETWORK namespace: the invocation shares the
+#     network of the host, so the absence of network activity is a property
+#     of the BEHAVIOUR of --version (observed: zero connections) and not a
+#     frontier of the containment;
+#   * it does NOT hide the personal filesystem: HOME and the XDG variables
+#     redirect the usual LOCATIONS, they do not forbid an absolute path. The
+#     protection of the real state is the METADATA comparison (before and
+#     after) plus the observation that the invocation never opens a
+#     database.
+#
 # The state of the REAL installation is fingerprinted BEFORE the scenario runs
 # anything and compared when it finishes, on EVERY exit path (the early ones
 # included):
@@ -91,6 +143,10 @@ FORGE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 FAIL=0
 PASS_COUNT=0
+# The count of the checks that were DECLARED (not applicable). They are
+# published in the summary of the suite and they are NEVER counted as
+# approved: a declared check is not a green skip.
+DECLARED_COUNT=0
 TEST_TMP_ROOT="/tmp/opencode/opencode-real-runtime-integration.$$"
 SANDBOX=""
 REAL_BIN=""
@@ -767,6 +823,736 @@ SHIM_EOF
 }
 
 # ---------------------------------------------------------------------------
+# The REAL launcher, EXECUTED against the REAL pinned installation.
+#
+# A STATE is not a START. The launcher of the user is a symbolic link to the
+# checkout, and the checkout can be broken: the accreditation of the pinned
+# package compared the registered executable against a FIXED path
+# (`bin/opencode`) while the real @opencode/cli@2.1.4 declares
+# `./bin/opencode.exe`. The personal entry did not start at all (rc 1) and
+# the whole battery stayed green, because the fixtures published a layout
+# that the real package never publishes and because the state of the real
+# launcher was COMPARED, never EXECUTED.
+#
+# This section EXECUTES the real launcher, through its real link, against the
+# real pinned installation, and it demands that it STARTS and RESOLVES the
+# real executable.
+#
+# The invocation is INOCUOUS: `--version` prints the version and exits, so
+# no session is started and no database is opened. The section VERIFIES that
+# no database appeared in the isolated home instead of assuming it.
+#
+# The environment is ISOLATED: the launcher runs with a DISPOSABLE home (and
+# its own XDG directories), so the real database of the user is never opened
+# (it is observed with stat() only) and the real overlay is never written.
+# The manifest of the sandbox is a faithful COPY of the real one: it keeps
+# the SAME pinned binary (the one the personal entry registers, which is what
+# the accreditation consumes) and it redirects the overlay to a disposable
+# directory.
+#
+# The check is CONDITIONAL: it only applies when there is a pinned Forge
+# installation WITH a manifest (there is none in CI: the runtime is the
+# global installation of npm and there is no pinned Forge prefix). When it
+# does not apply it is DECLARED with its reason and it is NOT counted as
+# passed: never a green skip.
+#
+# The launcher under test can be DECLARED (FORGE_TEST_REAL_LAUNCHER). The
+# declaration exists for the SENSITIVITY proof: a launcher whose
+# accreditation is broken must make this suite FAIL, and that can only be
+# shown with a launcher other than the personal entry.
+#
+# The declaration of the launcher SELECTS THE SUBJECT and nothing else: it is
+# NOT the declaration of the executable (FORGE_TEST_REAL_OPENCODE_BIN), which
+# selects the runtime. The applicability of this check depends on the
+# INSTALLATION and NEVER on the subject (see the ORDER of the resolution
+# above): the declaration of the launcher never weakens the check, because a
+# broken entry point is a FAILURE whether it is the personal entry or a
+# declared one.
+#
+# The subject is PUBLISHED with the result of the check, so that a consumer
+# can tell WHICH launcher was accredited (the personal entry or an explicitly
+# declared one) reading only the output of the suite.
+# ---------------------------------------------------------------------------
+LAUNCHER_E2E_ROOT=""
+LAUNCHER_E2E_HOME=""
+LAUNCHER_E2E_MANIFEST=""
+LAUNCHER_E2E_BINARY=""
+LAUNCHER_E2E_CODE=""
+LAUNCHER_E2E_DETAIL=""
+LAUNCHER_E2E_IDENTITY=""
+LAUNCHER_E2E_LAST_RC=0
+LAUNCHER_E2E_LAST_OUT=""
+LAUNCHER_E2E_LAST_ERR=""
+LAUNCHER_E2E_LAST_REPORT=""
+REAL_LAUNCHER_DECLARED="no"
+REAL_LAUNCHER=""
+# The SUBJECT of the check, published with its result: which launcher was
+# accredited (the personal entry or an explicitly declared one).
+REAL_LAUNCHER_SUBJECT=""
+
+# The OBSERVER of the effective execution. It runs INSIDE the containment
+# (it is the command of the contained run) and it reports what the kernel
+# really did: the executable that was loaded, the files that were opened and
+# the sockets that were created.
+LAUNCHER_E2E_OBSERVER="$FORGE_ROOT/tests/forge_process_observer.py"
+
+# The receipts of the contained runs, kept SEPARATE: the receipt of the
+# control (the launcher under test), the receipt of the direct execution of
+# the pinned executable and the receipt of the mutant are three different
+# runs, and the receipt that is published is always the one of the run that
+# is being accredited.
+LAUNCHER_E2E_RECEIPT_CONTROL=""
+LAUNCHER_E2E_RECEIPT_PINNED=""
+LAUNCHER_E2E_RECEIPT_MUTANT=""
+# The slot that receives the receipt of the NEXT contained run.
+LAUNCHER_E2E_RECEIPT_SLOT="control"
+
+# declare_check <what> <code> <detail>
+#
+# A check that does not APPLY is DECLARED with its reason and it is NOT
+# counted as passed. The reason is published with a stable code (so a program
+# can tell the causes apart) and with a detail that says WHAT was looked for
+# and WHY it was not found.
+declare_check() {
+  echo "  DECLARA  $1  (no aplicable: no se cuenta como aprobada)  motivo=$2: $3"
+  DECLARED_COUNT=$((DECLARED_COUNT + 1))
+}
+
+# launcher_e2e_env <command> [args...]
+#
+# Runs a command with the environment of the launcher: a DISPOSABLE home with
+# its own XDG directories, no credentials of the user and INSIDE the
+# containment.
+#
+# What the containment DOES give, and what it does NOT:
+#
+#   * it gives a private PID namespace, a private /proc, a clean environment
+#     (HOME, XDG_* and TMPDIR redirected inside the disposable home, the
+#     credentials unset) and a bounded lifetime;
+#   * it does NOT create a network namespace: the invocation shares the
+#     network of the host, so "no network" is a property of the BEHAVIOUR
+#     of --version (certified by the observer as zero connections) and not
+#     a frontier that the containment enforces;
+#   * it does NOT hide the personal filesystem: HOME and the XDG variables
+#     redirect the usual LOCATIONS, they do not forbid an absolute path, so
+#     the real database is not "invisible" for the invocation: it is
+#     PROTECTED, by the metadata comparison (stat only) and by the
+#     observation that the invocation never opens any database.
+#
+# The receipt of the run is stored in the slot that the caller declares
+# (LAUNCHER_E2E_RECEIPT_SLOT): the control, the direct execution and the
+# mutant are three different runs and each one keeps its own receipt.
+launcher_e2e_env() {
+  local rc=0
+
+  forge_isolated_env "$LAUNCHER_E2E_HOME" \
+    XDG_RUNTIME_DIR="$LAUNCHER_E2E_HOME/run" \
+    TMPDIR="$LAUNCHER_E2E_HOME/tmp" \
+    PATH=/usr/bin:/bin \
+    LANG=C \
+    LC_ALL=C \
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    OPENCODE_DISABLE_MODELS_FETCH=1 \
+    OPENCODE_DISABLE_CHANNEL_DB=1 \
+    OPENCODE_DISABLE_FILEWATCHER=1 \
+    OPENCODE_DISABLE_CLAUDE_CODE=1 \
+    OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 \
+    env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u OPENROUTER_API_KEY \
+      -u MINIMAX_API_KEY -u OPENCODE_CONFIG_DIR -u OPENCODE_CONFIG \
+    "$@" || rc=$?
+
+  case "$LAUNCHER_E2E_RECEIPT_SLOT" in
+    control) LAUNCHER_E2E_RECEIPT_CONTROL="$FORGE_CONTAINMENT_LAST_RECEIPT" ;;
+    pinned) LAUNCHER_E2E_RECEIPT_PINNED="$FORGE_CONTAINMENT_LAST_RECEIPT" ;;
+    mutant) LAUNCHER_E2E_RECEIPT_MUTANT="$FORGE_CONTAINMENT_LAST_RECEIPT" ;;
+    *) LAUNCHER_E2E_RECEIPT_CONTROL="$FORGE_CONTAINMENT_LAST_RECEIPT" ;;
+  esac
+  return "$rc"
+}
+
+# launcher_e2e_manifest
+#
+# Builds the manifest of the sandbox from the REAL manifest of the user and
+# prints the pinned binary that the real entry registers.
+#
+#   exit 0  the check applies; the pinned binary is printed
+#   exit 3  the check does not apply; "CODE|detail" is printed
+#   exit 1  the manifest of the user is broken; the cause is printed
+launcher_e2e_manifest() {
+  python3 - "$FORGE_TEST_REAL_HOME/.forge-state.json" \
+    "$LAUNCHER_E2E_MANIFEST" "$LAUNCHER_E2E_ROOT/overlay" <<'PY'
+import json
+import sys
+
+real_manifest, destination, overlay = sys.argv[1:4]
+
+try:
+    with open(real_manifest, encoding="utf-8") as manifest_file:
+        state = json.load(manifest_file)
+except (OSError, ValueError) as error:
+    print("el manifiesto real no se puede leer o interpretar: " + str(error), file=sys.stderr)
+    raise SystemExit(1)
+
+entries = state.get("targets_manifest") if isinstance(state, dict) else None
+if not isinstance(entries, list):
+    print("el manifiesto real no declara el array targets_manifest", file=sys.stderr)
+    raise SystemExit(1)
+
+matches = [entry for entry in entries
+           if isinstance(entry, dict) and entry.get("name") == "opencode"]
+if not matches:
+    print("NO_OPENCODE_TARGET|el manifiesto real no declara ningun target opencode: "
+          "no hay instalacion fijada de Forge que el launcher pueda resolver")
+    raise SystemExit(3)
+if len(matches) > 1:
+    print("el manifiesto real declara mas de un target opencode", file=sys.stderr)
+    raise SystemExit(1)
+
+entry = dict(matches[0])
+binary = entry.get("binary")
+if not isinstance(binary, str) or not binary:
+    print("el target opencode del manifiesto real no declara el binario pinado", file=sys.stderr)
+    raise SystemExit(1)
+
+# The overlay is REDIRECTED to a disposable directory: the invocation must
+# not be able to write into the personal overlay. The PINNED BINARY is kept
+# VERBATIM: it is what the accreditation of the launcher consumes, and it is
+# the reason this check exists.
+entry["dir"] = overlay
+entry["config_file"] = overlay + "/opencode.jsonc"
+
+sandbox_entries = []
+for item in entries:
+    if isinstance(item, dict) and item.get("name") == "opencode":
+        sandbox_entries.append(entry)
+    elif isinstance(item, dict):
+        sandbox_entries.append(dict(item))
+    else:
+        sandbox_entries.append(item)
+
+sandbox_state = dict(state)
+sandbox_state["targets_manifest"] = sandbox_entries
+
+with open(destination, "w", encoding="utf-8") as destination_file:
+    json.dump(sandbox_state, destination_file, indent=2)
+    destination_file.write("\n")
+
+print(binary)
+PY
+}
+
+# launcher_e2e_applicability
+#
+# Decides whether the end-to-end check applies and prepares its manifest.
+#
+# The ORDER is part of the contract: the INSTALLATION is resolved FIRST (the
+# manifest of the user, the target opencode that it declares and the pinned
+# package of that target) and the ENTRY POINT is examined AFTER. An
+# applicable installation whose launcher is absent, dangling or not
+# executable is a FAILURE: the declaration is reserved for the ABSENCE of
+# the installation, because a broken entry point is exactly the regression
+# that this check exists to protect.
+#
+#   0  the check applies (LAUNCHER_E2E_BINARY holds the pinned binary)
+#   3  the check does not apply (LAUNCHER_E2E_CODE and LAUNCHER_E2E_DETAIL
+#      hold the reason): there is NO installation to check
+#   1  the installation or the entry point is BROKEN (LAUNCHER_E2E_DETAIL
+#      holds the cause): the check applies and it FAILS
+launcher_e2e_applicability() {
+  local rc=0 identity_rc=0 identity_line=""
+
+  LAUNCHER_E2E_CODE=""
+  LAUNCHER_E2E_DETAIL=""
+  LAUNCHER_E2E_IDENTITY=""
+
+  # --- 1. the manifest of the user ---------------------------------------
+  if [ ! -f "$FORGE_TEST_REAL_HOME/.forge-state.json" ]; then
+    LAUNCHER_E2E_CODE="NO_REAL_MANIFEST"
+    LAUNCHER_E2E_DETAIL="no existe el manifiesto de Forge ($FORGE_TEST_REAL_HOME/.forge-state.json): no hay instalacion fijada que el launcher pueda resolver"
+    return 3
+  fi
+
+  # --- 2. the target opencode of that manifest ---------------------------
+  LAUNCHER_E2E_BINARY="$(launcher_e2e_manifest \
+    2>"$LAUNCHER_E2E_ROOT/manifest.err")" || rc=$?
+
+  case "$rc" in
+    0)
+      ;;
+    3)
+      LAUNCHER_E2E_CODE="${LAUNCHER_E2E_BINARY%%|*}"
+      LAUNCHER_E2E_DETAIL="${LAUNCHER_E2E_BINARY#*|}"
+      LAUNCHER_E2E_BINARY=""
+      return 3
+      ;;
+    *)
+      LAUNCHER_E2E_DETAIL="el manifiesto real de Forge no se puede usar: $(sed -n '1,3p' "$LAUNCHER_E2E_ROOT/manifest.err")"
+      LAUNCHER_E2E_BINARY=""
+      return 1
+      ;;
+  esac
+
+  # --- 3. the PINNED PACKAGE of that installation ------------------------
+  identity_line="$(launcher_e2e_pinned_identity "$LAUNCHER_E2E_BINARY" \
+    2>"$LAUNCHER_E2E_ROOT/identity.err")" || identity_rc=$?
+  if [ "$identity_rc" -ne 0 ]; then
+    LAUNCHER_E2E_DETAIL="la instalacion fijada que declara el manifiesto real esta rota: $(sed -n '1,3p' "$LAUNCHER_E2E_ROOT/identity.err")"
+    LAUNCHER_E2E_BINARY=""
+    return 1
+  fi
+  LAUNCHER_E2E_IDENTITY="$identity_line"
+
+  # --- 4. the ENTRY POINT, with an applicable installation ---------------
+  if [ -L "$REAL_LAUNCHER" ] && [ ! -e "$REAL_LAUNCHER" ]; then
+    LAUNCHER_E2E_DETAIL="la entrada $REAL_LAUNCHER es un enlace colgante y la instalacion fijada real SI es aplicable: un punto de entrada roto es un FALLO, no una declaracion"
+    LAUNCHER_E2E_BINARY=""
+    return 1
+  fi
+  if [ ! -e "$REAL_LAUNCHER" ]; then
+    LAUNCHER_E2E_DETAIL="la entrada $REAL_LAUNCHER no existe y la instalacion fijada real SI es aplicable: un punto de entrada roto es un FALLO, no una declaracion"
+    LAUNCHER_E2E_BINARY=""
+    return 1
+  fi
+  if [ ! -x "$REAL_LAUNCHER" ]; then
+    LAUNCHER_E2E_DETAIL="la entrada $REAL_LAUNCHER no es ejecutable y la instalacion fijada real SI es aplicable: un punto de entrada roto es un FALLO, no una declaracion"
+    LAUNCHER_E2E_BINARY=""
+    return 1
+  fi
+
+  return 0
+}
+
+# launcher_e2e_run <launcher> <tag>
+#
+# EXECUTES the launcher with the INOCUOUS invocation (`--version`) inside the
+# containment, UNDER THE OBSERVER of the effective execution, and captures
+# its output. The exit code, the paths of the captures and the report of the
+# observer are published in LAUNCHER_E2E_LAST_*.
+#
+# The observer is the command of the contained run: it forks the launcher,
+# traces it and reports what the kernel really did. The launcher inherits
+# its standard output, so the capture is the output of the launcher and
+# nothing else.
+launcher_e2e_run() {
+  local launcher="$1" tag="$2"
+  local rc=0
+
+  LAUNCHER_E2E_LAST_OUT="$LAUNCHER_E2E_ROOT/$tag.out"
+  LAUNCHER_E2E_LAST_ERR="$LAUNCHER_E2E_ROOT/$tag.err"
+  LAUNCHER_E2E_LAST_REPORT="$LAUNCHER_E2E_ROOT/$tag.report.json"
+  : > "$LAUNCHER_E2E_LAST_OUT"
+  : > "$LAUNCHER_E2E_LAST_ERR"
+  rm -f "$LAUNCHER_E2E_LAST_REPORT"
+
+  launcher_e2e_env python3 "$LAUNCHER_E2E_OBSERVER" "$LAUNCHER_E2E_LAST_REPORT" \
+    "$launcher" --version \
+    > "$LAUNCHER_E2E_LAST_OUT" 2> "$LAUNCHER_E2E_LAST_ERR" || rc=$?
+  LAUNCHER_E2E_LAST_RC="$rc"
+  return 0
+}
+
+# launcher_e2e_run_pinned <binary> <tag>
+#
+# EXECUTES the pinned executable DIRECTLY, with the same isolated
+# environment, the same arguments that the launcher gives it and the same
+# observer, so its output can be compared with the output of the launcher
+# byte by byte (an ADDITIONAL check, never the proof of the identity).
+launcher_e2e_run_pinned() {
+  local binary="$1" tag="$2"
+  local rc=0
+
+  LAUNCHER_E2E_LAST_OUT="$LAUNCHER_E2E_ROOT/$tag.out"
+  LAUNCHER_E2E_LAST_ERR="$LAUNCHER_E2E_ROOT/$tag.err"
+  LAUNCHER_E2E_LAST_REPORT="$LAUNCHER_E2E_ROOT/$tag.report.json"
+  : > "$LAUNCHER_E2E_LAST_OUT"
+  : > "$LAUNCHER_E2E_LAST_ERR"
+  rm -f "$LAUNCHER_E2E_LAST_REPORT"
+
+  launcher_e2e_env python3 "$LAUNCHER_E2E_OBSERVER" "$LAUNCHER_E2E_LAST_REPORT" \
+    "$binary" --standalone --version \
+    > "$LAUNCHER_E2E_LAST_OUT" 2> "$LAUNCHER_E2E_LAST_ERR" || rc=$?
+  LAUNCHER_E2E_LAST_RC="$rc"
+  return 0
+}
+
+# launcher_e2e_facts <report> <home>
+#
+# The facts of an observation, as KEY=VALUE lines. An observation that could
+# not be made produces NO facts: the absence of facts is an INCOMPLETE
+# observation and never an absence of events.
+launcher_e2e_facts() {
+  local report="$1" home="$2"
+
+  [ -s "$report" ] || return 1
+  python3 "$LAUNCHER_E2E_OBSERVER" --facts "$report" "$home" 2>/dev/null || return 1
+}
+
+# launcher_e2e_fact <facts> <key>
+#
+# The value of ONE fact of an observation (empty when the fact is absent).
+launcher_e2e_fact() {
+  local facts="$1" key="$2"
+
+  printf '%s\n' "$facts" | sed -n "s/^$key=//p" | head -n 1
+}
+
+# launcher_e2e_mutant <source> <destination>
+#
+# Writes the MUTANT of the launcher: a COPY (never the repository) in which
+# the accreditation compares the registered executable against a FIXED path
+# (`bin/opencode`) instead of resolving it from the `bin` field that the
+# package declares, and in which the existence of the declared entry is not
+# checked any more. That is exactly the defect of v0.8.3, and the real
+# @opencode/cli@2.1.4 declares `./bin/opencode.exe`, so the mutant cannot
+# start the real installation.
+#
+# It is the SAME mutation of the launcher unit suite
+# (tests/launcher_relative_path_unit.sh, 'hardcode-declared-bin'), so both
+# suites measure the same regression.
+launcher_e2e_mutant() {
+  local source="$1" destination="$2"
+
+  python3 - "$source" "$destination" <<'PY'
+import sys
+
+source, destination = sys.argv[1:3]
+with open(source, encoding="utf-8") as handle:
+    text = handle.read()
+
+pairs = (
+    (
+        """    bin_entries = package.get("bin")
+    if not isinstance(bin_entries, dict) or binary_name not in bin_entries:
+        fail("the installed package does not declare a bin entry named " + repr(binary_name))
+    declared_bin = bin_entries[binary_name]
+    if not isinstance(declared_bin, str) or not declared_bin:
+        fail("the package bin entry for " + repr(binary_name) + " is invalid")
+    if os.path.isabs(declared_bin):
+        fail("the package bin entry for " + repr(binary_name) + " must be relative")
+
+    resolved_declared_bin = os.path.realpath(os.path.join(real_package_dir, declared_bin))
+""",
+        """    resolved_declared_bin = os.path.realpath(os.path.join(real_package_dir, "bin", "opencode"))
+""",
+    ),
+    (
+        """    if not os.path.isfile(resolved_declared_bin) or not os.access(resolved_declared_bin, os.X_OK):
+        fail("the package bin entry for " + repr(binary_name) + " is missing or not executable")
+""",
+        """    if False:
+        fail("the package bin entry for " + repr(binary_name) + " is missing or not executable")
+""",
+    ),
+)
+for anchor, mutated in pairs:
+    if text.count(anchor) != 1:
+        sys.stderr.write("mutation anchor not found in the launcher copy\n")
+        raise SystemExit(2)
+    text = text.replace(anchor, mutated, 1)
+
+with open(destination, "w", encoding="utf-8") as handle:
+    handle.write(text)
+PY
+}
+
+# launcher_e2e_pinned_identity <binary>
+#
+# The independent witness of the pinned installation: the binary that the
+# manifest registers resolves to the executable that the REAL package
+# declares in its own metadata. It is the property that the defective
+# launcher could not see, and it is what makes the end-to-end check
+# meaningful.
+launcher_e2e_pinned_identity() {
+  python3 - "$1" <<'PY'
+import json
+import os
+import sys
+
+binary = os.path.abspath(sys.argv[1])
+bin_directory = os.path.dirname(binary)
+node_modules_directory = os.path.dirname(bin_directory)
+if os.path.basename(bin_directory) != ".bin" or \
+        os.path.basename(node_modules_directory) != "node_modules":
+    print("el binario pinado no esta bajo <prefix>/node_modules/.bin/<ejecutable>", file=sys.stderr)
+    raise SystemExit(1)
+
+prefix = os.path.dirname(node_modules_directory)
+package_dir = os.path.join(node_modules_directory, "@opencode", "cli")
+package_json = os.path.join(package_dir, "package.json")
+try:
+    with open(package_json, encoding="utf-8") as package_file:
+        package = json.load(package_file)
+except (OSError, ValueError) as error:
+    print("el paquete fijado no declara metadatos legibles: " + str(error), file=sys.stderr)
+    raise SystemExit(1)
+
+if package.get("name") != "@opencode/cli" or package.get("version") != "2.1.4":
+    print("el paquete fijado no es @opencode/cli@2.1.4", file=sys.stderr)
+    raise SystemExit(1)
+
+bin_entries = package.get("bin")
+name = os.path.basename(binary)
+if not isinstance(bin_entries, dict) or name not in bin_entries:
+    print("el paquete fijado no declara un bin llamado " + repr(name), file=sys.stderr)
+    raise SystemExit(1)
+
+declared = bin_entries[name]
+if not isinstance(declared, str) or not declared or os.path.isabs(declared):
+    print("el bin declarado por el paquete fijado no es una ruta relativa valida", file=sys.stderr)
+    raise SystemExit(1)
+
+declared_resolved = os.path.realpath(os.path.join(package_dir, declared))
+if os.path.realpath(binary) != declared_resolved:
+    print("el ejecutable registrado no resuelve al bin declarado por el paquete", file=sys.stderr)
+    raise SystemExit(1)
+
+print(prefix + " " + declared_resolved)
+PY
+}
+
+# launcher_e2e_checks
+#
+# The check itself, when it applies: the real launcher is EXECUTED against
+# the real pinned installation UNDER THE OBSERVER of the effective
+# execution, and the regression of v0.8.3 is measured with a MUTANT of the
+# launcher (a copy, never the repository).
+#
+# The identity of the executed executable is accredited with the OBSERVED
+# effective execution (the executable the kernel really loaded), never with
+# the equality of the printed output: the output comparison is an
+# ADDITIONAL check.
+launcher_e2e_checks() {
+  local control_rc=0 control_out control_facts=""
+  local pinned_rc=0 pinned_facts="" pinned_complete="" pinned_effective=""
+  local mutant_facts="" mutant_complete="" mutant_effective=""
+  local mutant_rc=0 db_found db_find_rc=0 db_find_err=""
+  local complete="false" effective_exe="" effective_argv0=""
+  local pinned_resolved="" db_opens="0" opened_total="0"
+  local outbound="0" connects="0" sockets_inet="0" net_ns="" host_net_ns="" opens_outside="0"
+  local outside_example="" db_example="" connect_example=""
+
+  # --- the witness of the pinned installation ------------------------------
+  if [ -n "$LAUNCHER_E2E_IDENTITY" ]; then
+    pass "el binario pinado que registra el manifiesto real es el ejecutable que declara el paquete real @opencode/cli@$EXPECTED_VERSION ($LAUNCHER_E2E_IDENTITY)"
+  else
+    fail "el binario pinado que registra el manifiesto real no es el ejecutable que declara el paquete real"
+  fi
+
+  # --- the CONTROL: the launcher under test, through its real link --------
+  LAUNCHER_E2E_RECEIPT_SLOT="control"
+  launcher_e2e_run "$REAL_LAUNCHER" control
+  control_rc="$LAUNCHER_E2E_LAST_RC"
+  control_out="$(sed -n '1,5p' "$LAUNCHER_E2E_LAST_OUT" | tr '\n' ' ')"
+
+  if [ "$control_rc" -eq 0 ] && printf '%s' "$control_out" | grep -qF "v$EXPECTED_VERSION"; then
+    pass "$REAL_LAUNCHER_CHECK (rc=0, salida: $control_out; launcher bajo prueba: $REAL_LAUNCHER_SUBJECT)"
+  else
+    fail "$REAL_LAUNCHER_CHECK (rc=$control_rc, salida: $control_out; launcher bajo prueba: $REAL_LAUNCHER_SUBJECT)"
+    sed -n '1,20p' "$LAUNCHER_E2E_LAST_ERR" | sed 's/^/      /' >&2
+  fi
+
+  # --- the OBSERVATION of that execution ----------------------------------
+  # The observer reports what the kernel really did. An observation that
+  # could not be made is INCOMPLETE: it accredits NOTHING and it is never
+  # an absence of events.
+  control_facts="$(launcher_e2e_facts "$LAUNCHER_E2E_LAST_REPORT" "$LAUNCHER_E2E_HOME")" \
+    || control_facts=""
+  complete="$(launcher_e2e_fact "$control_facts" complete)"
+  effective_exe="$(launcher_e2e_fact "$control_facts" effective_exe)"
+  effective_argv0="$(launcher_e2e_fact "$control_facts" effective_argv0)"
+  db_opens="$(launcher_e2e_fact "$control_facts" db_opens)"
+  opened_total="$(launcher_e2e_fact "$control_facts" opened_total)"
+  outbound="$(launcher_e2e_fact "$control_facts" outbound_connects)"
+  connects="$(launcher_e2e_fact "$control_facts" connects)"
+  sockets_inet="$(launcher_e2e_fact "$control_facts" sockets_inet)"
+  net_ns="$(launcher_e2e_fact "$control_facts" net_namespace)"
+  opens_outside="$(launcher_e2e_fact "$control_facts" opens_outside_home)"
+  db_example="$(printf '%s\n' "$control_facts" | sed -n 's/^db_open_path=//p' | head -n 1)"
+  outside_example="$(printf '%s\n' "$control_facts" | sed -n 's/^open_outside_home=//p' | head -n 1)"
+  connect_example="$(printf '%s\n' "$control_facts" | sed -n 's/^connect=//p' | head -n 1)"
+
+  if [ -n "$control_facts" ] && [ "$complete" = "true" ]; then
+    pass "la ejecucion del launcher real fue OBSERVADA por completo (ejecutable cargado, $opened_total aperturas y los sockets): el observador no perdio ningun evento"
+  else
+    fail "la observacion de la ejecucion del launcher real esta INCOMPLETA: no se puede acreditar nada con una observacion parcial ($(printf '%s\n' "$control_facts" | sed -n 's/^error=//p' | head -n 3 | tr '\n' ';'))"
+  fi
+
+  # --- the IDENTITY of the EFFECTIVE execution ----------------------------
+  # The proof is the executable that the kernel REALLY loaded (the resolved
+  # path of the image) and the path that was invoked, both observed. The
+  # equality of the printed output is NOT the proof: another OpenCode of the
+  # same version would print the same thing.
+  pinned_resolved="$(readlink -f "$LAUNCHER_E2E_BINARY" 2>/dev/null || printf '')"
+  if [ "$complete" = "true" ] && [ -n "$effective_exe" ] \
+    && [ "$effective_exe" = "$pinned_resolved" ] \
+    && [ "$effective_argv0" = "$LAUNCHER_E2E_BINARY" ]; then
+    pass "la EJECUCION EFECTIVA del launcher cargo el ejecutable pinado que declara el manifiesto (ruta resuelta: $effective_exe; ruta invocada: $effective_argv0): la identidad se OBSERVA, no se deduce de la salida"
+  else
+    fail "la EJECUCION EFECTIVA del launcher no cargo el ejecutable pinado que declara el manifiesto (ejecutable observado: ${effective_exe:-desconocido}; ruta invocada: ${effective_argv0:-desconocida}; esperado: ${pinned_resolved:-desconocido}/${LAUNCHER_E2E_BINARY:-desconocido})"
+  fi
+
+  # --- the invocation is INOCUOUS: NO database was OPENED -----------------
+  # The evidence is the OBSERVATION of the aperturas, not the absence of
+  # files: a database that is opened and deleted, or that is opened outside
+  # the isolated home, would leave no file behind and the observation still
+  # sees it.
+  if [ "$complete" != "true" ]; then
+    fail "no se puede acreditar la ausencia de aperturas de base de datos: la observacion de la ejecucion esta INCOMPLETA"
+  elif [ "$db_opens" = "0" ]; then
+    pass "no se observo NINGUNA apertura de una base de datos durante la invocacion ($opened_total aperturas observadas): la ausencia de aperturas esta ACREDITADA por la observacion"
+  else
+    fail "la invocacion ABRIO una base de datos ($db_opens aperturas; p.ej. $db_example)"
+  fi
+
+  # --- the PERSISTENT files are a DIFFERENT fact --------------------------
+  # The absence of a file that survived is NOT the absence of an opening:
+  # both facts are published separately, and the observation of the errors
+  # of the search is never converted into an empty result.
+  db_find_err="$LAUNCHER_E2E_ROOT/db-find.err"
+  db_found="$(find "$LAUNCHER_E2E_HOME" -name 'opencode.db*' -print 2>"$db_find_err")" || db_find_rc=$?
+  if [ "$db_find_rc" -ne 0 ]; then
+    fail "no se pudo comprobar si quedo algun fichero opencode.db* en el home aislado (rc=$db_find_rc: $(sed -n '1,2p' "$db_find_err" | tr '\n' ' ')): una comprobacion incompleta no es un resultado vacio"
+  elif [ -z "$db_found" ]; then
+    pass "no quedo ningun fichero opencode.db* persistente en el home aislado (hecho DISTINTO de la ausencia de aperturas: esa la acredita la observacion, no los ficheros que quedan)"
+  else
+    fail "quedo un fichero de base de datos en el home aislado ($db_found)"
+  fi
+
+  # --- the LIMITS of the containment, with evidence ------------------------
+  # The containment does NOT create a network namespace and it does NOT hide
+  # the personal filesystem. The absence of network activity is a property
+  # of the BEHAVIOUR of --version (observed) and the protection of the real
+  # state is the METADATA comparison plus the observation of the openings.
+  host_net_ns="$(readlink /proc/self/ns/net 2>/dev/null || printf 'UNKNOWN')"
+  if [ "$complete" != "true" ]; then
+    fail "no se puede acreditar la ausencia de actividad de red: la observacion de la ejecucion esta INCOMPLETA"
+  elif [ "$connects" = "0" ] && [ "$sockets_inet" = "0" ]; then
+    pass "no se observo NINGUN socket ni NINGUNA conexion durante la invocacion (ni local ni externa): la ausencia de red es una propiedad del COMPORTAMIENTO de --version, NO una frontera de la contencion (namespace de red de la invocacion: $net_ns; el del host: $host_net_ns)"
+  else
+    fail "la invocacion creo sockets ($sockets_inet) o establecio conexiones ($connects; externas: $outbound; p.ej. ${connect_example:-desconocida})"
+  fi
+
+  if [ "$opens_outside" != "0" ] && [ -n "$opens_outside" ]; then
+    pass "la contencion NO oculta el filesystem personal: la invocacion abrio $opens_outside rutas absolutas fuera del home aislado (p.ej. $outside_example): la garantia es la REDIRECCION de HOME/XDG y la comparacion de metadatos, no el ocultamiento"
+  else
+    pass "la contencion NO oculta el filesystem personal en ningun caso (HOME/XDG redirigen las ubicaciones habituales, no impiden el acceso a rutas absolutas); en esta invocacion no se abrio ninguna ruta absoluta fuera del home aislado"
+  fi
+
+  # --- the DIRECT execution of the pinned executable -----------------------
+  # It is the witness of the comparison of the output and, with the
+  # observer, the witness of what the pinned executable does when it is run
+  # directly. Its receipt is its own.
+  LAUNCHER_E2E_RECEIPT_SLOT="pinned"
+  launcher_e2e_run_pinned "$LAUNCHER_E2E_BINARY" pinned
+  pinned_rc="$LAUNCHER_E2E_LAST_RC"
+  pinned_facts="$(launcher_e2e_facts "$LAUNCHER_E2E_LAST_REPORT" "$LAUNCHER_E2E_HOME")" \
+    || pinned_facts=""
+  pinned_complete="$(launcher_e2e_fact "$pinned_facts" complete)"
+  pinned_effective="$(launcher_e2e_fact "$pinned_facts" effective_exe)"
+
+  if [ -n "$pinned_facts" ] && [ "$pinned_complete" = "true" ] \
+    && [ "$pinned_effective" = "$pinned_resolved" ]; then
+    pass "la ejecucion directa cargo el ejecutable pinado que declara el manifiesto (ruta resuelta: $pinned_effective)"
+  else
+    fail "la ejecucion directa no cargo el ejecutable pinado que declara el manifiesto (observado: ${pinned_effective:-desconocido}; esperado: ${pinned_resolved:-desconocido})"
+  fi
+
+  # --- the equality of the output: an ADDITIONAL check --------------------
+  if [ "$control_rc" -eq 0 ] && [ "$pinned_rc" -eq 0 ] \
+    && cmp -s "$LAUNCHER_E2E_ROOT/control.out" "$LAUNCHER_E2E_ROOT/pinned.out"; then
+    pass "la salida del launcher es EXACTAMENTE la del ejecutable real pinado (byte a byte): comprobacion ADICIONAL, NO la prueba de la identidad (la identidad la observa el ejecutable cargado)"
+  else
+    fail "la salida del launcher no es la del ejecutable real pinado (rc del launcher=$control_rc, rc del ejecutable=$pinned_rc)"
+    sed -n '1,10p' "$LAUNCHER_E2E_ROOT/control.out" | sed 's/^/      /' >&2
+    sed -n '1,10p' "$LAUNCHER_E2E_ROOT/pinned.out" | sed 's/^/      /' >&2
+  fi
+
+  # --- the receipts of the contained runs, one for each run ---------------
+  if [ -n "$LAUNCHER_E2E_RECEIPT_CONTROL" ] && [ -s "$LAUNCHER_E2E_RECEIPT_CONTROL" ] \
+    && forge_receipt_require "$LAUNCHER_E2E_RECEIPT_CONTROL"; then
+    pass "la invocacion del launcher real (control) corrio dentro de la contencion (recibo: $LAUNCHER_E2E_RECEIPT_CONTROL)"
+  else
+    fail "la invocacion del launcher real (control) no acredito la contencion (recibo: ${LAUNCHER_E2E_RECEIPT_CONTROL:-ausente})"
+    forge_receipt_summary "$LAUNCHER_E2E_RECEIPT_CONTROL" >&2 || true
+  fi
+
+  if [ -n "$LAUNCHER_E2E_RECEIPT_PINNED" ] && [ -s "$LAUNCHER_E2E_RECEIPT_PINNED" ] \
+    && forge_receipt_require "$LAUNCHER_E2E_RECEIPT_PINNED"; then
+    pass "la ejecucion directa del ejecutable pinado corrio dentro de la contencion (recibo: $LAUNCHER_E2E_RECEIPT_PINNED)"
+  else
+    fail "la ejecucion directa del ejecutable pinado no acredito la contencion (recibo: ${LAUNCHER_E2E_RECEIPT_PINNED:-ausente})"
+    forge_receipt_summary "$LAUNCHER_E2E_RECEIPT_PINNED" >&2 || true
+  fi
+
+  # --- the MUTATION: the regression of v0.8.3 must be DETECTED ------------
+  # The mutant is a COPY of the launcher under test: the repository is never
+  # touched.
+  #
+  # The mutation is measured against a launcher that WORKS: the mutation of
+  # a launcher that is ALREADY broken cannot be built (its anchors are gone)
+  # and it would say nothing about the regression. That case is declared
+  # with its reason instead of being counted as approved.
+  if [ "$control_rc" -ne 0 ]; then
+    declare_check "el mutante (acreditacion contra una ruta fija) no arranca" \
+      "CONTROL_ALREADY_FAILED" \
+      "el launcher bajo prueba ya no arranca (rc=$control_rc): la mutacion de regresion no es aplicable sobre el"
+    return 0
+  fi
+
+  MUTANT="$LAUNCHER_E2E_ROOT/mutant/forge-opencode.sh"
+  if launcher_e2e_mutant "$REAL_LAUNCHER" "$MUTANT" \
+    2>"$LAUNCHER_E2E_ROOT/mutant.err"; then
+    chmod +x "$MUTANT"
+    LAUNCHER_E2E_RECEIPT_SLOT="mutant"
+    launcher_e2e_run "$MUTANT" mutant
+    mutant_rc="$LAUNCHER_E2E_LAST_RC"
+    mutant_facts="$(launcher_e2e_facts "$LAUNCHER_E2E_LAST_REPORT" "$LAUNCHER_E2E_HOME")" \
+      || mutant_facts=""
+    if [ "$mutant_rc" -ne 0 ]; then
+      pass "el mutante (acreditacion contra una ruta fija) NO arranca: la comprobacion es SENSIBLE a la regresion (rc=$mutant_rc)"
+    else
+      fail "el mutante (acreditacion contra una ruta fija) SI arranca: la comprobacion NO es sensible a la regresion"
+      sed -n '1,10p' "$LAUNCHER_E2E_ROOT/mutant.out" | sed 's/^/      /' >&2
+    fi
+
+    if grep -qF "no se pudo acreditar el paquete OpenCode $EXPECTED_VERSION" \
+      "$LAUNCHER_E2E_ROOT/mutant.err" 2>/dev/null; then
+      pass "el fallo del mutante se ATRIBUYE a la acreditacion del paquete pinado"
+    else
+      fail "el fallo del mutante NO se atribuye a la acreditacion del paquete pinado"
+      sed -n '1,20p' "$LAUNCHER_E2E_ROOT/mutant.err" | sed 's/^/      /' >&2
+    fi
+
+    # The mutant must fail BEFORE loading the real executable: that is what
+    # makes the regression a regression of the accreditation and not a
+    # different failure. The observation says which image it loaded.
+    mutant_complete="$(launcher_e2e_fact "$mutant_facts" complete)"
+    mutant_effective="$(launcher_e2e_fact "$mutant_facts" effective_exe)"
+    if [ "$mutant_complete" = "true" ] && [ -n "$mutant_effective" ] \
+      && [ "$mutant_effective" != "$pinned_resolved" ]; then
+      pass "el mutante fallo ANTES de cargar el ejecutable real (no lo cargo: $mutant_effective)"
+    else
+      fail "el mutante cargo el ejecutable real pese a no arrancar (observado: ${mutant_effective:-desconocido})"
+    fi
+
+    # The receipt of the MUTANT is the receipt of a run that fails BY
+    # DESIGN: the positive acceptance does not apply to it (the scenario
+    # did not end as expected), so what is certified here is the BOUNDARY
+    # and the CLOSURE of that run.
+    if [ -n "$LAUNCHER_E2E_RECEIPT_MUTANT" ] && [ -s "$LAUNCHER_E2E_RECEIPT_MUTANT" ] \
+      && forge_receipt_containment_evidence "$LAUNCHER_E2E_RECEIPT_MUTANT" \
+      && [ "$(forge_receipt_product_cleanup "$LAUNCHER_E2E_RECEIPT_MUTANT")" = "PASS" ]; then
+      pass "la invocacion del mutante corrio dentro de la contencion (recibo: $LAUNCHER_E2E_RECEIPT_MUTANT); su escenario falla POR DISENO, asi que se certifican la frontera y el cierre, no la aceptacion positiva"
+    else
+      fail "la invocacion del mutante no acreditar la contencion (recibo: ${LAUNCHER_E2E_RECEIPT_MUTANT:-ausente})"
+      forge_receipt_summary "$LAUNCHER_E2E_RECEIPT_MUTANT" >&2 || true
+    fi
+  else
+    fail "la mutacion de regresion no se pudo aplicar a la COPIA del launcher ($(sed -n '1,3p' "$LAUNCHER_E2E_ROOT/mutant.err"))"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # The scenario.
 # ---------------------------------------------------------------------------
 echo "================================"
@@ -792,6 +1578,57 @@ chmod 700 "$SANDBOX/tmp" "$SANDBOX/run"
 
 # --- 2. controls of the resolution logic ----------------------------------
 resolution_controls
+
+# --- the real launcher, EXECUTED against the real pinned installation ------
+#
+# It is declared BEFORE the resolution of the runtime on purpose: the
+# launcher of the user does not depend on the runtime that this scenario
+# resolves (it uses the PINNED one), so its end-to-end check must not be
+# hidden behind a machine without a global installation of @opencode/cli.
+LAUNCHER_E2E_ROOT="$SANDBOX/launcher-e2e"
+LAUNCHER_E2E_HOME="$LAUNCHER_E2E_ROOT/home"
+LAUNCHER_E2E_MANIFEST="$LAUNCHER_E2E_HOME/.forge-state.json"
+mkdir -p "$LAUNCHER_E2E_ROOT/overlay" "$LAUNCHER_E2E_ROOT/mutant" \
+  "$LAUNCHER_E2E_HOME/run" "$LAUNCHER_E2E_HOME/tmp"
+chmod 700 "$LAUNCHER_E2E_HOME" "$LAUNCHER_E2E_HOME/run" "$LAUNCHER_E2E_HOME/tmp"
+
+REAL_LAUNCHER_CHECK="el launcher real ARRANCA contra la instalacion fijada real y resuelve el ejecutable real"
+
+if [ -n "${FORGE_TEST_REAL_LAUNCHER:-}" ]; then
+  # A DECLARED launcher is the SUBJECT of the check (the SENSITIVITY proof
+  # needs a launcher other than the personal entry). The declaration selects
+  # the subject and NOTHING else: the applicability of the check depends on
+  # the INSTALLATION, so a broken entry point FAILS (declared or personal)
+  # instead of being declared.
+  REAL_LAUNCHER_DECLARED="yes"
+  REAL_LAUNCHER="$FORGE_TEST_REAL_LAUNCHER"
+else
+  REAL_LAUNCHER_DECLARED="no"
+  REAL_LAUNCHER="$FORGE_TEST_REAL_HOME/.local/bin/forge-opencode"
+fi
+
+# The SUBJECT is published with the result of the check: a consumer must be
+# able to tell WHICH launcher was accredited without reading this source.
+if [ "$REAL_LAUNCHER_DECLARED" = "yes" ]; then
+  REAL_LAUNCHER_SUBJECT="declarado (FORGE_TEST_REAL_LAUNCHER): $REAL_LAUNCHER"
+else
+  REAL_LAUNCHER_SUBJECT="entrada personal: $REAL_LAUNCHER"
+fi
+
+applicability_rc=0
+launcher_e2e_applicability || applicability_rc=$?
+case "$applicability_rc" in
+  0)
+    launcher_e2e_checks
+    ;;
+  3)
+    declare_check "$REAL_LAUNCHER_CHECK" "$LAUNCHER_E2E_CODE" \
+      "$LAUNCHER_E2E_DETAIL (launcher bajo prueba: $REAL_LAUNCHER_SUBJECT)"
+    ;;
+  *)
+    fail "la comprobacion end-to-end del launcher real no se puede acreditar: $LAUNCHER_E2E_DETAIL (launcher bajo prueba: $REAL_LAUNCHER_SUBJECT)"
+    ;;
+esac
 
 # --- 3. resolve the real runtime -----------------------------------------
 if ! REAL_BIN="$(resolve_real_opencode_bin)"; then
@@ -1266,6 +2103,9 @@ fi
 echo ""
 echo "================================"
 echo " Passed: $PASS_COUNT"
+if [ "$DECLARED_COUNT" -ne 0 ]; then
+  echo " Declared: $DECLARED_COUNT (no aplicables: no se cuentan como aprobadas)"
+fi
 if [ "$FAIL" -ne 0 ]; then
   echo " FAIL: some tests failed" >&2
   exit 1

@@ -473,7 +473,31 @@ EXECUTED=0
 PASSED=0
 FAILED=0
 ISOLATED=0
+# The DECLARATIONS of the checks that do not apply. A suite that ran and
+# DECLARED some checks is NOT the same as a suite that ran everything: the
+# aggregate publishes the count and the reason codes so a consumer of the
+# summary can tell "the suite passed with N declarations" from "everything
+# ran".
+DECLARED=0
+DECLARED_SUITES=0
 SUITE_START=$SECONDS
+
+# The log of every suite: it is what the declarations are read from. It
+# lives OUTSIDE the repository and it is deleted at the end.
+#
+# The battery also runs in environments with a MINIMAL PATH (the acceptance
+# of the isolation in tests/install_integration.sh): there `mktemp` may not
+# exist, so the logs fall back to flat files of the temporary directory and
+# the declarations are published from there.
+SUITE_LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/forge-run-all-logs.XXXXXX" 2>/dev/null || true)"
+if [ -n "$SUITE_LOG_DIR" ] && [ -d "$SUITE_LOG_DIR" ]; then
+  SUITE_LOG_ROOT="$SUITE_LOG_DIR"
+else
+  SUITE_LOG_DIR=""
+  SUITE_LOG_ROOT="${TMPDIR:-/tmp}"
+fi
+DECLARATION_TABLE="$SUITE_LOG_ROOT/forge-run-all-declarations.$$.tsv"
+: > "$DECLARATION_TABLE"
 
 while IFS= read -r test_file; do
   base="$(basename "$test_file")"
@@ -511,6 +535,16 @@ while IFS= read -r test_file; do
     : > "$CLEANUP_WORKDIR/declarations-$CLEANUP_SUITE_INDEX.tsv"
   fi
 
+  # The standard output of the suite is ALSO captured: the declarations of
+  # the checks that do not apply are published there, and the exit code
+  # alone cannot tell a suite that ran everything from a suite that ran with
+  # declarations.
+  #
+  # `tee` is used when it exists (the output is streamed AND captured) and
+  # the capture is a plain redirection when it does not (the battery also
+  # runs with a minimal PATH, where `tee` is not installed).
+  suite_log="$SUITE_LOG_ROOT/forge-run-all-suite.$$-$base.log"
+
   test_start=$SECONDS
   set +e
   # Each suite gets its own stdin: the loop below feeds the suite list through
@@ -521,15 +555,53 @@ while IFS= read -r test_file; do
   # cleanup of the product in the file that FORGE_PRODUCT_CLEANUP_DECLARATIONS_FILE
   # names: they observe the leftovers INSIDE their own containment, before
   # the kernel tears that namespace down.
-  if [ "$CLEANUP_STATE" = "OBSERVING" ]; then
-    FORGE_PRODUCT_CLEANUP_DECLARATIONS_FILE="$CLEANUP_WORKDIR/declarations-$CLEANUP_SUITE_INDEX.tsv" \
-      bash "$test_file" </dev/null
+  if command -v tee >/dev/null 2>&1; then
+    if [ "$CLEANUP_STATE" = "OBSERVING" ]; then
+      FORGE_PRODUCT_CLEANUP_DECLARATIONS_FILE="$CLEANUP_WORKDIR/declarations-$CLEANUP_SUITE_INDEX.tsv" \
+        bash "$test_file" </dev/null | tee "$suite_log"
+    else
+      bash "$test_file" </dev/null | tee "$suite_log"
+    fi
+    exit_code=${PIPESTATUS[0]}
   else
-    bash "$test_file" </dev/null
+    if [ "$CLEANUP_STATE" = "OBSERVING" ]; then
+      FORGE_PRODUCT_CLEANUP_DECLARATIONS_FILE="$CLEANUP_WORKDIR/declarations-$CLEANUP_SUITE_INDEX.tsv" \
+        bash "$test_file" </dev/null > "$suite_log"
+    else
+      bash "$test_file" </dev/null > "$suite_log"
+    fi
+    exit_code=$?
+    if command -v cat >/dev/null 2>&1; then
+      cat "$suite_log"
+    fi
   fi
-  exit_code=$?
   set -e
   elapsed=$(( SECONDS - test_start ))
+
+  # The declarations of this suite: the checks that do NOT apply. They are
+  # neither passed nor failed: they are published with their reason code so
+  # that the aggregate can be read by a program.
+  suite_declared=0
+  suite_codes=""
+  while IFS= read -r declaration; do
+    [ -n "$declaration" ] || continue
+    suite_declared=$(( suite_declared + 1 ))
+    declaration_code="$(printf '%s\n' "$declaration" | sed -n 's/.*motivo=\([A-Z0-9_]*\).*/\1/p')"
+    [ -n "$declaration_code" ] || declaration_code="UNKNOWN"
+    declaration_detail="$(printf '%s\n' "$declaration" | sed -n 's/.*motivo=[A-Z0-9_]*: //p')"
+    suite_codes="$suite_codes $declaration_code"
+    echo "DECLARED  $base  (no aplicable: no se cuenta como aprobada)  motivo=$declaration_code: $declaration_detail"
+  done < <(grep -E '^[[:space:]]*DECLARA[[:space:]]' "$suite_log" 2>/dev/null || true)
+
+  if [ "$suite_declared" -gt 0 ]; then
+    DECLARED=$(( DECLARED + suite_declared ))
+    DECLARED_SUITES=$(( DECLARED_SUITES + 1 ))
+    printf '%s\t%s\t%s\n' "$base" "$suite_declared" "${suite_codes# }" >> "$DECLARATION_TABLE"
+  fi
+
+  # The log of the suite has served its purpose: it is build output and it
+  # does not stay in the temporary space of the battery.
+  rm -f "$suite_log"
 
   if [ "$CLEANUP_STATE" = "OBSERVING" ]; then
     cleanup_probe "$CLEANUP_WORKDIR/probe-after.txt"
@@ -559,9 +631,23 @@ echo " Tests run:  $TOTAL"
 echo " Executed:   $EXECUTED"
 echo " Passed:     $PASSED"
 echo " Isolated:   $ISOLATED"
+echo " Declared:   $DECLARED  (checks no aplicables: no se cuentan como aprobados; suites con declaraciones: $DECLARED_SUITES)"
 echo " Failed:     $FAILED"
 echo " Duration:   ${total_elapsed}s"
 echo "============================================================"
+
+# The declarations, per suite and with their reason codes. A consumer of
+# this summary can tell a battery that ran EVERYTHING from a battery that
+# ran with declarations: the count and the codes are here, not only the
+# exit code.
+if [ -s "$DECLARATION_TABLE" ]; then
+  echo ""
+  echo " Declarations by suite (check no aplicable, no aprobado):"
+  while IFS=$'\t' read -r declared_suite declared_count declared_codes; do
+    [ -n "$declared_suite" ] || continue
+    printf '  %s  %s  %s\n' "$declared_suite" "$declared_count" "$declared_codes"
+  done < "$DECLARATION_TABLE"
+fi
 
 # The declaration of the cleanup of the PRODUCT of this battery is published
 # BEFORE the exit: it is measured over the private /proc and it is written
@@ -582,6 +668,13 @@ fi
 # killed runs can leave residue behind, and a directory-based plugin install
 # copies the whole working tree — stale fixtures once accumulated 285 MB here.
 rm -rf "$SCRIPT_DIR/.tmp"
+
+# The log of every suite is build output: it lives outside the repository
+# and it is deleted with the rest of the temporary evidence.
+rm -f "$DECLARATION_TABLE"
+if [ -n "$SUITE_LOG_DIR" ]; then
+  rm -rf "$SUITE_LOG_DIR"
+fi
 
 if [ "$FAILED" -gt 0 ]; then
   exit 1
