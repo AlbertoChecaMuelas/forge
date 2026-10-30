@@ -185,7 +185,7 @@ else
   # Check whether failure is "a pull request for this branch already exists"
   EXISTING_URL=""
   if printf '%s' "${CREATE_OUTPUT}" | grep -qiE 'already exists|already a pull request'; then
-    EXISTING_URL="$(gh pr view --head "${CURRENT_BRANCH}" --json url --jq '.url' 2>/dev/null || true)"
+    EXISTING_URL="$(gh pr view "${CURRENT_BRANCH}" --json url --jq '.url' 2>/dev/null || true)"
   fi
 
   if [[ -z "${EXISTING_URL}" ]]; then
@@ -195,9 +195,13 @@ else
   fi
 
   echo "create-pr: PR already exists for this branch (${EXISTING_URL}); updating instead"
+  UPDATE_BODY="${BODY}"
+  if [[ -n "${STAMP_LINE}" ]]; then
+    UPDATE_BODY+=$'\n\n'"${STAMP_LINE}"
+  fi
   if ! gh pr edit "${EXISTING_URL}" \
         --title "${TITLE}" \
-        --body  "${BODY}"; then
+        --body  "${UPDATE_BODY}"; then
     echo "create-pr: gh pr edit ${EXISTING_URL} failed" >&2
     exit 4
   fi

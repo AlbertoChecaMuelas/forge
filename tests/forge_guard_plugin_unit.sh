@@ -96,6 +96,54 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# resolve_node_runtime
+#
+# The plugin under test is a JavaScript module of the OpenCode 2 contract, so
+# the suite needs a JavaScript runtime. The runtime is resolved EXPLICITLY
+# and the absence of one is a FAILURE of the suite with a diagnosis that
+# names what is missing: it is never a silent skip and never a cryptic
+# "command not found" in the middle of a check.
+#
+# The order of the search is:
+#
+#   1. FORGE_TEST_NODE_BIN — the explicit declaration of the caller.
+#   2. node / nodejs in the PATH of the caller.
+#
+# A contained run (see tools/verification/forge-contained-run.sh) rebuilds the
+# environment with `env -i` and a declared PATH, so the runtime has to be
+# reachable in THAT PATH: the suite does not search the personal HOME and it
+# never installs anything.
+resolve_node_runtime() {
+  local candidate
+  if [ -n "${FORGE_TEST_NODE_BIN:-}" ]; then
+    if [ -x "$FORGE_TEST_NODE_BIN" ]; then
+      printf '%s\n' "$FORGE_TEST_NODE_BIN"
+      return 0
+    fi
+    printf 'FORGE_TEST_NODE_BIN no apunta a un ejecutable: %s\n' "$FORGE_TEST_NODE_BIN" >&2
+    return 1
+  fi
+  for candidate in node nodejs; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+  printf 'la suite del plugin de la guardia necesita un runtime de JavaScript (node o nodejs) en el PATH: no hay ninguno\n' >&2
+  printf 'PATH=%s\n' "${PATH:-}" >&2
+  return 1
+}
+
+NODE_BIN=""
+if ! NODE_BIN="$(resolve_node_runtime)"; then
+  fail "no hay runtime de JavaScript disponible: la suite no puede ejecutarse"
+  echo ""
+  echo "================================"
+  echo " Passed: $PASS"
+  echo " FAIL: some tests failed" >&2
+  exit 1
+fi
+
 # prepare_plugin_sandbox
 # Copies the real plugin package into a disposable directory, adds the
 # minimal `@opencode/plugin` stub the module needs to be importable, and
@@ -379,7 +427,7 @@ run_guard_case() {
   CASE_OUTPUT="$(TEST_CASE="$case_name" TEST_REPO_DIR="$repo_dir" \
     TEST_EXPECT_BRANCH="$expected_branch" \
     TEST_PLUGIN_ROOT="$SUITE_ROOT" \
-    node "$SUITE_ROOT/check.mjs" 2>&1)" && return 0
+    "$NODE_BIN" "$SUITE_ROOT/check.mjs" 2>&1)" && return 0
 
   return 1
 }

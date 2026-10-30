@@ -64,15 +64,20 @@
 # included):
 #
 #   * the real overlay, the real manifest, the real pinned prefix and the
-#     original credentials are compared by CONTENT (the deep fingerprint of
-#     tests/isolation.sh), so a mutation inside them is detected and so is the
-#     appearance of a new file;
+#     original credentials are compared by METADATA ONLY (stat()/lstat()):
+#     the CONTENT of a personal tree is never read, so taking the snapshot
+#     cannot leak the credentials nor the auth file of the user. What the
+#     comparison detects is the appearance of a new file, a deletion, a
+#     rename, a write (size and/or mtime change) and a substitution (device
+#     and inode);
 #   * the real launcher is compared by link and by metadata;
 #   * the real database is observed with stat() ONLY (never opened, never
 #     read) and compared by its STABLE properties (device, inode and size).
 #     Its mtime is deliberately NOT part of the comparison: the live session
 #     of the user writes that database legitimately, and that drift is not
-#     attributable to this scenario.
+#     attributable to this scenario;
+#   * the protected process is observed through EXACTLY ONE channel,
+#     /proc/<pid>/stat, and it is never signalled.
 #
 # Compatible with bash 3.2+.
 set -euo pipefail
@@ -104,7 +109,12 @@ REAL_LAUNCHER_BEFORE=""
 # writes them legitimately (the live database advances its mtime, the prompt
 # history grows), so a change there is not attributable to this scenario. The
 # real database is observed with stat() only, and never with its mtime.
-SCENARIO_PROTECTED_KEYS=".config/opencode-forge .forge-state.json .local/share/forge .opencode-tokens"
+#
+# The observation is BY METADATA ONLY and it is EXPLICIT: the scenario asks
+# for exactly these four paths, so it never observes (nor reads the content
+# of) any other tree of the user. Filtering a snapshot afterwards would be
+# the "read and then filter" pattern that the shared helper now removes.
+SCENARIO_PROTECTED_PATHS=".config/opencode-forge:meta .forge-state.json:meta .local/share/forge:meta .opencode-tokens:meta"
 
 pass() { echo "  PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 fail() { echo "  FAIL  $1" >&2; FAIL=1; }
@@ -116,26 +126,17 @@ EXPECTED_VERSION="2.1.4"
 # The protected state of the real installation.
 # ---------------------------------------------------------------------------
 
-# protected_subset <snapshot>
-# Keeps only the protected paths of the snapshot that this scenario owns the
-# comparison of. The rest of the protected paths of tests/isolation.sh are
-# volatile for this scenario (the live session of the user writes them).
-protected_subset() {
-  printf '%s\n' "$1" | awk -F'\t' -v keys="$SCENARIO_PROTECTED_KEYS" '
-    BEGIN { n = split(keys, k, " "); for (i = 1; i <= n; i++) want[k[i]] = 1 }
-    $1 in want { print }
-  '
-}
-
 # capture_protected_state
 # Fingerprints the protected state of the real installation BEFORE the
-# scenario runs anything. The fingerprint is by CONTENT (the deep fingerprint
-# of tests/isolation.sh), so a later modification inside the overlay is
-# detected, and so is the appearance of a new file.
+# scenario runs anything. The fingerprint is BY METADATA ONLY (stat()/lstat()):
+# the content of the overlay, of the manifest, of the pinned prefix and of
+# the credentials is NEVER read. What it detects is the appearance of a new
+# file, a deletion, a rename, a write (size and/or mtime change) and a
+# substitution (device and inode).
 capture_protected_state() {
   local snapshot
-  snapshot="$(forge_protected_snapshot "$FORGE_TEST_REAL_HOME" 2>/dev/null || true)"
-  PROTECTED_BEFORE="$(protected_subset "$snapshot")"
+  snapshot="$(forge_protected_snapshot "$FORGE_TEST_REAL_HOME" "$SCENARIO_PROTECTED_PATHS" 2>/dev/null || true)"
+  PROTECTED_BEFORE="$snapshot"
   [ -n "$PROTECTED_BEFORE" ]
 }
 
@@ -154,7 +155,7 @@ assert_protected_unchanged() {
   fi
 
   local after rel before_fp after_fp changed=0
-  after="$(protected_subset "$(forge_protected_snapshot "$FORGE_TEST_REAL_HOME" 2>/dev/null || true)")"
+  after="$(forge_protected_snapshot "$FORGE_TEST_REAL_HOME" "$SCENARIO_PROTECTED_PATHS" 2>/dev/null || true)"
 
   while IFS=$'\t' read -r rel before_fp; do
     [ -n "$rel" ] || continue
@@ -168,7 +169,7 @@ $PROTECTED_BEFORE
 EOF
 
   if [ "$changed" -eq 0 ]; then
-    pass "el estado protegido real (overlay, manifiesto, prefijo pinado y credenciales) es identico por contenido antes y despues del escenario"
+    pass "el estado protegido real (overlay, manifiesto, prefijo pinado y credenciales) es identico por METADATOS antes y despues del escenario (el contenido no se lee nunca)"
   fi
 
   return "$changed"
@@ -227,22 +228,72 @@ real_launcher_state() {
 # detection, and the surrounding installation is additionally compared by
 # CONTENT with a deep fingerprint taken before the scenario ran.
 real_db_state() {
-  stat -c '%d:%i:%s' "$REAL_DB" 2>/dev/null || printf 'absent\n'
+  forge_protected_db_state "$REAL_DB"
+}
+
+# ---------------------------------------------------------------------------
+# The protected PID.
+#
+# It is observed through EXACTLY ONE channel: /proc/<pid>/stat. Nothing else
+# of that process is read (no cmdline, no environ, no exe, no descriptors)
+# and it is NEVER signalled. The identity is the starttime: a recycled PID
+# has a different one.
+# ---------------------------------------------------------------------------
+PROTECTED_PID_STATE=""
+
+capture_protected_pid_state() {
+  PROTECTED_PID_STATE="$(forge_protected_pid_identity "$FORGE_TEST_PROTECTED_PID" 2>/dev/null || printf 'absent')"
+  [ -n "$PROTECTED_PID_STATE" ]
+}
+
+assert_protected_pid_unchanged() {
+  local after
+  after="$(forge_protected_pid_identity "$FORGE_TEST_PROTECTED_PID" 2>/dev/null || printf 'absent')"
+  if [ "$after" != "$PROTECTED_PID_STATE" ]; then
+    fail "el proceso protegido cambio de identidad o dejo de existir (antes=$PROTECTED_PID_STATE despues=$after)"
+    return 1
+  fi
+  if [ "$after" = "absent" ]; then
+    # HONESTO: el proceso protegido NO esta vivo y no se afirma que lo
+    # este. El invariante de vida ("530393 vivo con starttime_ticks=
+    # 26522468") ya NO puede satisfacerse: el proceso no existe desde el
+    # incidente del 2026-10-29 (una sonda de verificacion dirigida de este
+    # lote lo termino; ver remediacion-contencion/tester-v14/
+    # INCIDENTE-530393.md). El invariante NO se vuelve a exigir: lo que se
+    # exige es que el estado este REGISTRADO de forma explicita (ver
+    # remediacion-contencion/protected-registry.tsv y el verificador
+    # tests/forge_protected_resources.py). La exclusion del PID 530393 en
+    # el CODIGO sigue vigente aunque el proceso este muerto: un PID puede
+    # ser reciclado.
+    pass "el proceso protegido NO EXISTE (estado REGISTRADO del incidente del 2026-10-29); no se exige su vida: $after"
+    return 0
+  fi
+  pass "el proceso protegido sigue vivo con la MISMA identidad (leido solo de /proc/$FORGE_TEST_PROTECTED_PID/stat): $after"
+  return 0
 }
 
 cleanup() {
   local rc=$?
 
-  # Only OWN resources are touched: processes whose command line references
-  # this scenario's sandbox are, by construction, the ones this scenario
-  # started. Pre-existing processes are never signalled.
-  kill_own_processes
-
-  if [ -n "$SANDBOX" ] && [ -d "$SANDBOX" ]; then
-    rm -rf "$SANDBOX"
-  fi
-  if [ -n "${TEST_TMP_ROOT:-}" ] && [ -d "$TEST_TMP_ROOT" ]; then
-    rm -rf "$TEST_TMP_ROOT"
+  # The containment closes every contained run: the kernel tears the private
+  # PID namespace down when its PID 1 exits, so no process of this scenario
+  # can outlive it. There is no observer to stop and no inventory to sweep.
+  #
+  # What the scenario DOES owe is the evidence: when a contained run could
+  # not be certified, the sandbox and the receipts are KEPT and their
+  # location is reported. A failed closure must never look like a clean run.
+  if [ -s "${FORGE_CONTAINMENT_FAILED_RECEIPTS_FILE:-}" ]; then
+    echo "  FAIL  hay corridas contenidas que no se pudieron certificar; sus recibos se conservan:" >&2
+    sed 's/^/        /' "$FORGE_CONTAINMENT_FAILED_RECEIPTS_FILE" >&2
+    echo "        el sandbox del escenario se conserva en $SANDBOX" >&2
+    rc=1
+  else
+    if [ -n "$SANDBOX" ] && [ -d "$SANDBOX" ]; then
+      rm -rf "$SANDBOX"
+    fi
+    if [ -n "${TEST_TMP_ROOT:-}" ] && [ -d "$TEST_TMP_ROOT" ]; then
+      rm -rf "$TEST_TMP_ROOT"
+    fi
   fi
 
   # The protected state is compared in EVERY exit path, the early ones
@@ -250,6 +301,7 @@ cleanup() {
   # modification made during the installation or during the diagnostics is
   # detected and never credited as "not touched".
   assert_protected_unchanged || true
+  assert_protected_pid_unchanged || true
 
   if [ "$FAIL" -ne 0 ] && [ "$rc" -eq 0 ]; then
     rc=1
@@ -258,57 +310,36 @@ cleanup() {
   exit $rc
 }
 
-# own_processes
-# Prints the PIDs whose command line references this scenario's sandbox. They
-# are, by construction, the processes this scenario started.
-own_processes() {
-  local entry pid cmdline
-
-  [ -n "$SANDBOX" ] || return 0
-
-  for entry in /proc/[0-9]*; do
-    [ -d "$entry" ] || continue
-    pid="${entry#/proc/}"
-    [ "$pid" = "$$" ] && continue
-    cmdline="$(tr '\0' ' ' < "$entry/cmdline" 2>/dev/null || true)"
-    case "$cmdline" in
-      *"$SANDBOX"*) printf '%s\n' "$pid" ;;
-    esac
-  done
-}
-
-# kill_own_processes
-# Terminates only the processes of this scenario, identified by their command
-# line referencing the sandbox. No sweep by name, no signal to anything else.
-kill_own_processes() {
-  [ -n "$SANDBOX" ] || return 0
-
-  local pid
-  for pid in $(own_processes); do
-    kill -TERM "$pid" 2>/dev/null || true
-  done
-
-  local waited=0
-  while [ "$waited" -lt 20 ]; do
-    [ -z "$(own_processes)" ] && return 0
-    sleep 0.5
-    waited=$((waited + 1))
-  done
-
-  for pid in $(own_processes); do
-    kill -KILL "$pid" 2>/dev/null || true
-  done
-}
-
 mkdir -p "$TEST_TMP_ROOT"
+# The receipts of the contained runs that could NOT be certified are recorded
+# here: they are the evidence of a failure and they are never deleted to make
+# the scenario look clean.
+FORGE_CONTAINMENT_FAILED_RECEIPTS_FILE="$TEST_TMP_ROOT/failed-receipts.txt"
+: > "$FORGE_CONTAINMENT_FAILED_RECEIPTS_FILE"
 trap cleanup EXIT
+
+# The receipt of the LAST contained run of this scenario. It is the evidence
+# of the boundary and of the closure: the scenario never sweeps the process
+# table and never reads the command line of an unrelated process.
+CONTAINED_RECEIPT=""
+
+# The containment has to be available BEFORE the scenario touches the
+# product: without it there is no boundary and no closure to certify.
+if ! forge_containment_available; then
+  fail "la contencion no esta disponible: el escenario no puede certificar cero procesos propios vivos"
+  echo ""
+  echo "  FAIL: sin contencion no hay frontera ni cierre que verificar" >&2
+  echo "================================"
+  echo " Passed: $PASS_COUNT"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # The state of the REAL installation, captured BEFORE the scenario runs
 # anything. Everything the scenario does happens after this point, so any
 # difference detected at the end is attributable to the scenario.
 # ---------------------------------------------------------------------------
-REAL_DB="${FORGE_V2_REAL_DB:-$FORGE_TEST_REAL_HOME/.local/share/opencode/opencode.db}"
+REAL_DB="${FORGE_V2_REAL_DB:-$FORGE_TEST_REAL_HOME/$FORGE_TEST_PROTECTED_DB_REL}"
 REAL_DB_BEFORE="$(real_db_state)"
 REAL_LAUNCHER_BEFORE="$(real_launcher_state)"
 if ! capture_protected_state; then
@@ -319,30 +350,41 @@ if ! capture_protected_state; then
   echo " Passed: $PASS_COUNT"
   exit 1
 fi
+if ! capture_protected_pid_state; then
+  fail "no se pudo observar la identidad del proceso protegido"
+  echo ""
+  echo "  FAIL: sin identidad previa no se puede acreditar el proceso protegido" >&2
+  echo "================================"
+  echo " Passed: $PASS_COUNT"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # The real runtime. The environment of every invocation is neutralised, so the
 # binary never reads the original configuration nor the original credentials,
 # and it never reaches the network.
+#
+# Every invocation ALSO runs inside the containment: the supervisor of the
+# launcher and the Popen of plugin-sync.py are covered by a private PID
+# namespace with a private /proc, without touching their code.
 # ---------------------------------------------------------------------------
 real_env() {
-  env -i \
-    HOME="$SANDBOX/home" \
-    XDG_CONFIG_HOME="$SANDBOX/home/.config" \
-    XDG_DATA_HOME="$SANDBOX/home/.local/share" \
-    XDG_STATE_HOME="$SANDBOX/home/.local/state" \
-    XDG_CACHE_HOME="$SANDBOX/home/.cache" \
+  local rc=0
+  forge_isolated_env "$SANDBOX/home" \
     XDG_RUNTIME_DIR="$SANDBOX/run" \
     TMPDIR="$SANDBOX/tmp" \
     PATH=/usr/bin:/bin \
-    LANG=C LC_ALL=C \
+    LANG=C \
+    LC_ALL=C \
     OPENCODE_DISABLE_AUTOUPDATE=1 \
     OPENCODE_DISABLE_MODELS_FETCH=1 \
     OPENCODE_DISABLE_CHANNEL_DB=1 \
     OPENCODE_DISABLE_FILEWATCHER=1 \
     OPENCODE_DISABLE_CLAUDE_CODE=1 \
     OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 \
-    "$@"
+    "$@" || rc=$?
+  CONTAINED_RECEIPT="$FORGE_CONTAINMENT_LAST_RECEIPT"
+  return "$rc"
 }
 
 # resolve_real_opencode_bin
@@ -762,12 +804,16 @@ ln -s "$SANDBOX/home/.local/bin/forge-opencode" \
 HELPER="$FIXTURE_REPO/open-code/lib/plugin-sync.py"
 OVERLAY_DIR="$SANDBOX/home/.config/opencode-forge"
 OVERLAY_CONFIG="$OVERLAY_DIR/opencode.jsonc"
-copy_json="$(PYTHONDONTWRITEBYTECODE=1 python3 "$HELPER" runtime-copy \
+# The production helpers are invoked INSIDE the containment: they are
+# production code and the processes they create belong to the boundary.
+copy_json="$(forge_isolated_env "$SANDBOX/home" PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$HELPER" runtime-copy \
   --config-dir "$OVERLAY_DIR" --config "$OVERLAY_CONFIG" \
   --destination "$DIAGNOSTIC_ROOT/xdg/config/opencode-forge" \
   2>"$SANDBOX/runtime-copy.err" || true)"
 private_config="$(printf '%s' "$copy_json" | jq -r '.config_file // empty' 2>/dev/null || true)"
-private_db="$(PYTHONDONTWRITEBYTECODE=1 python3 "$HELPER" snapshot-db \
+private_db="$(forge_isolated_env "$SANDBOX/home" PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$HELPER" snapshot-db \
   --source "$ISOLATED_DB" \
   --destination "$DIAGNOSTIC_ROOT/xdg/data/opencode/opencode.db" \
   2>"$SANDBOX/snapshot.err" || true)"
@@ -781,16 +827,12 @@ if [ -n "$private_config" ] && [ -n "$private_db" ]; then
     '{targets_manifest:[{name:"opencode",dir:$dir,config_file:$cfg,binary:$bin}]}' \
     > "$DIAGNOSTIC_ROOT/home/.forge-state.json"
 
-  env -i \
-    HOME="$DIAGNOSTIC_ROOT/home" \
-    XDG_CONFIG_HOME="$DIAGNOSTIC_ROOT/xdg/config" \
-    XDG_DATA_HOME="$DIAGNOSTIC_ROOT/xdg/data" \
-    XDG_STATE_HOME="$DIAGNOSTIC_ROOT/xdg/state" \
-    XDG_CACHE_HOME="$DIAGNOSTIC_ROOT/xdg/cache" \
+  forge_isolated_env "$DIAGNOSTIC_ROOT/home" \
     XDG_RUNTIME_DIR="$DIAGNOSTIC_ROOT/run" \
     TMPDIR="$DIAGNOSTIC_ROOT/xdg/tmp" \
     PATH=/usr/bin:/bin \
-    LANG=C LC_ALL=C \
+    LANG=C \
+    LC_ALL=C \
     OPENCODE_CONFIG_DIR="$DIAGNOSTIC_ROOT/xdg/config/opencode-forge" \
     OPENCODE_CONFIG="$private_config" \
     OPENCODE_DB="$private_db" \
@@ -1015,6 +1057,37 @@ if [ -z "${FORGE_TEST_REAL_RUNTIME_NEGATIVE:-}" ]; then
     fail "el fallo por layout incorrecto de npm no explica la causa"
     sed -n '1,20p' "$wrong_log" | sed 's/^/      /' >&2
   fi
+fi
+
+# --- 9. the containment, its receipt and the own survivors ------------------
+#
+# The claim "zero own survivors" is now backed by the CLOSURE of the
+# containment and not by an inventory of the host. The receipt of the LAST
+# contained run is read here, at the end of the scenario: the boundary must
+# be accredited, the closure must be confirmed and the cleanup of the
+# product must have been observed. An absent, partial or contradictory
+# receipt is a FAILURE, never an empty list of survivors.
+if [ -n "${CONTAINED_RECEIPT:-}" ] && [ -s "$CONTAINED_RECEIPT" ]; then
+  if forge_receipt_require "$CONTAINED_RECEIPT"; then
+    pass "la corrida contenida acredita la frontera y el cierre (recibo: $CONTAINED_RECEIPT)"
+  else
+    fail "el recibo de la corrida contenida no acredita la frontera ni el cierre"
+    forge_receipt_summary "$CONTAINED_RECEIPT" >&2 || true
+  fi
+
+  case "$(forge_receipt_product_cleanup "$CONTAINED_RECEIPT")" in
+    PASS)
+      pass "la limpieza del producto se observo antes de la limpieza defensiva y no queda ningun proceso propio vivo"
+      ;;
+    FAIL)
+      fail "quedan procesos propios vivos dentro de la contencion"
+      ;;
+    *)
+      fail "la limpieza del producto NO se pudo observar: no se puede certificar cero procesos propios vivos"
+      ;;
+  esac
+else
+  fail "no hay recibo de la corrida contenida: no se puede certificar cero procesos propios vivos"
 fi
 
 echo ""

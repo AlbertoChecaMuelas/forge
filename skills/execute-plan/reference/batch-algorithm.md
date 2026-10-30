@@ -1,6 +1,6 @@
 ### Step 4 — Iterative step loop
 
-> **HARD RULE — Step delegation.** `[A]` steps are delegated to `applier`; `[T]` steps are delegated to `tech` in isolated invocations. `[A]` steps **MAY** be batched into a single `applier` invocation under the batch boundary rules documented below. `[T]` steps are **NEVER** batched. Mixing `[A]` and `[T]` in a single call is forbidden.
+> **HARD RULE — Step delegation.** `[A]` steps are delegated to `applier` via Claude Code's `Task` tool; `[T]` steps are delegated to `tech` via `Task` in isolated invocations. `[A]` steps **MAY** be batched into a single `applier` invocation under the batch boundary rules documented below. `[T]` steps are **NEVER** batched. Mixing `[A]` and `[T]` in a single call is forbidden.
 
 #### Batch construction algorithm
 
@@ -49,7 +49,7 @@ For each step:
 
 #### If the step is `[A]` (applier):
 
-a. Invoke `applier` with the literal instructions from the step: exact path, exact command or diff, shell verifier.
+a. Invoke `applier` via `Task` with the literal instructions from the step: exact path, exact command or diff, shell verifier.
 
 b. Applier will validate (in its executable-plan mode):
    - That `.plans/current` resolves to the active plan.
@@ -65,6 +65,8 @@ d. If applier returns `BLOCKED` or `VERIFIER_FAILED`:
    - Hand control to tech with the reason for the block for diagnosis.
    - Tech fixes and reports back. If tech resolves it, mark the step as completed.
    - If tech returns `ESCALATE_SENIOR`, invoke senior, wait for resolution, then resume.
+
+e. If the `Task` dispatch of applier itself fails with an infrastructure error (no return code — provider/model/sandbox/network failure, distinct from `BLOCKED`, `VERIFIER_FAILED`, or any other escalation code), stop and surface `Fallo de infraestructura del subagente applier: <error literal>` to the user. Use the literal error returned by the `Task` dispatch; do not fabricate details, retry, or re-route.
 
 #### If the dispatched item is a batch (applier):
 
@@ -85,12 +87,16 @@ c. **On `BLOCKED_BATCH: step N.M — <reason>`** (failure at step `N.M`):
    - Steps completed before the failure are not re-executed (their `[x]` persists).
    - Pass the failure to tech exactly as in the single-step `BLOCKED`/`VERIFIER_FAILED` flow (bullet d above): tech diagnoses and fixes, then reports back. If tech resolves it, mark step `N.M` as `[x]` and resume the batch algorithm from the next pending step. If tech returns `ESCALATE_SENIOR`, invoke senior, wait for resolution, then resume.
 
+d. If the batch `Task` dispatch of applier itself fails with an infrastructure error (no return code — provider/model/sandbox/network failure, distinct from `OK_BATCH`, `BLOCKED_BATCH`, or any other escalation code), stop and surface `Fallo de infraestructura del subagente applier: <error literal>` to the user. Use only literal detail returned by the `Task` dispatch; do not fabricate details, retry, or re-route.
+
 #### If the step is `[T]` (tech):
 
-a. Invoke `tech` with the full step block: path(s), responsibilities, success criteria, verifier.
+a. Invoke `tech` via `Task` with the full step block: path(s), responsibilities, success criteria, verifier.
 
 b. Tech executes the step (may delegate mechanical sub-steps to applier internally).
 
 c. On success, tech reports `OK`. Mark the step checkbox as `[x]` and update `current_phase` and `current_step` in the plan front-matter.
 
 d. If tech returns `ESCALATE_SENIOR`: invoke senior with the reason. Senior resolves or modifies the plan. Resume.
+
+e. If the `Task` dispatch of tech itself fails with an infrastructure error (no return code — provider/model/sandbox/network failure, distinct from `ESCALATE_SENIOR` or any other escalation code), stop and surface `Fallo de infraestructura del subagente tech: <error literal>` to the user. Use only literal detail returned by the `Task` dispatch; do not fabricate details, retry, or re-route. This infrastructure failure is not an escalation code.

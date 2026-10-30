@@ -8,6 +8,11 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
 SCENARIO_RUNNER="$REPO_ROOT/tests/forge_v2_safety_scenarios.sh"
 COMPONENT_ROOT="$REPO_ROOT/tools/cutover/forge-v2"
 
+if ! bash "$REPO_ROOT/tools/verification/require-v2-containment.sh"; then
+  echo "FALLO: el banco V2 no se ejecuta sin acreditacion previa de forge-contained-run.sh." >&2
+  exit 78
+fi
+
 usage() {
   cat >&2 <<'EOF'
 Uso:
@@ -72,7 +77,7 @@ if ! mkdir -p -- "$artifacts_parent" || ! mkdir -m 700 -- "$artifacts_parent/$ar
   exit 1
 fi
 ARTIFACTS_DIR="$(cd -- "$artifacts_parent/$artifacts_name" && pwd -P)"
-mkdir -m 700 -- "$ARTIFACTS_DIR/scenarios" "$ARTIFACTS_DIR/logs"
+mkdir -m 700 -- "$ARTIFACTS_DIR/scenarios" "$ARTIFACTS_DIR/logs" "$ARTIFACTS_DIR/controls"
 
 PYTHON_BIN="$(command -v python3 2>/dev/null || true)"
 UNSHARE_BIN="$(command -v unshare 2>/dev/null || true)"
@@ -110,9 +115,11 @@ Presupuesto conservador para la secuencia completa (sin reducir los guards):
   preparacion/preflight: 60 s; agregacion y cierre de evidencias: 60 s;
     publicacion de artefactos: 300 s.
   presupuesto calculado: 2670 + 60 + 60 + 300 = 3090 s.
-  timeout del job redondeado hacia arriba: 55 minutos (3300 s), con 210 s de
-    margen adicional. Este timeout de job tambien cubre la publicacion de
-    evidencias tras el paso de escenarios.
+  presupuesto configurado de escenario+cierre: 3240 s de escenario + 60 s de
+    gracia de cierre = 3300 s (55 minutos).
+  timeout del job del workflow: 75 minutos (4500 s), con 1200 s (20 minutos)
+    de margen sobre el presupuesto de escenario+cierre. El timeout del job
+    tambien cubre checkout/preparacion y la publicacion de evidencias.
 
 La secuencia continua tras un fallo contractual solo si el teardown y su
 evidencia estan completos; se detiene ante teardown incompleto o no acreditado.
@@ -127,7 +134,9 @@ bash_version=$BASH_VERSION
 python_version=$PYTHON_VERSION
 unshare_version=$UNSHARE_VERSION
 mode=$mode
-expected_job_timeout_seconds=3300
+expected_job_timeout_seconds=4500
+expected_scenario_and_close_seconds=3300
+job_margin_seconds=1200
 EOF
 
 finalize() {
@@ -459,8 +468,109 @@ if [[ ! -f "$SCENARIO_RUNNER" || ! -f "$COMPONENT_ROOT/lib/cutover_safety.py" ]]
   exit 3
 fi
 
+base_scenarios=(normal no-pidfd no-pidfd-hang)
+if ! scenario_inventory_json="$("$PYTHON_BIN" - "$SCENARIO_RUNNER" "${base_scenarios[@]}" \
+  2>"$ARTIFACTS_DIR/scenario-inventory.stderr" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+runner = pathlib.Path(sys.argv[1])
+ci_scenarios = sys.argv[2:]
+lines = runner.read_text(encoding="utf-8").splitlines()
+case_header = re.compile(r'^\s*case\s+"\$SCENARIO"\s+in\s*$')
+clause = re.compile(r'^\s*(.*?)\)\s*(?:;;)?\s*(?:#.*)?$')
+valid_name = re.compile(r'^[a-z][a-z0-9-]*$')
+
+case_starts = [index for index, line in enumerate(lines) if case_header.match(line)]
+problems = []
+if len(case_starts) < 2:
+    problems.append("runner debe declarar tanto el despacho como el contrato de escenarios")
+
+
+def labels_at(start):
+    labels = []
+    ended = False
+    for line in lines[start + 1:]:
+        if re.match(r'^\s*esac\s*$', line):
+            ended = True
+            break
+        match = clause.match(line)
+        if not match:
+            continue
+        pattern = match.group(1).strip()
+        if pattern == "*":
+            continue
+        for name in pattern.split("|"):
+            if not valid_name.fullmatch(name):
+                problems.append("etiqueta no reconocida en runner: " + repr(name))
+            labels.append(name)
+    if not ended:
+        problems.append("case de escenarios sin esac de cierre")
+    return labels
+
+
+runner_scenarios = labels_at(case_starts[0]) if case_starts else []
+runner_contracts = labels_at(case_starts[1]) if len(case_starts) > 1 else []
+
+
+def duplicates(values):
+    seen = set()
+    repeated = []
+    for value in values:
+        if value in seen and value not in repeated:
+            repeated.append(value)
+        seen.add(value)
+    return repeated
+
+
+runner_duplicates = duplicates(runner_scenarios)
+contract_duplicates = duplicates(runner_contracts)
+ci_duplicates = duplicates(ci_scenarios)
+if runner_duplicates:
+    problems.append("duplicados en el despacho del runner: " + ", ".join(runner_duplicates))
+if contract_duplicates:
+    problems.append("duplicados en el contrato del runner: " + ", ".join(contract_duplicates))
+if ci_duplicates:
+    problems.append("duplicados en el bucle base de CI: " + ", ".join(ci_duplicates))
+
+unrecognized = [name for name in runner_scenarios if name not in runner_contracts]
+if unrecognized:
+    problems.append("escenarios aceptados sin contrato reconocido en el runner: " + ", ".join(unrecognized))
+unrecognized_ci = [name for name in ci_scenarios if name not in runner_scenarios]
+if unrecognized_ci:
+    problems.append("escenarios del bucle CI no reconocidos por el runner: " + ", ".join(unrecognized_ci))
+missing_ci = [name for name in runner_scenarios if name not in ci_scenarios]
+if missing_ci:
+    problems.append("escenarios soportados ausentes del bucle CI: " + ", ".join(missing_ci))
+missing_dispatch = [name for name in runner_contracts if name not in runner_scenarios]
+if missing_dispatch:
+    problems.append("escenarios con contrato no admitidos por el despacho: " + ", ".join(missing_dispatch))
+
+if problems:
+    print("Inventario de escenarios inválido; no se ejecutó el banco:", file=sys.stderr)
+    for problem in problems:
+        print("  - " + problem, file=sys.stderr)
+    print("  runner (despacho): " + ", ".join(runner_scenarios), file=sys.stderr)
+    print("  runner (contratos): " + ", ".join(runner_contracts), file=sys.stderr)
+    print("  CI (escenarios base): " + ", ".join(ci_scenarios), file=sys.stderr)
+    raise SystemExit(1)
+
+print(json.dumps({"runner_supported": runner_scenarios, "ci_base": ci_scenarios}, sort_keys=True))
+PY
+)"; then
+  JOB_STATE="scenario-inventory-invalid"
+  echo "FALLO BLOQUEANTE: el inventario de escenarios no coincide; corrige el runner o el bucle base de CI antes de ejecutar el banco." >&2
+  cat "$ARTIFACTS_DIR/scenario-inventory.stderr" >&2
+  finalize 3
+  exit 3
+fi
+printf '%s\n' "$scenario_inventory_json" >"$ARTIFACTS_DIR/scenario-inventory.json"
+
 scenario_failure=0
-for scenario in normal no-pidfd no-pidfd-hang; do
+control_safe_to_run=1
+for scenario in "${base_scenarios[@]}"; do
   scenario_dir="$ARTIFACTS_DIR/scenarios/$scenario"
   scenario_log="$ARTIFACTS_DIR/logs/$scenario.log"
   scenario_started="$(date +%s)"
@@ -493,6 +603,22 @@ root = pathlib.Path(directory)
 expected = {
     "normal": {"supervisor": 0, "suite": 0, "authorization": True, "watchdog": True, "timed_out": False},
     "no-pidfd": {"supervisor": 6, "suite": 4, "authorization": False, "watchdog": False, "timed_out": False},
+    # The suite of this scenario is ELIMINATED by the bounded close of the
+    # containment entry: it hangs on purpose and it IGNORES the TERM of the
+    # close, so the close escalates to SIGKILL and kills the whole group.
+    #
+    # Its RC is therefore OBSERVABLE and it is -9 (the convention of the
+    # shell: a process terminated by SIGKILL is -9, never 137). That value is
+    # the POSITIVE evidence of the contract of this scenario: without pidfd,
+    # the close applied by the ENTRY killed the group, and the init of the
+    # namespace and the group itself end up terminated and verified.
+    #
+    # "None" (an RC that does not apply) would certify NOTHING: it is
+    # satisfied by the mere ABSENCE of an RC, and in this architecture it is
+    # UNSATISFIABLE, because the entry always records a numeric SCENARIO_RC.
+    # The guarantee itself is checked apart: the real timeout, the init of
+    # the namespace gone, the group without members, no survivors and the
+    # teardown acreditado.
     "no-pidfd-hang": {"supervisor": 6, "suite": -9, "authorization": False, "watchdog": False, "timed_out": True},
 }[scenario]
 problems = []
@@ -650,13 +776,202 @@ PY
   then
     echo "FALLO: teardown incompleto o evidencia insuficiente en $scenario; se detiene la secuencia." >&2
     scenario_failure=1
+    control_safe_to_run=0
     break
   fi
 done
 
-if ((scenario_failure != 0)); then
-  JOB_STATE="scenario-or-evidence-failed"
-  echo "FALLO: uno o más escenarios no cumplieron su contrato; consulta scenario-results.json." >&2
+control_failure=0
+run_guard_control() {
+  local variant="$1"
+  local expected_rc="$2"
+  local inject_cleanup_failure="$3"
+  local scenario="no-pidfd-hang"
+  local control_dir="$ARTIFACTS_DIR/controls/$variant"
+  local control_log="$ARTIFACTS_DIR/logs/$variant.log"
+  local control_runner_rc verify_rc
+
+  if [[ -e "$control_dir" || -L "$control_dir" ]]; then
+    echo "FALLO: la evidencia del control ya existe: $control_dir" >&2
+    return 1
+  fi
+
+  echo "=== control $variant: escenario=$scenario guard=15s inyeccion=$inject_cleanup_failure ==="
+  set +e
+  if [[ "$inject_cleanup_failure" == 1 ]]; then
+    env \
+      -u FORGE_V2_REAL_DB \
+      -u FORGE_V2_HANG_TIMEOUT \
+      -u FORGE_V2_SCENARIO_GUARD \
+      -u FORGE_V2_SCENARIO_GRACE \
+      -u FORGE_V2_OUTER_SCENARIO_GUARD \
+      -u FORGE_V2_TEST_GUARD_CLEANUP_FAIL \
+      -u FORGE_V2_TEST_NO_PIDFD \
+      -u FORGE_V2_TEST_HANG_SUITE \
+      FORGE_V2_EXTERNAL_ROOT="$COMPONENT_ROOT" \
+      FORGE_V2_SCENARIO_GUARD=15 \
+      FORGE_V2_OUTER_SCENARIO_GUARD=600 \
+      FORGE_V2_TEST_GUARD_CLEANUP_FAIL=1 \
+      bash "$SCENARIO_RUNNER" "$scenario" "$control_dir" >"$control_log" 2>&1
+  else
+    env \
+      -u FORGE_V2_REAL_DB \
+      -u FORGE_V2_HANG_TIMEOUT \
+      -u FORGE_V2_SCENARIO_GUARD \
+      -u FORGE_V2_SCENARIO_GRACE \
+      -u FORGE_V2_OUTER_SCENARIO_GUARD \
+      -u FORGE_V2_TEST_GUARD_CLEANUP_FAIL \
+      -u FORGE_V2_TEST_NO_PIDFD \
+      -u FORGE_V2_TEST_HANG_SUITE \
+      FORGE_V2_EXTERNAL_ROOT="$COMPONENT_ROOT" \
+      FORGE_V2_SCENARIO_GUARD=15 \
+      FORGE_V2_OUTER_SCENARIO_GUARD=600 \
+      bash "$SCENARIO_RUNNER" "$scenario" "$control_dir" >"$control_log" 2>&1
+  fi
+  control_runner_rc=$?
+  set -e
+
+  set +e
+  "$PYTHON_BIN" - "$control_dir" "$variant" "$scenario" "$control_runner_rc" \
+    "$expected_rc" "$inject_cleanup_failure" <<'PY'
+import json
+import pathlib
+import sys
+
+directory, variant, scenario, runner_rc, expected_rc, injected = sys.argv[1:]
+root = pathlib.Path(directory)
+runner_rc = int(runner_rc)
+expected_rc = int(expected_rc)
+expected_injection = injected == "1"
+problems = []
+
+
+def load(name):
+    try:
+        value = json.loads((root / name).read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+expiry = load("guard-expiry.json")
+verdict = load("guard-verdict.json")
+if runner_rc != expected_rc:
+    problems.append("RC observado del runner=%d; esperado=%d" % (runner_rc, expected_rc))
+if expiry is None:
+    problems.append("falta guard-expiry.json legible")
+if verdict is None:
+    problems.append("falta guard-verdict.json legible")
+
+observed_wrapper_rc = (verdict or {}).get("wrapper_rc")
+survivors = (expiry or {}).get("survivors")
+forced_recovery = (expiry or {}).get("forced_recovery") or []
+observed_injection = (expiry or {}).get("fault_injection")
+if (expiry or {}).get("expired") is not True:
+    problems.append("la evidencia no acredita vencimiento del guard")
+if observed_wrapper_rc != expected_rc:
+    problems.append("RC re-derivado del guard=%r; esperado=%d" % (observed_wrapper_rc, expected_rc))
+if observed_injection is not expected_injection:
+    problems.append("fault_injection=%r; esperado=%r" % (observed_injection, expected_injection))
+if not isinstance(survivors, list):
+    problems.append("la evidencia de supervivientes no es una lista")
+elif expected_rc == 14 and survivors:
+    problems.append("RC 14 requiere limpieza acreditada sin supervivientes")
+elif expected_rc == 15 and not survivors:
+    problems.append("RC 15 requiere supervivientes detectados antes de la recuperación")
+
+if expected_rc == 14 and (verdict or {}).get("ok") is not True:
+    problems.append("el control RC 14 no acredita la limpieza completa")
+if expected_rc == 15 and (verdict or {}).get("ok") is not False:
+    problems.append("el control RC 15 no registra el fallo de limpieza incompleta")
+if expected_rc == 15 and not any("recuperacion forzada completa" in item for item in forced_recovery):
+    problems.append("la recuperación obligatoria no acredita cero recursos propios vivos")
+if any("RECOVERY INCOMPLETA" in item for item in forced_recovery):
+    problems.append("la recuperación obligatoria dejó recursos propios vivos")
+if (root / "work").exists():
+    problems.append("permanece el directorio de trabajo del control")
+
+payload = {
+    "variant": variant,
+    "scenario": scenario,
+    "runner_rc": runner_rc,
+    "expected_rc": expected_rc,
+    "observed_guard_rc": observed_wrapper_rc,
+    "fault_injection": observed_injection,
+    "survivors_detected": survivors,
+    "forced_recovery": forced_recovery,
+    "ok": not problems,
+    "problems": problems,
+    "evidence": {"guard_expiry": "guard-expiry.json", "guard_verdict": "guard-verdict.json"},
+}
+(root / "control-verification.json").write_text(
+    json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+print(json.dumps(payload, sort_keys=True))
+raise SystemExit(0 if not problems else 1)
+PY
+  verify_rc=$?
+  set -e
+  if ((verify_rc != 0)); then
+    echo "FALLO: $variant no satisfizo el contrato RC $expected_rc; consulta $control_dir/control-verification.json." >&2
+    return 1
+  fi
+  return 0
+}
+
+if ((control_safe_to_run == 0)); then
+  echo "FALLO: se omiten los controles del guard porque un escenario base dejó teardown sin acreditar." >&2
+  control_failure=1
+else
+  run_guard_control guard-rc14-cleanup-complete 14 0 || control_failure=1
+  run_guard_control guard-rc15-cleanup-incomplete 15 1 || control_failure=1
+fi
+
+if [[ -z "${FORGE_PRODUCT_CLEANUP_RESULT_FILE:-}" ]]; then
+  JOB_STATE="product-cleanup-result-unavailable"
+  echo "FALLO: falta la ruta de resultado de limpieza del producto para el recibo de contencion." >&2
+  finalize 4
+  exit 4
+fi
+
+if ! product_cleanup_aggregate="$(bash "$SCRIPT_DIR/aggregate-product-cleanup.sh" \
+  "$ARTIFACTS_DIR" "$FORGE_PRODUCT_CLEANUP_RESULT_FILE")"; then
+  JOB_STATE="product-cleanup-aggregation-unavailable"
+  echo "FALLO: no se pudo agregar la limpieza declarada por escenario." >&2
+  finalize 4
+  exit 4
+fi
+
+case $product_cleanup_aggregate in
+  FAIL)
+    JOB_STATE="product-cleanup-failed"
+    echo "FALLO: al menos un escenario declaro FAIL para la limpieza del producto." >&2
+    finalize 4
+    exit 4
+    ;;
+  UNKNOWN)
+    # Preserve RC 0 only for the scenario contract itself. The containment
+    # entry sees UNKNOWN and converts that RC 0 into RC 70 (not accepted).
+    if ((scenario_failure == 0 && control_failure == 0)); then
+      JOB_STATE="product-cleanup-unknown"
+      echo "INDETERMINADO: falta una declaracion valida de limpieza en algun escenario." >&2
+      finalize 0
+      exit 0
+    fi
+    ;;
+  PASS)
+    ;;
+  *)
+    JOB_STATE="product-cleanup-aggregation-invalid"
+    echo "FALLO: resultado agregado de limpieza no valido: $product_cleanup_aggregate" >&2
+    finalize 4
+    exit 4
+    ;;
+esac
+
+if ((scenario_failure != 0 || control_failure != 0)); then
+  JOB_STATE="scenario-control-or-evidence-failed"
+  echo "FALLO: uno o más escenarios/controles no cumplieron su contrato; consulta scenario-results.json y controls/." >&2
   finalize 3
   exit 3
 fi

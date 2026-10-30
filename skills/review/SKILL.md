@@ -25,9 +25,10 @@ directory next to this skill's directory).
 3. Dispatch a FRESH subagent whose entire prompt is the filled template, with `model: opus`.
    Do not paraphrase or trim the template.
 4. Relay the subagent's review body to the user verbatim. The last line will be one of
-   `OK_PHASE:` / `FINDINGS_PHASE:` / `BLOCKED_REVIEW:` (see
-   `shared/reference/escalation-codes.md`): findings route to tech (impl), senior (design)
-   or tester (coverage) — only if the user wants to address them.
+   `OK_PHASE:` / `FINDINGS: <c> critical, <m> major, <n> minor[, coverage=<k>]` /
+   `BLOCKED_REVIEW:` (see `../execute-plan/reference/escalation-codes.md`, relative to this
+   installed skill directory): findings route to tech (impl), senior (design) or tester
+   (coverage) — only if the user wants to address them.
 5. If the dispatch itself fails (infrastructure error, no return code): report
    `Fallo de infraestructura del subagente review: <error>` and stop. Do not retry, do not
    re-route.

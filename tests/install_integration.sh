@@ -92,6 +92,30 @@ assert_file_not_exists() {
 }
 
 # ---------------------------------------------------------------------------
+# The EXIT trap of the sandbox.
+#
+# The directory that the trap has to remove is kept in a GLOBAL and NOT in
+# the `local` of the function that installs the trap. An EXIT trap that reads
+# a `local` of a function that ALREADY RETURNED fails with "unbound
+# variable", and that failure is surfaced AFTER the real diagnostic: the
+# reader would see the message of the trap instead of the message of the test
+# that failed, and the CAUSE would be masked by an error that says nothing
+# about the cause.
+#
+# The trap never fails either: it ignores an empty slot and it never changes
+# the exit status of the suite.
+# ---------------------------------------------------------------------------
+EXIT_CLEANUP_DIR=""
+
+# install_exit_cleanup <dir>
+#
+# Installs the EXIT trap that removes <dir>.
+install_exit_cleanup() {
+  EXIT_CLEANUP_DIR="$1"
+  trap 'rm -rf -- "${EXIT_CLEANUP_DIR:-}" 2>/dev/null || true' EXIT
+}
+
+# ---------------------------------------------------------------------------
 # Isolated runner.
 #
 # HOME, the XDG directories and the Forge-owned OpenCode prefix are redirected
@@ -144,7 +168,7 @@ test_e2e_install_uninstall_roundtrip() {
   echo "--- test_e2e_install_uninstall_roundtrip"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   # Seed claude target with settings that have "no-touch" keys + custom managed keys
   mkdir -p "$TMPHOME/.claude"
@@ -205,7 +229,7 @@ test_e2e_repair_recreates_broken_symlinks() {
   echo "--- test_e2e_repair_recreates_broken_symlinks"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -242,7 +266,7 @@ test_e2e_status_reports_broken() {
   echo "--- test_e2e_status_reports_broken"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -283,7 +307,7 @@ test_e2e_rtk_no_binary_without_confirmation() {
   echo "--- test_e2e_rtk_no_binary_without_confirmation"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -305,7 +329,7 @@ test_state_schema_v2_shape() {
   echo "--- test_state_schema_v2_shape"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -351,7 +375,7 @@ test_repair_uses_state_not_hardcoded() {
   echo "--- test_repair_uses_state_not_hardcoded"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -425,7 +449,7 @@ test_state_v1_status_is_read_only() {
   echo "--- test_state_v1_status_is_read_only"
   local TMPHOME
   TMPHOME="$(make_diag_home "claude-state-v1")"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude/agents"
 
@@ -536,7 +560,7 @@ test_claude_status_doctor_parity() {
   echo "--- test_claude_status_doctor_parity"
   local TMPHOME
   TMPHOME="$(make_diag_home "claude-diag-parity")"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
   run_iso "$TMPHOME" \
@@ -655,7 +679,7 @@ test_claude_status_doctor_parity() {
   # --- (6) --only=statusline: the agents that are not installed are not reported ---
   local TMPHOME2
   TMPHOME2="$(make_diag_home "claude-diag-statusline")"
-  trap 'rm -rf "$TMPHOME2"' EXIT
+  install_exit_cleanup "$TMPHOME2"
 
   mkdir -p "$TMPHOME2/.claude"
   run_iso "$TMPHOME2" \
@@ -691,7 +715,7 @@ test_e2e_new_commands_distributed() {
   echo "--- test_e2e_new_commands_distributed"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   # Install
   run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
@@ -853,7 +877,7 @@ test_e2e_legacy_commands_cleanup() {
   echo "--- test_e2e_legacy_commands_cleanup"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude/commands"
 
@@ -890,7 +914,7 @@ test_install_only_statusline() {
   echo "--- test_install_only_statusline"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -933,7 +957,7 @@ test_p2_1_only_unknown_component_exits_nonzero() {
   echo "--- test_p2_1_only_unknown_component_exits_nonzero"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -965,7 +989,7 @@ test_p2_2_only_commands_warns_no_agents() {
   echo "--- test_p2_2_only_commands_warns_no_agents"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -996,7 +1020,7 @@ test_p2_3_sequential_install_unions_components() {
   echo "--- test_p2_3_sequential_install_unions_components"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -1038,7 +1062,7 @@ test_p2_4_uninstall_component_statusline_leaves_agents() {
   echo "--- test_p2_4_uninstall_component_statusline_leaves_agents"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -1102,7 +1126,7 @@ test_p2_5_uninstall_unknown_component_exits_nonzero() {
   echo "--- test_p2_5_uninstall_unknown_component_exits_nonzero"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -1130,7 +1154,7 @@ test_p2_6_uninstall_not_installed_component_exits_nonzero() {
   echo "--- test_p2_6_uninstall_not_installed_component_exits_nonzero"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -1164,7 +1188,7 @@ test_p2_9_status_only_statusline_no_missing_agents() {
   echo "--- test_p2_9_status_only_statusline_no_missing_agents"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -1201,7 +1225,7 @@ test_p2_10_uninstall_component_multi_target_unit() {
   echo "--- test_p2_10_uninstall_component_multi_target_unit"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   # Create two fake target directories representing two independent ~/.claude installs
   local target_a="$TMPHOME/target_a"
@@ -1309,7 +1333,7 @@ test_partial_to_full_upgrade_installs_all_components() {
   echo "--- test_partial_to_full_upgrade_installs_all_components"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -1369,7 +1393,7 @@ test_uninstall_component_leaves_no_orphan_parent_dirs() {
   echo "--- test_uninstall_component_leaves_no_orphan_parent_dirs"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -1417,7 +1441,7 @@ test_rules_symlinks_created() {
   echo "--- test_rules_symlinks_created"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
 
@@ -1449,7 +1473,7 @@ test_install_default_excludes_core() {
   echo "--- test_install_default_excludes_core"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
   run_iso "$TMPHOME" bash "$INSTALL_SH" install --target=claude >/dev/null 2>&1
@@ -1475,7 +1499,7 @@ test_install_only_core() {
   echo "--- test_install_only_core"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
   printf '@RTK.md\n' > "$TMPHOME/.claude/CLAUDE.md"
@@ -1525,7 +1549,7 @@ test_core_conflicts() {
   echo "--- test_core_conflicts"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
   assert_exit_nonzero "core_conflicts: --only=core,agents exits non-zero" \
@@ -1555,7 +1579,7 @@ test_full_uninstall_strips_claude_md_ref_and_dirs() {
   echo "--- test_full_uninstall_strips_claude_md_ref_and_dirs"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
   printf '@RTK.md\nuser content line\n' > "$TMPHOME/.claude/CLAUDE.md"
@@ -1591,7 +1615,7 @@ test_full_uninstall_rtk_default_and_keep() {
   echo "--- test_full_uninstall_rtk_default_and_keep"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   local snippet
   # shellcheck disable=SC2016  # literal: es el TEXTO/FORMATO que el fixture escribe o busca tal cual; pasarlo a comillas dobles cambiaria su semantica
@@ -1653,7 +1677,7 @@ test_uninstall_sanitizes_restored_broken_settings() {
   echo "--- test_uninstall_sanitizes_restored_broken_settings"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude" "$TMPHOME/.forge/bin"
   printf '#!/bin/sh\necho rtk 0.0.0\n' > "$TMPHOME/.forge/bin/rtk"
@@ -1719,7 +1743,7 @@ test_purge_removes_pre_forge() {
   echo "--- test_purge_removes_pre_forge"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
   printf '{"model": "fable"}\n' > "$TMPHOME/.claude/settings.json"
@@ -1773,6 +1797,32 @@ run_all_candidate_names() {
   fi
 }
 
+# Prints the basenames of the suites that the runner declares ISOLATED.
+#
+# An isolated suite is NOT executed by design (it is blocked and not
+# approved), so it cannot be executed either. It stays in the count of the
+# battery and the runner has to report it as ISOLATED: the isolation is
+# declared by the runner itself, never inferred.
+run_all_isolated_names() {
+  local runner="$1"
+  local tests_dir="$2"
+
+  local isolated_line
+  isolated_line="$(grep -m1 '^ISOLATED_TESTS=' "$runner" 2>/dev/null || true)"
+  if [ -n "$isolated_line" ]; then
+    (
+      SCRIPT_DIR="$tests_dir"
+      export SCRIPT_DIR
+      # shellcheck disable=SC1090
+      eval "$isolated_line"
+      # shellcheck disable=SC2086
+      for f in $ISOLATED_TESTS; do
+        [ -f "$f" ] && basename "$f"
+      done
+    )
+  fi
+}
+
 # Suites that used to be swallowed by the heredoc and never ran.
 RUN_ALL_PREVIOUSLY_LOST_SUITES="protocol_unit.sh readme_sync_unit.sh
 release_flow_integration.sh release_skill_unit.sh rtk_unit.sh
@@ -1803,7 +1853,7 @@ test_run_all_executes_every_candidate_suite() {
   fi
 
   SANDBOX="$(mktemp -d "$FORGE_TEST_TMP_ROOT/run-all-contract.XXXXXX")"
-  trap 'rm -rf "$SANDBOX"' EXIT
+  install_exit_cleanup "$SANDBOX"
   sandbox_tests="$SANDBOX/tests"
   mkdir -p "$sandbox_tests"
   candidates_file="$SANDBOX/candidates.txt"
@@ -1860,15 +1910,26 @@ STUB
   fi
 
   missing=""
+  isolated_candidates="$(run_all_isolated_names "$runner" "$tests_dir" || true)"
   while IFS= read -r candidate; do
     [ -z "$candidate" ] && continue
-    if ! printf '%s\n' "$output" | grep -qF "PASS  $candidate"; then
-      missing="$missing $candidate"
+    if printf '%s\n' "$output" | grep -qF "PASS  $candidate"; then
+      continue
     fi
+    # A suite that the runner itself declares ISOLATED is not executed BY
+    # DESIGN (it is blocked and not approved), so it cannot have been
+    # executed. It has to be reported as ISOLATED, and only a suite that the
+    # runner declares isolated may be accepted that way: the isolation is
+    # declared, never inferred from a missing line.
+    if printf '%s\n' "$isolated_candidates" | grep -qxF "$candidate" \
+      && printf '%s\n' "$output" | grep -qF "ISOLATED  $candidate"; then
+      continue
+    fi
+    missing="$missing $candidate"
   done < "$candidates_file"
 
   if [ -z "$missing" ]; then
-    pass "run-all: every candidate suite was executed"
+    pass "run-all: every candidate suite was executed (or explicitly isolated)"
   else
     fail "run-all: candidate suites never executed:$missing"
   fi

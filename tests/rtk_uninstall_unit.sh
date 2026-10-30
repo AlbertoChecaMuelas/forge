@@ -76,6 +76,30 @@ assert_json_field() {
 }
 
 # ---------------------------------------------------------------------------
+# The EXIT trap of the sandbox.
+#
+# The directory that the trap has to remove is kept in a GLOBAL and NOT in
+# the `local` of the function that installs the trap. An EXIT trap that reads
+# a `local` of a function that ALREADY RETURNED fails with "unbound
+# variable", and that failure is surfaced AFTER the real diagnostic: the
+# reader would see the message of the trap instead of the message of the test
+# that failed, and the CAUSE would be masked by an error that says nothing
+# about the cause.
+#
+# The trap never fails either: it ignores an empty slot and it never changes
+# the exit status of the suite.
+# ---------------------------------------------------------------------------
+EXIT_CLEANUP_DIR=""
+
+# install_exit_cleanup <dir>
+#
+# Installs the EXIT trap that removes <dir>.
+install_exit_cleanup() {
+  EXIT_CLEANUP_DIR="$1"
+  trap 'rm -rf -- "${EXIT_CLEANUP_DIR:-}" 2>/dev/null || true' EXIT
+}
+
+# ---------------------------------------------------------------------------
 # T1 — State file absent: no state file, script exits 0, does nothing
 # ---------------------------------------------------------------------------
 test_t1_state_file_absent() {
@@ -83,7 +107,7 @@ test_t1_state_file_absent() {
   echo "--- T1: state file absent"
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  install_exit_cleanup "$tmpdir"
 
   mkdir -p "$tmpdir/.local/bin"
 
@@ -105,7 +129,7 @@ test_t2_installed_by_us_false() {
   echo "--- T2: installed_by_us false"
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  install_exit_cleanup "$tmpdir"
 
   # State with installed_by_us: false (no brew shim needed — script exits early)
   printf '{"rtk":{"installed_by_us":false,"detected_version":null,"pinned_version":"0.37.2","install_failed":false,"version_mismatch":false}}' \
@@ -128,7 +152,7 @@ test_t3_rtk_present_installed_by_us_true() {
   echo "--- T3: RTK present, installed_by_us=true"
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  install_exit_cleanup "$tmpdir"
 
   # Create a fake ~/.forge/bin/rtk executable
   mkdir -p "$tmpdir/.forge/bin"
@@ -161,7 +185,7 @@ test_t4_rtk_absent_installed_by_us_true() {
   echo "--- T4: RTK absent, installed_by_us=true (idempotent)"
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  install_exit_cleanup "$tmpdir"
 
   # Do NOT create ~/.forge/bin/rtk — binary is already gone
 
@@ -188,7 +212,7 @@ test_t5_rtk_present_installed_by_us_false() {
   echo "--- T5: RTK present, installed_by_us=false"
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  install_exit_cleanup "$tmpdir"
 
   # Create a fake ~/.forge/bin/rtk executable
   mkdir -p "$tmpdir/.forge/bin"
@@ -218,7 +242,7 @@ test_t6_invalid_json_state() {
   echo "--- T6: invalid JSON state file"
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  install_exit_cleanup "$tmpdir"
 
   mkdir -p "$tmpdir/.local/bin"
 
@@ -247,7 +271,7 @@ test_tc1_marker_block_removed_preserves_context() {
   echo "--- TC1: marker block removed, surrounding content preserved"
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  install_exit_cleanup "$tmpdir"
 
   # Create .zshrc with content before and after the marker block
   # shellcheck disable=SC2016  # literal: es el TEXTO/FORMATO que el fixture escribe o busca tal cual; pasarlo a comillas dobles cambiaria su semantica
@@ -291,7 +315,7 @@ test_tc2_profile_without_marker_untouched() {
   echo "--- TC2: profile without marker is untouched"
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  install_exit_cleanup "$tmpdir"
 
   printf '%s\n' '# unrelated content only' > "$tmpdir/.bashrc"
   local content_before
@@ -329,7 +353,7 @@ test_tc3_uninstall_idempotent() {
   echo "--- TC3: uninstall is idempotent (second run leaves same result)"
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  install_exit_cleanup "$tmpdir"
 
   # Set up .zshrc with marker block
   # shellcheck disable=SC2016  # literal: es el TEXTO/FORMATO que el fixture escribe o busca tal cual; pasarlo a comillas dobles cambiaria su semantica
@@ -389,7 +413,7 @@ test_tc4_new_forge_marker_removed() {
   echo "--- TC4: new forge marker block removed"
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  install_exit_cleanup "$tmpdir"
 
   # Create .zshrc with the new forge marker block
   # shellcheck disable=SC2016  # literal: es el TEXTO/FORMATO que el fixture escribe o busca tal cual; pasarlo a comillas dobles cambiaria su semantica

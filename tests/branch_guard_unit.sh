@@ -164,13 +164,20 @@ test_merged_branch() {
   # Fetch so local knows about the updated origin/master
   git -C "$local_repo" fetch -q origin
 
-  # Clear any leftover touchfile for this repo to avoid inter-run contamination
-  local repo_hash
-  repo_hash=$(git -C "$local_repo" rev-parse --show-toplevel | shasum -a 1 2>/dev/null | cut -d' ' -f1 || git -C "$local_repo" rev-parse --show-toplevel | md5sum 2>/dev/null | cut -d' ' -f1 || git -C "$local_repo" rev-parse --show-toplevel | tr '/' '_' | tr -d ' ')
-  rm -f "${TMPDIR:-/tmp}/forge-branch-guard/${repo_hash}.shown"
+  # The throttle state of the guard lives in ${TMPDIR:-/tmp}/forge-branch-guard.
+  # The cases of this suite get a PRIVATE TMPDIR and clear its state BEFORE
+  # the first invocation, so the state they observe is only the state they
+  # create. The suite never depends on the internal hash of the guard (which
+  # is an implementation detail and not part of its contract) nor on the
+  # uniqueness of the path of the repository: a leftover of another case can
+  # never silence the warning, and this case can never silence the warning of
+  # another one.
+  local throttle_tmp="$tmp/throttle-tmp"
+  mkdir -p "$throttle_tmp"
+  rm -rf "$throttle_tmp/forge-branch-guard"
 
   # Stay on feature/merged-branch — its HEAD is now ancestor of origin/master
-  run_guard "$local_repo"
+  run_guard "$local_repo" TMPDIR="$throttle_tmp"
 
   if [ "$GUARD_EXIT" -eq 0 ]; then
     pass "merged_branch: exit 0"
@@ -269,13 +276,17 @@ test_touchfile_throttle() {
     { fail "setup: no se pudo simular merge en remote"; return 1; }
   git -C "$local_repo" fetch -q origin
 
-  # Clear any leftover touchfile for this repo to avoid inter-run contamination
-  local repo_hash
-  repo_hash=$(git -C "$local_repo" rev-parse --show-toplevel | shasum -a 1 2>/dev/null | cut -d' ' -f1 || git -C "$local_repo" rev-parse --show-toplevel | md5sum 2>/dev/null | cut -d' ' -f1 || git -C "$local_repo" rev-parse --show-toplevel | tr '/' '_' | tr -d ' ')
-  rm -f "${TMPDIR:-/tmp}/forge-branch-guard/${repo_hash}.shown"
+  # The throttle state of the guard lives in ${TMPDIR:-/tmp}/forge-branch-guard.
+  # This case gets a PRIVATE TMPDIR and clears its state BEFORE the first
+  # invocation: the state it observes is only the state it creates, and the
+  # case never depends on the internal hash of the guard nor on the
+  # uniqueness of the path of the repository.
+  local throttle_tmp="$tmp/throttle-tmp"
+  mkdir -p "$throttle_tmp"
+  rm -rf "$throttle_tmp/forge-branch-guard"
 
   # First invocation: should print the warning
-  run_guard "$local_repo"
+  run_guard "$local_repo" TMPDIR="$throttle_tmp"
   local first_stderr="$GUARD_STDERR"
 
   if echo "$first_stderr" | grep -q "\[branch-guard\]"; then
@@ -285,7 +296,7 @@ test_touchfile_throttle() {
   fi
 
   # Second invocation: touchfile is present, should be silent
-  run_guard "$local_repo"
+  run_guard "$local_repo" TMPDIR="$throttle_tmp"
 
   if [ "$GUARD_EXIT" -eq 0 ]; then
     pass "touchfile_throttle: segunda invocación exit 0"

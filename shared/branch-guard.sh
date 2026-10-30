@@ -113,7 +113,11 @@ fi # end _skip_commit_guard
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 
 # Resolver default branch
-default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || true)
+default_branch=""
+origin_head=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null) || origin_head=""
+if [ -n "$origin_head" ]; then
+  default_branch=${origin_head#refs/remotes/origin/}
+fi
 if [ -z "$default_branch" ]; then
   default_branch=$(git config init.defaultBranch 2>/dev/null || true)
 fi
@@ -134,8 +138,30 @@ if ! git rev-parse --verify "origin/$default_branch" >/dev/null 2>&1; then
   exit 0
 fi
 
-# Calcular hash del repo para el touchfile de throttle
-repo_hash=$(printf '%s' "$repo_root" | shasum -a 1 2>/dev/null | cut -d' ' -f1 || printf '%s' "$repo_root" | md5sum 2>/dev/null | cut -d' ' -f1 || printf '%s' "$repo_root" | tr '/' '_' | tr -d ' ')
+# Calcular hash del repo para el touchfile de throttle. Cada alternativa se
+# evalúa explícitamente: no se usa `cut` al final de la tubería porque, sin
+# pipefail, ocultaría el fallo del proveedor de hash e impediría el fallback.
+repo_hash=""
+if command -v shasum >/dev/null 2>&1; then
+  hash_output=$(printf '%s' "$repo_root" | shasum -a 1 2>/dev/null) || hash_output=""
+  repo_hash=${hash_output%% *}
+  case "$repo_hash" in
+    ''|*[![:xdigit:]]*) repo_hash="" ;;
+  esac
+fi
+
+if [ -z "$repo_hash" ] && command -v md5sum >/dev/null 2>&1; then
+  hash_output=$(printf '%s' "$repo_root" | md5sum 2>/dev/null) || hash_output=""
+  repo_hash=${hash_output%% *}
+  case "$repo_hash" in
+    ''|*[![:xdigit:]]*) repo_hash="" ;;
+  esac
+fi
+
+if [ -z "$repo_hash" ]; then
+  printf '[branch-guard] ERROR: unable to compute a non-empty repository throttle hash (no usable shasum or md5sum)\n' >&2
+  exit 1
+fi
 
 # Touchfile path: una advertencia por sesión/repo
 touchfile="${TMPDIR:-/tmp}/forge-branch-guard/${repo_hash}.shown"

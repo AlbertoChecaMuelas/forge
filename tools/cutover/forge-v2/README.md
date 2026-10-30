@@ -54,21 +54,62 @@ No se añadieron estos ficheros a suites de integración, a
 resolver las primitivas permitidas desde este checkout y respetar sus propios
 límites de seguridad.
 
-## Job bloqueante `v2-safety`
+## Job `v2-safety`: puerta de `release`, no puerta de merge
 
-El nombre estable del check requerido es **`v2-safety`**. Es una puerta
-bloqueante del workflow: `release` solo puede continuar cuando tanto `test`
-como `v2-safety` terminan correctamente. Para bloquear también los merges, la
-protección de la rama debe registrar `v2-safety` como check requerido; este
-cambio no modifica ni presupone activa esa política.
+El nombre estable del check del workflow es **`v2-safety`**. En el workflow
+versionado, `release` declara `needs: [test, v2-safety]` sin una condición que
+omita esa dependencia: si el banco falla, `release` no continúa. Esta
+dependencia interna del workflow no configura la protección de ramas. Un banco
+verde no significa que `v2-safety` sea un check requerido para fusionar PR.
 
-Desde la raíz de un checkout, la invocación completa y reproducible es:
+### Alcance y límites del banco
+
+El banco busca incoherencias internas: contrasta el inventario y recuento de
+casos con los escenarios y contratos del runner; re-deriva los códigos de
+salida a partir de los resultados y su evidencia; y comprueba el teardown y la
+ausencia de supervivientes mediante la observación de `/proc`. También verifica
+la procedencia y unicidad del componente que consume desde la ruta versionada
+canónica, y que la ejecución se haga dentro de la contención acreditada.
+
+Estos controles no detectan una modificación coordinada del producto y de sus
+expectativas: producto y banco viven en el mismo repositorio, por lo que un
+cambio consistente en ambos es indistinguible para el banco de un cambio real
+del producto. No se promete validación externa, un pin independiente de hashes
+ni un meta-test general que valide el propio banco. Los hashes documentales que
+aparecen más abajo no constituyen ese pin ni una validación independiente de
+cada ejecución.
+
+La [síntesis normativa versionada del contrato de contención](../../verification/V2-CONTAINMENT-CONTRACT.md)
+recoge la afirmación defendible, las afirmaciones retiradas, el alcance de esta
+puerta y el requisito adversarial aún no satisfecho.
+
+### Protección de ramas: acción del administrador pendiente
+
+La lectura del estado de protección disponible registra que el único contexto
+required observado es `test`; `v2-safety` **no** es required,
+`enforce_admins=false`, `allow_force_pushes=true` y no hay rulesets. Por esas
+excepciones, ni siquiera el required `test` es una puerta dura. Así, `v2-safety`
+bloquea el job `release` por su dependencia `needs`, pero no bloquea los merges.
+
+**Acción pendiente del usuario administrador:** hacer que `v2-safety` sea
+required y revisar las excepciones actuales de protección de ramas:
+`enforce_admins=false`, `allow_force_pushes=true`, sin rulesets. El único
+contexto required observado es `test`; incluso esa puerta no es dura bajo esas
+excepciones. No se ha ejecutado ningún cambio administrativo ni se marca esta
+acción como realizada.
+
+El workflow ejecuta el banco a través de
+`tools/verification/forge-contained-run.sh`, que acredita la contención antes
+de invocar `tools/ci/v2-safety.sh`. Las órdenes siguientes son la invocación
+interior del banco, no una vía de ejecución independiente: el banco rechaza
+arrancar fuera de una contención acreditada.
 
 ```bash
 bash tools/ci/v2-safety.sh --all --artifacts-dir "$RUNNER_TEMP/v2-safety-evidence"
 ```
 
-Para acreditar capacidades sin lanzar los escenarios:
+Para acreditar capacidades sin lanzar los escenarios, usa `--preflight-only`
+dentro de la misma contención:
 
 ```bash
 bash tools/ci/v2-safety.sh --preflight-only --artifacts-dir RUTA_NUEVA
@@ -148,14 +189,17 @@ queda acreditado, la secuencia puede continuar. Para cubrir ambos caminos sin
 reducir los límites individuales, el presupuesto secuencial suma los tres
 límites efectivos: `890 + 890 + 890 = 2670 s`.
 
-Se añaden 60 s de preparación y preflight, 60 s para agregación/cierre de
-evidencias y 300 s para publicar el artefacto: `2670 + 60 + 60 + 300 = 3090
-s`. El job `v2-safety` tiene un timeout de **55 minutos (3300 s)**, con 210 s
-de margen sobre el presupuesto calculado y cobertura también para la
-publicación posterior al paso. El cálculo del entrypoint y esta sección
-coinciden con el `timeout-minutes: 55` del workflow. No se reducen los plazos
-originales ni se añaden reintentos; un guard vencido sigue siendo fallo, incluso
-si su limpieza quedó acreditada.
+El workflow reserva hasta **3240 s para la fase de escenarios**, incluidos
+preflight, agregación y los controles auxiliares adicionales de
+procedencia/unicidad (INSP-6/7/8); estos controles no alteran el recuento de
+casos principal ni se añaden fuera de ese límite. Se añaden 60 s de gracia para
+cierre exterior: `3240 + 60 = 3300 s` (**55 minutos**). El job `v2-safety` tiene
+un timeout de **75 minutos (4500 s)**, como declara `timeout-minutes: 75` en el
+workflow; los **1200 s (20 minutos)** restantes son margen para
+checkout/preparación, finalización del recibo, clasificación y publicación del
+artefacto, incluida la carga siempre ejecutada. No se reducen los plazos
+individuales ni se añaden reintentos; un guard vencido sigue siendo fallo,
+incluso si su limpieza quedó acreditada.
 
 ### Códigos de salida de los escenarios
 
@@ -192,11 +236,11 @@ Los runs `40409247443` (push) y `40409253630` (pull_request) pertenecen a otro
 contenido anterior, SHA de cabecera
 `41f6593f036436c9542f3db00127a83180d76443`, y se ejecutaron con timeout de
 2100 s (35 min). El job de GitHub duró 139 s en ambos; el entrypoint registró
-134 s y 133 s. Su margen medido frente al presupuesto calculado entonces (y al
-actual, 3090 s) fue 2951 s; no se presentan como ejecuciones del timeout actual
-de 55 min.
+134 s y 133 s. Su margen medido frente al presupuesto calculado entonces
+(3090 s, cálculo histórico ya sustituido) fue 2951 s; no se presentan como
+ejecuciones del timeout actual.
 
-| Run | Evento / SHA de cabecera | Timeout entonces | `v2-safety` job / entrypoint | Margen frente al timeout de ese run | Margen frente al presupuesto vigente (3090 s) | Escenarios (s) |
+| Run | Evento / SHA de cabecera | Timeout entonces | `v2-safety` job / entrypoint | Margen frente al timeout de ese run | Margen frente al presupuesto histórico entonces (3090 s) | Escenarios (s) |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: |
 | `40409247443` | push / `41f6593` | 2100 s (35 min) | 139 / 134 s | 1961 s | 2951 s | 112 / 1 / 20 |
 | `40409253630` | pull_request / `41f6593` | 2100 s (35 min) | 139 / 133 s | 1961 s | 2951 s | 112 / 0 / 20 |
@@ -227,12 +271,13 @@ terminó RC 0, sin salida.
 
 Los tres runs independientes tienen SHA de cabecera
 `e31ded635e8968c01a671837d0cbcabec85540e9`, y tanto `test` como `v2-safety`
-terminaron `success` (RC 0). El timeout configurado en los tres es **55 min
-(3300 s)**; el presupuesto calculado vigente es **3090 s**. En los runs de PR,
+terminaron `success` (RC 0). En esa revisión histórica, el timeout configurado
+en los tres era **55 min (3300 s)** y el presupuesto calculado entonces era
+**3090 s**; esos valores no son el presupuesto actual del workflow. En los runs de PR,
 GitHub evaluó el merge ref sintético `a3c436cf2f28f0fd49d8406899d3663d2a42ce18`
 registrado por el artefacto, manteniendo `e31ded6` como SHA de cabecera.
 
-| Run | Evento / SHA de cabecera (checkout ejecutado) | Jobs `test` / `v2-safety` | Job GitHub / entrypoint | Margen frente a presupuesto vigente (3090 s) | Escenarios (`normal` / `no-pidfd` / `no-pidfd-hang`) | Artefacto vivo |
+| Run | Evento / SHA de cabecera (checkout ejecutado) | Jobs `test` / `v2-safety` | Job GitHub / entrypoint | Margen frente al presupuesto histórico entonces (3090 s) | Escenarios (`normal` / `no-pidfd` / `no-pidfd-hang`) | Artefacto vivo |
 | ---: | --- | --- | ---: | ---: | ---: | --- |
 | [`40411954977`](https://github.com/AlbertoChecaMuelas/forge/actions/runs/40411954977) | push / `e31ded6` (`e31ded6`) | success / success | 142 / 135 s | 2948 s | 112 / 1 / 20 s | `12693193733`, `v2-safety-evidence-40411954977-1` |
 | [`40411962790`](https://github.com/AlbertoChecaMuelas/forge/actions/runs/40411962790) | pull_request / `e31ded6` (`a3c436c`) | success / success | 140 / 133 s | 2950 s | 112 / 0 / 20 s | `12693397483`, `v2-safety-evidence-40411962790-1` |

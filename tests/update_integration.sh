@@ -57,6 +57,30 @@ assert_file_not_exists() {
 }
 
 # ---------------------------------------------------------------------------
+# The EXIT trap of the sandbox.
+#
+# The directory that the trap has to remove is kept in a GLOBAL and NOT in
+# the `local` of the function that installs the trap. An EXIT trap that reads
+# a `local` of a function that ALREADY RETURNED fails with "unbound
+# variable", and that failure is surfaced AFTER the real diagnostic: the
+# reader would see the message of the trap instead of the message of the test
+# that failed, and the CAUSE would be masked by an error that says nothing
+# about the cause.
+#
+# The trap never fails either: it ignores an empty slot and it never changes
+# the exit status of the suite.
+# ---------------------------------------------------------------------------
+EXIT_CLEANUP_DIR=""
+
+# install_exit_cleanup <dir>
+#
+# Installs the EXIT trap that removes <dir>.
+install_exit_cleanup() {
+  EXIT_CLEANUP_DIR="$1"
+  trap 'rm -rf -- "${EXIT_CLEANUP_DIR:-}" 2>/dev/null || true' EXIT
+}
+
+# ---------------------------------------------------------------------------
 # Isolated runner for the installer.
 #
 # HOME, the XDG directories and the Forge-owned OpenCode prefix are redirected
@@ -88,7 +112,7 @@ test_update_show_cost_creates_sentinel() {
   echo "--- test_update_show_cost_creates_sentinel"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -118,7 +142,7 @@ test_update_no_show_cost_removes_sentinel() {
   echo "--- test_update_no_show_cost_removes_sentinel"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -146,7 +170,7 @@ test_update_show_cost_both_targets() {
   echo "--- test_update_show_cost_both_targets"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   mkdir -p "$TMPHOME/.claude"
 
@@ -171,7 +195,7 @@ test_update_show_cost_skips_opencode() {
   echo "--- test_update_show_cost_skips_opencode"
   local TMPHOME
   TMPHOME="$(mktemp -d)"
-  trap 'rm -rf "$TMPHOME"' EXIT
+  install_exit_cleanup "$TMPHOME"
 
   # Directories for a claude target and a fake opencode overlay dir
   local claude_dir="$TMPHOME/.claude"

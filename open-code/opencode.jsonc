@@ -7,6 +7,9 @@
   "default_agent": "orchestrator",
   "model": "minimax-coding-plan/MiniMax-M3.1-Flash",
   "update": "disable",
+  "experimental": {
+    "subagent_depth": 2
+  },
   "instructions": [
     "__FORGE_OPENCODE_AGENTS_MD__"
   ],

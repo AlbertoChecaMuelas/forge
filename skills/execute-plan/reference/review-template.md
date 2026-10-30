@@ -3,7 +3,7 @@
 Filled by `/execute-plan` (phase checkpoints) or `/review` (ad-hoc audits) and dispatched
 as the FULL prompt of a fresh subagent with `model: opus`. Placeholders to substitute
 before dispatch: `{BASE_SHA}`, `{HEAD_SHA}`, `{PLAN_STEP}`, `{SCOPE}`.
-Return codes come from `shared/reference/escalation-codes.md`.
+Return codes come from the sibling file `escalation-codes.md` in this installed reference directory.
 
 ---
 
@@ -70,12 +70,14 @@ an item, omit it. The line is metadata for `/execute-plan`; it is not emitted wi
 
 1. Review body in structured markdown: `## Summary` (2-4 sentences), `## Critical findings`,
    `## Major findings`, `## Minor findings`, `## Areas to verify` — omit empty sections.
-2. The LAST line of your response is exactly ONE of:
+2. During an `/execute-plan` checkpoint, the LAST line of your response is exactly ONE of:
    - `OK_PHASE: <one-line summary>` — no actionable findings; checkpoint approved.
    - `FINDINGS_PHASE: impl=<n>, design=<m>[, coverage=<k>]` — actionable findings, classified.
    - `BLOCKED_REVIEW: <reason>` — cannot review (empty or unreadable diff, ambiguous target,
      diff too large to audit completely).
 
    When invoked **outside** `/execute-plan` checkpoints (e.g. `/review` ad-hoc), the reviewer
-   may instead emit `FINDINGS: <c> critical, <m> major, <n> minor[, coverage=<k>]` — same
-   classification; the consumer (orchestrator or user) decides how to address findings.
+   may instead emit `FINDINGS: <c> critical, <m> major, <n> minor` (optionally followed by
+   `, coverage=<k>`) — same classification; the consumer (orchestrator or user) decides how
+   to address findings. The literal ad-hoc summary prefix is
+   `FINDINGS: <c> critical, <m> major, <n> minor`.

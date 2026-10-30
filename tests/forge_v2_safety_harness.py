@@ -4,18 +4,20 @@
 Two roles live in this file:
 
   supervisor
-      Runs OUTSIDE any namespace. It establishes and accredits the
-      containment (rootless user namespace + private PID namespace + private
-      ``/proc``), launches the suite inside it, keeps an EXTERNAL watchdog
-      (pidfd on the namespace init) able to tear the whole namespace down,
-      verifies afterwards that no process of the batch survived, and writes the
-      machine readable evidence.
+      Runs OUTSIDE any namespace. It does NOT create a namespace of its own
+      and it does NOT sweep the process table of the host: it launches the
+      suite through the SINGLE authorized containment entry
+      (tools/verification/forge-contained-run.sh), which establishes a
+      rootless user namespace with a private PID namespace and a private
+      ``/proc``, accredits the boundary BY INVOCATION, closes the contained
+      environment with a bounded budget and records everything in a receipt.
+      The guarantee "no own survivor" is the CLOSURE of that namespace, not
+      a sweep: the kernel destroys it when its PID 1 exits.
 
   suite
-      Runs INSIDE the private PID namespace (it is PID 1 there). It
-      re-accredits the containment from the inside BEFORE calling any
-      sensitive production function, then runs the acceptance cases over
-      exclusively synthetic resources.
+      Runs INSIDE the private PID namespace. It re-accredits the containment
+      from the inside BEFORE calling any sensitive production function, then
+      runs the acceptance cases over exclusively synthetic resources.
 
 The harness never executes the external entrypoints and never runs the
 external ``dbtool.py``: the only production code it reaches is imported by
@@ -42,6 +44,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -78,11 +81,96 @@ independent of the tree the bench is pointed at (FORGE_V2_EXTERNAL_ROOT), which
 only decides WHICH copy is loaded and exercised.
 """
 
+CANONICAL_COMPONENT_FILES = (
+    os.path.join("tools", "cutover", "forge-v2", CUTOVER_SAFETY_REL),
+    os.path.join("tools", "cutover", "forge-v2", "lib", "dbtool.py"),
+    os.path.join("tools", "cutover", "forge-v2", "cutover.sh"),
+    os.path.join("tools", "cutover", "forge-v2", "ROLLBACK.sh"),
+    PLUGIN_SYNC_REL,
+)
+"""The COMPLETE set of the implementation files whose uniqueness the bank
+certifies, relative to the root of the checkout.
+
+The set is NOT the set of the files that the bench loads: it is the set of
+the EXECUTABLE SURFACE of the two versioned components that this repository
+versions.
+
+  * ``lib/cutover_safety.py``  the implementation that the bench loads and
+    exercises.
+  * ``lib/dbtool.py``          the database tool of the SAME versioned
+    component. It is a prohibited entrypoint (the bench never executes it
+    and never imports it), but a second copy of it inside the checkout would
+    be a second database tool with access to the real database.
+  * ``cutover.sh``             the cutover entrypoint: a second copy would be
+    a second way to perform the cutover.
+  * ``ROLLBACK.sh``            the rollback entrypoint: a second copy would be
+    a second way to roll the cutover back.
+  * ``open-code/lib/plugin-sync.py``  the implementation that the bench loads
+    and exercises on the other side.
+
+The DOCUMENTATION of the component (README.md, CUTOVER-NOTES.md,
+FOLLOWUPS.md, REMEDIATION-REPORT.md) is deliberately OUTSIDE the set: a
+document is never loaded nor executed, so a second copy of it does not
+create a second implementation and does not weaken any guarantee of this
+bank. Adding it would state a property that nothing behind it supports.
+"""
+
+CHECKOUT_SCAN_EXCLUDED_DIRS = (".git", "node_modules", "__pycache__")
+"""The trees that are NOT part of the checkout for the purposes of the
+uniqueness: the objects of the git, the installed dependencies and the
+bytecode caches. They are generated, they are not versioned and a copy of
+the implementation inside them is not a second implementation of the
+component."""
+
 KIND_DYNAMIC = "dinamica"
 KIND_SIMULATION = "simulacion"
 KIND_INSPECTION = "inspeccion"
 
+AUXILIARY_CONTROL_IDS = ("INSP-6", "INSP-7", "INSP-8")
+"""The CONTROLS OF THE CONTROLS, counted APART from the bank.
+
+They exercise the criteria of the provenance (INSP-2) and of the uniqueness
+(INSP-3) against cases that MUST fail: an external copy has to be rejected,
+the legitimate copy has to be accepted and a planted duplicate has to be
+detected. A criterion that cannot be red certifies nothing, so these
+controls are part of the acceptance.
+
+They are NOT cases of the bank: the census of the bank keeps its own count
+(52) and these three are counted apart, with their own verdict. Their
+verdict is nevertheless HARD: a red auxiliary control fails the run.
+"""
+
 EXTERNAL_ENTRYPOINT_TOKENS = ("cutover.sh", "ROLLBACK.sh", "dbtool")
+
+CONTAINMENT_ENTRY_REL = os.path.join("tools", "verification", "forge-contained-run.sh")
+CONTAINMENT_RECEIPT_DIR = os.environ.get("FORGE_CONTAINMENT_RECEIPT_DIR", "").strip()
+"""The directory of receipts that the inner containment invocation uses.
+
+It is NOT a path of a machine: the consumer may DECLARE it (and then the
+declaration is the one that is used) and, when it does not, the harness
+derives a directory of ITS OWN invocation (the "receipts" directory of the
+run root). The entry creates the directory when it does not exist, so the
+evidence of this bank always lands in a place that belongs to the run that
+produced it and never in a directory of a machine that may not exist."""
+
+CONTAINMENT_GUARD_REL = os.path.join("tools", "verification", "require-v2-containment.sh")
+"""The helper of admission of the containment.
+
+It is the SAME helper that the entries of tools/ already use
+(tools/ci/v2-safety.sh, tools/verification/prepare-sandbox.py and
+tools/verification/forge-v2-followups.sh): ONE criterion of admission for the
+whole chain, not one per layer. The roles of this harness call it as a
+process, so the runner, the supervisor and the suite refuse to start when the
+invocation was not launched by the standard containment entry.
+"""
+
+ADMISSION_DENIED_RC = 78
+"""RC of a refused admission.
+
+It is the RC of tools/verification/require-v2-containment.sh: the same code
+means the same thing in every layer of the chain (the invocation was NOT
+launched by the standard containment entry, so nothing was executed).
+"""
 
 # Authorization barrier: the suite refuses to call any sensitive function
 # until the supervisor has accredited the containment AND has an operational
@@ -94,6 +182,43 @@ AUTH_TOKEN = "AUTH"
 FAULT_NO_PIDFD = "FORGE_V2_TEST_NO_PIDFD"
 FAULT_HANG_SUITE = "FORGE_V2_TEST_HANG_SUITE"
 
+# The RC contracted for the INNER scenario of this invocation. It is declared
+# by the runner of the scenarios (the component that knows the contract of
+# each scenario) and it travels to the containment entry, which records it in
+# its receipt: the verdict of the entry and the verdict of this supervisor
+# can therefore never disagree about what the scenario was expected to
+# return. The literal NONE declares that the scenario is expected NOT to
+# produce an RC, because the bounded close has to ELIMINATE it.
+EXPECTED_SCENARIO_RC_ENV = "FORGE_V2_EXPECTED_SCENARIO_RC"
+CONTAINED_EXPECTED_SCENARIO_RC_ENV = "FORGE_CONTAINED_RUN_EXPECTED_SCENARIO_RC"
+
+# The domain of the SIGNALS of this platform (Linux): the real signals are
+# 1..64 (SIGRTMAX is 64) and the shell publishes a termination by the signal
+# N as the exit status 128+N. The domain is declared here, and NOT derived
+# from the value being normalised, so that an invalid state can never be
+# reinterpreted as a valid signal.
+MAX_SIGNAL = 64
+
+# The ROOT of the procfs that the OBSERVATIONS of this harness read.
+#
+# It is "/proc" in every real invocation: this harness only runs inside the
+# accredited frontier, whose /proc is the PRIVATE one. It is a CONSTANT and
+# not an argument, so that no observation can ever be pointed at the procfs
+# of the host.
+#
+# The seam exists for ONE reason: an observation that CANNOT be performed has
+# to be REPRODUCIBLE. The difference between "the process does not exist"
+# (a CONFIRMED absence) and "the state of the process could not be read" (an
+# IMPOSSIBLE observation) is invisible in a healthy machine, and a property
+# that cannot be falsified is not a property. The observations are therefore
+# exercised over a SYNTHETIC tree (tests/forge_v2_contract_probe.py).
+PROC_ROOT = "/proc"
+
+
+def proc_path(*parts):
+    """The path of an entry of the procfs that the observations read."""
+    return os.path.join(PROC_ROOT, *parts)
+
 
 # ---------------------------------------------------------------------------
 # small helpers
@@ -104,6 +229,175 @@ def sha256_file(path):
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# provenance and uniqueness of the versioned component
+#
+# These two functions are the CRITERIA of the inspection of the bank and
+# they are deliberately PURE: they take the paths they check and they return
+# a verdict. They do not read the process table, they do not spawn anything
+# and they do not touch any resource outside the paths they are given, so
+# they can be exercised (and MUTATED) over synthetic trees.
+# ---------------------------------------------------------------------------
+def verify_module_provenance(repo_root, loaded_path, canonical_rel_path):
+    """HARD provenance of a module against the versioned canonical file.
+
+    Returns ``(ok, detail)``. The verdict is a FAILURE when the module that
+    the bench loaded is NOT the file that the repository versions: an
+    external tree, a copy in a temporary directory or a link that leaves the
+    checkout are all REJECTED, and the detail says which one.
+
+    THE REFERENCE IS AN INDEPENDENT FACT. ``canonical_rel_path`` is the path
+    of the versioned file RELATIVE to the root of the checkout, and it has to
+    be one of the declared canonical files (CANONICAL_COMPONENT_FILES). The
+    reference is NEVER derived from the module that was loaded: a criterion
+    that compared the loaded module with the path it was loaded FROM would be
+    satisfied by itself and would certify nothing. That was the defect of
+    the control INSP-2, and the declaration of the reference is what makes
+    the tautology impossible here.
+
+    The verdict is the conjunction of FIVE properties, and every one of them
+    is about the identity of the loaded module with the versioned file:
+
+      * the REFERENCE IS DECLARED: the reference is one of the canonical
+        files of the checkout, so it cannot be an arbitrary path.
+      * the REFERENCE IS A REGULAR FILE: it is not a symbolic link, so it
+        cannot point at an external tree.
+      * the LOADED MODULE IS A REGULAR FILE.
+      * the IDENTITY OF THE PATH: the resolved path of the loaded module is
+        the resolved path of the reference. A copy, even a byte exact one,
+        has another path. Together with the previous property, this says
+        that the loaded module IS the versioned file and not a look-alike.
+      * the IDENTITY OF THE CONTENT: the sha256 of the loaded module is the
+        sha256 of the reference, which protects against a replacement
+        between the load and the check.
+    """
+    checks = []
+
+    def check(name, ok, value):
+        checks.append((name, bool(ok), value))
+        return bool(ok)
+
+    repo_abs = os.path.abspath(repo_root)
+    loaded_abs = os.path.abspath(loaded_path) if loaded_path else ""
+    loaded_real = os.path.realpath(loaded_abs) if loaded_abs else ""
+    canonical_abs = os.path.join(repo_abs, canonical_rel_path)
+    canonical_real = os.path.realpath(canonical_abs)
+
+    reference_declared = canonical_rel_path in CANONICAL_COMPONENT_FILES
+    check(
+        "referencia_declarada",
+        reference_declared,
+        canonical_rel_path,
+    )
+
+    canonical_is_regular = os.path.isfile(canonical_abs) and not os.path.islink(canonical_abs)
+    check(
+        "canonica_es_fichero_regular_del_checkout",
+        canonical_is_regular,
+        canonical_abs,
+    )
+
+    loaded_is_regular = bool(loaded_abs) and os.path.isfile(loaded_abs)
+    check("modulo_cargado_es_fichero_regular", loaded_is_regular, loaded_abs)
+
+    path_identity = bool(loaded_real) and loaded_real == canonical_real
+    check(
+        "identidad_de_ruta",
+        path_identity,
+        "cargado=%s canonica=%s" % (loaded_real, canonical_real),
+    )
+
+    content_identity = False
+    if loaded_is_regular and canonical_is_regular:
+        try:
+            content_identity = sha256_file(loaded_abs) == sha256_file(canonical_abs)
+        except OSError:
+            content_identity = False
+    check("identidad_de_contenido", content_identity, "sha256 identico")
+
+    ok = all(item[1] for item in checks)
+    detail = "; ".join(
+        "%s=%s (%s)" % (name, "OK" if good else "FALLO", value) for name, good, value in checks
+    )
+    return ok, detail
+
+
+def find_component_duplicates(repo_root, canonical_rel_paths):
+    """The copies of the versioned component that exist inside the checkout.
+
+    Returns a list with one entry per canonical file::
+
+        {"canonical": <absolute path>,
+         "name_copies": [<paths>],
+         "content_copies": [<paths>]}
+
+    TWO criteria, because one of them is not enough:
+
+      * the NAME: a second file of the checkout with the same name is a
+        second copy of the implementation, and it is the one that a loader
+        would pick by name.
+      * the CONTENT: a copy with ANOTHER name is still a copy of the
+        implementation. It is found by the size (an exact copy has the same
+        size) followed by the digest, so the scan does not read the whole
+        tree.
+
+    The canonical file is never a copy of itself. A symbolic link that
+    points at the canonical file IS a copy: it is a second path to the
+    implementation, and the criterion of the uniqueness is about the FILES
+    of the checkout, not about the inodes they resolve to.
+    """
+    root = os.path.abspath(repo_root)
+    all_files = []
+    for base, dirs, names in os.walk(root):
+        dirs[:] = [name for name in dirs if name not in CHECKOUT_SCAN_EXCLUDED_DIRS]
+        for name in names:
+            candidate = os.path.join(base, name)
+            if os.path.isfile(candidate):
+                all_files.append(candidate)
+
+    results = []
+    for rel in canonical_rel_paths:
+        canonical_abs = os.path.join(root, rel)
+        name_copies = []
+        content_copies = []
+        size = None
+        digest = None
+        if os.path.isfile(canonical_abs):
+            try:
+                size = os.stat(canonical_abs).st_size
+                digest = sha256_file(canonical_abs)
+            except OSError:
+                size = None
+                digest = None
+        base_name = os.path.basename(canonical_abs)
+        canonical_norm = os.path.normpath(canonical_abs)
+        for candidate in all_files:
+            if os.path.normpath(candidate) == canonical_norm:
+                continue
+            if os.path.basename(candidate) == base_name:
+                name_copies.append(candidate)
+            if size is None or digest is None:
+                continue
+            try:
+                if os.stat(candidate).st_size != size:
+                    continue
+            except OSError:
+                continue
+            try:
+                if sha256_file(candidate) == digest:
+                    content_copies.append(candidate)
+            except OSError:
+                continue
+        results.append(
+            {
+                "canonical": canonical_abs,
+                "name_copies": sorted(name_copies),
+                "content_copies": sorted(content_copies),
+            }
+        )
+    return results
 
 
 def fingerprint(path, hash_content=True):
@@ -132,7 +426,7 @@ def fingerprint(path, hash_content=True):
 
 def read_proc_children(pid):
     try:
-        with open("/proc/%d/task/%d/children" % (pid, pid), "r", encoding="ascii") as stream:
+        with open(proc_path("%d" % pid, "task", "%d" % pid, "children"), "r", encoding="ascii") as stream:
             return [int(item) for item in stream.read().split()]
     except OSError:
         return []
@@ -140,7 +434,7 @@ def read_proc_children(pid):
 
 def cmdline_of(pid):
     try:
-        with open("/proc/%s/cmdline" % pid, "rb") as stream:
+        with open(proc_path("%s" % pid, "cmdline"), "rb") as stream:
             return stream.read().decode("utf-8", "replace")
     except OSError:
         return ""
@@ -148,18 +442,452 @@ def cmdline_of(pid):
 
 def process_present(pid):
     """True while the /proc entry of the process still exists (zombie included)."""
-    return os.path.isdir("/proc/%d" % pid)
+    return os.path.isdir(proc_path("%d" % pid))
+
+
+def process_ancestors(pid):
+    """The chain of ancestors of a process, read from its own /proc entries.
+
+    The scaffolding of the scenario (the shells that launched the batch) is
+    alive BY CONSTRUCTION while the batch runs: it is not a leftover of the
+    product, and it must not be counted as one. The resources that the batch
+    itself created are NOT ancestors of the observer, so they are still
+    observed: a launcher that survived its own closure is detected.
+    """
+    ancestors = set()
+    current = int(pid)
+    for _ in range(64):
+        try:
+            with open(proc_path("%d" % current, "stat"), "r", encoding="ascii") as stream:
+                raw = stream.read()
+            fields = raw[raw.rfind(")") + 2 :].split()
+            parent = int(fields[1])
+        except (OSError, ValueError, IndexError):
+            break
+        if parent <= 1 or parent in ancestors:
+            break
+        ancestors.add(parent)
+        current = parent
+    return ancestors
+
+
+def observe_batch_cleanup(root, own_pid):
+    """Observe, over the PRIVATE /proc of this namespace, whether any process
+    of the batch survived.
+
+    The criterion is the one of the case CLEAN-1: a live process of the batch
+    that is neither the PID 1 of the namespace nor the observer itself is a
+    leftover of the product, and the result is FAIL. The scaffolding that
+    launched the batch is excluded as well (see ``process_ancestors``): it is
+    alive by construction and it is not a leftover.
+
+    The observation only sees the processes whose command line mentions the
+    synthetic root of THIS batch, so it can never see a process of the host:
+    the /proc it reads is the private one of the accredited frontier (both
+    roles of this harness refuse to start without that accreditation).
+
+    Returns (value, survivors) with value in PASS / FAIL / UNKNOWN:
+      PASS     the observation was performed and it found NO leftover;
+      FAIL     the observation was performed and it found a leftover;
+      UNKNOWN  the observation could NOT be performed (no evidence at all).
+    An empty observation is a legitimate PASS: the criterion is the ABSENCE
+    of leftovers, not the presence of work, and a batch that never started
+    has nothing to clean up.
+    """
+    excluded = set([1, int(own_pid)])
+    excluded.update(process_ancestors(own_pid))
+    survivors = []
+    unobservable = 0
+    unobservable_detail = ""
+    try:
+        entries = os.listdir(PROC_ROOT)
+    except OSError as exc:
+        return "UNKNOWN", ["no se pudo enumerar el /proc privado: %s" % exc]
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid in excluded:
+            continue
+        state, _pgrp, detail = observe_pid_state(pid)
+        if state == PID_UNOBSERVABLE:
+            # The state of the process could NOT be observed: it is neither a
+            # leftover nor an absence. The observation is INCOMPLETE and it
+            # is never published as a clean cleanup.
+            unobservable += 1
+            unobservable_detail = detail
+            continue
+        if state != PID_ALIVE:
+            continue
+        if root and root in cmdline_of(pid):
+            survivors.append(pid)
+    if unobservable:
+        return "UNKNOWN", [
+            "no se pudo observar el estado de %d proceso(s) del /proc privado%s"
+            % (unobservable, (": " + unobservable_detail) if unobservable_detail else "")
+        ]
+    return ("PASS" if not survivors else "FAIL"), survivors
+
+
+# The states of a PID, as the observation of this harness can tell them
+# apart.
+#
+#   ALIVE         the process exists and it is not a zombie;
+#   DEAD          the process is a zombie: dead, only not reaped yet;
+#   ABSENT        the CONFIRMED absence: the /proc entry does not exist;
+#   UNOBSERVABLE  the observation was IMPOSSIBLE: the read FAILED.
+#
+# The difference between ABSENT and UNOBSERVABLE is the whole point: an
+# error of reading is NOT an absence, and an absence that was not observed
+# is not an absence.
+PID_ALIVE = "ALIVE"
+PID_DEAD = "DEAD"
+PID_ABSENT = "ABSENT"
+PID_UNOBSERVABLE = "UNOBSERVABLE"
+
+
+def read_proc_stat(pid):
+    """The fields of the stat of a PID, read ONCE from its own entry.
+
+    Returns (fields, error):
+      fields the tokens that follow the last ')' of the line, or None;
+      error  None when the read succeeded, "ABSENT" when the entry does not
+             exist (the CONFIRMED absence), or the diagnosis of an
+             IMPOSSIBLE observation.
+    """
+    path = proc_path("%d" % pid, "stat")
+    try:
+        with open(path, "r", encoding="ascii") as stream:
+            raw = stream.read()
+    except FileNotFoundError:
+        # The kernel says that the entry does not exist: it is a FACT about
+        # the process, not an error of the observation.
+        return None, "ABSENT"
+    except OSError as exc:
+        # The read FAILED (a permission, an I/O error): the state of the
+        # process could NOT be observed. It is NOT an absence.
+        return None, "%s: %s" % (path, exc)
+    fields = raw[raw.rfind(")") + 2 :].split()
+    if len(fields) < 3:
+        # A stat that cannot be parsed is NOT a dead process: it is an
+        # observation that could not be made.
+        return None, "%s: stat ilegible" % path
+    return fields, None
+
+
+def observe_pid_state(pid):
+    """The state of a PID and its process group, read ONCE.
+
+    Returns (state, pgrp, detail):
+      state  ALIVE | DEAD | ABSENT | UNOBSERVABLE;
+      pgrp   the process group, or None when it could not be read;
+      detail the diagnosis of an impossible observation.
+    """
+    fields, error = read_proc_stat(pid)
+    if error == "ABSENT":
+        return PID_ABSENT, None, ""
+    if error is not None:
+        return PID_UNOBSERVABLE, None, error
+    try:
+        pgrp = int(fields[2])
+    except (ValueError, IndexError) as exc:  # pragma: no cover - defensivo
+        return PID_UNOBSERVABLE, None, "stat ilegible: %s" % exc
+    if fields[0] == "Z":
+        return PID_DEAD, pgrp, ""
+    return PID_ALIVE, pgrp, ""
+
+
+def process_group_of(pid):
+    """The process group of a process, read from its own /proc entry.
+
+    Returns None when the entry cannot be read (the process is gone or it
+    is not observable): an unknown group is never guessed as 0.
+    """
+    fields, error = read_proc_stat(pid)
+    if error is not None:
+        return None
+    try:
+        return int(fields[2])
+    except (ValueError, IndexError):
+        return None
+
+
+def innermost_nspid(pid):
+    """The PID of a process in the INNERMOST namespace it belongs to.
+
+    The kernel publishes the chain of PIDs of a process in the "NSpid" line
+    of its status: the last one is the PID it has in the innermost
+    namespace, which is the one that identifies the init of a private
+    namespace (its PID there is 1).
+
+    Returns None when the line cannot be read: an unidentified process is
+    never assumed to be the init, nor assumed not to be it.
+    """
+    try:
+        with open(proc_path("%d" % pid, "status"), "r", encoding="ascii", errors="replace") as stream:
+            for line in stream:
+                if line.startswith("NSpid:"):
+                    parts = line.split()[1:]
+                    if not parts:
+                        return None
+                    return int(parts[-1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def observe_containment_aftermath(private_ns, own_pgid):
+    """Observe, over the PRIVATE /proc, the state of the contained environment.
+
+    The absence of survivors of the private namespace, the absence of members
+    of the own process group and the absence of the init of the namespace are
+    NOT constants: they are the RESULT of an observation. A value that could
+    not be observed is NOT_VERIFIABLE, and it is never published as a
+    verified absence: an absence that was not observed is not an absence.
+
+    The observation reads the private /proc of the frontier in which this
+    supervisor runs (both roles of this harness refuse to start without that
+    accreditation), so it can never see a process of the host.
+
+    Arguments:
+      private_ns  the identity of the private namespace of the contained run
+                  ("pid:[N]"), as the receipt declares it;
+      own_pgid    the process group that the batch created for its own
+                  launcher, as it was OBSERVED when the launcher was spawned.
+
+    Returns a dictionary with:
+      state        "COMPLETE" or "INCOMPLETE";
+      survivors    the live processes of the private namespace ([] | None);
+      members      the live members of the own process group ([] | None);
+      init_alive   True | False | None (None: not observable);
+      init_gone    True | False | None (None: not observable);
+      init_pid     the outer PID of the init of the namespace (None);
+      detail       the diagnosis of the observation.
+    """
+    result = {
+        "state": "INCOMPLETE",
+        "survivors": None,
+        "members": None,
+        "init_alive": None,
+        "init_gone": None,
+        "init_pid": None,
+        "detail": "",
+    }
+    if not private_ns or not re.match(r"^pid:\[[0-9]+\]$", str(private_ns)):
+        result["detail"] = (
+            "la identidad del namespace privado no es utilizable: %r" % (private_ns,)
+        )
+        return result
+
+    excluded = set([1, os.getpid()])
+    excluded.update(process_ancestors(os.getpid()))
+
+    try:
+        entries = os.listdir(PROC_ROOT)
+    except OSError as exc:
+        result["detail"] = "no se pudo enumerar el /proc privado: %s" % exc
+        return result
+
+    survivors = []
+    members = []
+    unreadable = 0
+    unreadable_detail = ""
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid in excluded:
+            continue
+        try:
+            namespace = os.readlink(proc_path("%d" % pid, "ns", "pid"))
+        except OSError:
+            if not os.path.isdir(proc_path("%d" % pid)):
+                # It exited WHILE the observation was running: it is gone.
+                continue
+            unreadable += 1
+            unreadable_detail = "no se pudo leer el namespace de %d" % pid
+            continue
+        state, pgrp, detail = observe_pid_state(pid)
+        if state == PID_UNOBSERVABLE:
+            # The state of the process could NOT be observed: it is neither a
+            # survivor nor an absence. The observation of the aftermath is
+            # INCOMPLETE, the absence is NOT verified and the init is NOT
+            # declared gone.
+            unreadable += 1
+            unreadable_detail = detail
+            continue
+        alive = state == PID_ALIVE
+        if namespace == private_ns and alive:
+            survivors.append(pid)
+        if own_pgid and pgrp == own_pgid and alive:
+            members.append(pid)
+
+    result["survivors"] = sorted(survivors)
+    result["members"] = sorted(members) if own_pgid else None
+
+    if not own_pgid:
+        # The process group of the batch was NOT observed: the absence of
+        # its members is NOT observable and it is never published as a
+        # verified absence.
+        result["state"] = "INCOMPLETE"
+        result["detail"] = "el grupo de procesos propio no es observable"
+        result["init_alive"] = None
+        result["init_gone"] = None
+        return result
+
+    init_pid = None
+    unidentified = 0
+    for pid in survivors:
+        innermost = innermost_nspid(pid)
+        if innermost is None:
+            unidentified += 1
+            continue
+        if innermost == 1:
+            init_pid = pid
+            break
+    result["init_pid"] = init_pid
+
+    if init_pid is not None:
+        result["init_alive"] = True
+        result["init_gone"] = False
+    elif unidentified == 0:
+        # No live process of the namespace carries the inner PID 1: the init
+        # was OBSERVED to be gone.
+        result["init_alive"] = False
+        result["init_gone"] = True
+    else:
+        result["detail"] = (
+            "no se pudo determinar el PID interior de %d proceso(s) del namespace privado"
+            % unidentified
+        )
+        result["init_alive"] = None
+        result["init_gone"] = None
+        return result
+
+    if unreadable:
+        result["state"] = "INCOMPLETE"
+        result["detail"] = (
+            "%d proceso(s) del /proc privado no se pudieron observar%s"
+            % (unreadable, (": " + unreadable_detail) if unreadable_detail else "")
+        )
+        result["init_alive"] = None
+        result["init_gone"] = None
+        return result
+
+    result["state"] = "COMPLETE"
+    if not result["detail"]:
+        result["detail"] = (
+            "observacion completa sobre el /proc privado: namespace=%s grupo=%s"
+            % (private_ns, own_pgid)
+        )
+    return result
+
+
+def declare_product_cleanup(result_file, root, own_pid):
+    """Declares the result of the cleanup of the PRODUCT.
+
+    The declaration is made over the PRIVATE /proc of the containment: the
+    suite role only runs inside the accredited frontier, so it can only see
+    the processes of the batch and never a process of the host.
+
+    The criterion is the same one of the case CLEAN-1: a live process of the
+    batch that is neither the PID 1 of the namespace nor the suite itself is
+    a leftover of the product, and the result is FAIL.
+
+    The marker is written BEFORE the defensive cleanup of the containment
+    (the entry removes its own context afterwards), exactly as the contract
+    of the entry requires.
+
+    Returns the declared value and the list of survivors.
+    """
+    value, survivors = observe_batch_cleanup(root, own_pid)
+    if result_file:
+        try:
+            with open(result_file, "w", encoding="utf-8") as handle:
+                handle.write(value + "\n")
+        except OSError as exc:
+            print("FALLO: la suite no pudo declarar la limpieza del producto: %s" % exc)
+            return "UNKNOWN", survivors
+    return value, survivors
+
+
+def write_product_cleanup_marker(path, value):
+    """Publish the declaration of the cleanup of the product in the marker of
+    the entry.
+
+    Only the component that OBSERVED the cleanup writes this marker, and it
+    writes it BEFORE the defensive cleanup of the entry. A value that could
+    not be observed is published as UNKNOWN: the entry maps it to "not
+    observed" and the acceptance of that invocation can never be positive.
+    A PASS is never invented here.
+
+    Returns True when the marker was published.
+    """
+    if not path:
+        print("FALLO: no hay marcador de limpieza del producto que publicar.")
+        return False
+    if value not in ("PASS", "FAIL", "UNKNOWN"):
+        value = "UNKNOWN"
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(value + "\n")
+        return True
+    except OSError as exc:
+        print(
+            "FALLO: no se pudo publicar la declaracion de limpieza del producto en %s: %s"
+            % (path, exc)
+        )
+        return False
+
+
+def require_admission(scope):
+    """Require the accreditation of the containment of THIS invocation.
+
+    The criterion is the one of tools/verification/require-v2-containment.sh:
+    the SINGLE helper that the entries of tools/ already use. It is called as
+    a process so there is one criterion of admission in the whole chain and
+    not one per layer.
+
+    The accreditation of the inner role_suite() is NOT a substitute for this
+    one: it protects that role only, and it does not authorize the runner,
+    the supervisor, the preparation, the controls nor the cleanup.
+
+    Returns (ok, detail).
+    """
+    guard = os.path.join(CHECKOUT_ROOT, CONTAINMENT_GUARD_REL)
+    if not os.path.isfile(guard):
+        return False, "no existe el helper de admision: %s" % guard
+    try:
+        completed = subprocess.run(
+            ["/bin/bash", guard],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, "el helper de admision no pudo ejecutarse: %s" % exc
+    output = (completed.stdout or b"").decode("utf-8", "replace").strip()
+    if completed.returncode != 0:
+        return False, "admision denegada (rc=%d): %s" % (
+            completed.returncode,
+            output or "sin detalle",
+        )
+    return True, output or "admision acreditada"
 
 
 def pid_alive(pid):
-    """True only for a LIVE process: a zombie is dead, only not reaped yet."""
-    try:
-        with open("/proc/%d/stat" % pid, "r", encoding="ascii") as stream:
-            raw = stream.read()
-        fields = raw[raw.rfind(")") + 2 :].split()
-        return fields[0] != "Z"
-    except (OSError, ValueError, IndexError):
-        return False
+    """True only for a LIVE process: a zombie is dead, only not reaped yet.
+
+    A reading that FAILED is not a death: the observation of that PID was
+    IMPOSSIBLE, and a caller that publishes an ABSENCE has to know it. The
+    function keeps its boolean shape for the callers that only need to know
+    whether the process is running; the callers that certify an absence use
+    ``observe_pid_state``, which tells the CONFIRMED absence and the
+    IMPOSSIBLE observation apart.
+    """
+    state, _pgrp, _detail = observe_pid_state(pid)
+    return state == PID_ALIVE
 
 
 def wait_process_gone(pid, timeout=5.0):
@@ -221,8 +949,30 @@ class _StderrCapture(object):
 # report
 # ---------------------------------------------------------------------------
 class Report(object):
+    """The census of the bank and the census of its AUXILIARY controls.
+
+    There are TWO censuses and they are NOT interchangeable:
+
+      * the MAIN census (``self.cases``) is the bank itself. Its count is
+        the contract of the bank (52) and every consumer reads it from
+        ``summary``.
+      * the AUXILIARY census (``self.auxiliary``) holds the CONTROLS OF
+        THE CONTROLS (INSP-6, INSP-7 and INSP-8). They are counted APART,
+        with their own total, their own count of failures and their own
+        verdict, and they are published in their own section
+        (``auxiliary_controls``).
+
+    Mixing them would silently change the count of the bank (it would
+    become 55) and it would make the auxiliary controls disappear into the
+    aggregate: a consumer that only reads ``summary`` would not see that
+    they are red. Keeping them apart is what makes them auditable, and
+    their verdict is HARD: a red auxiliary control makes the run fail even
+    though the main census is green.
+    """
+
     def __init__(self):
         self.cases = []
+        self.auxiliary = []
         self.containment = {}
         self.libraries = []
         self.cleanup = {}
@@ -236,6 +986,20 @@ class Report(object):
         print("[%s] %s %s :: %s" % (case_id, status, kind, detail), flush=True)
         return ok
 
+    def record_auxiliary(self, case_id, kind, ok, detail):
+        """Record an AUXILIARY control: the controls of the controls.
+
+        It is NOT part of the main census: the count of the bank does not
+        change because of it. It has its own count and its own verdict,
+        and a failure of one of them is a failure of the run.
+        """
+        status = "PASS" if ok else "FAIL"
+        self.auxiliary.append(
+            {"id": case_id, "kind": kind, "status": status, "detail": detail}
+        )
+        print("[aux] %s %s %s :: %s" % (case_id, status, kind, detail), flush=True)
+        return ok
+
     def note(self, text):
         self.notes.append(text)
         print("[nota] %s" % text, flush=True)
@@ -244,17 +1008,72 @@ class Report(object):
     def failed(self):
         return sum(1 for case in self.cases if case["status"] != "PASS")
 
+    @property
+    def auxiliary_failed(self):
+        """The auxiliary controls that are NOT green."""
+        return sum(1 for case in self.auxiliary if case["status"] != "PASS")
+
+    @property
+    def auxiliary_ok(self):
+        """The verdict of the auxiliary controls: 'PASS' only if all of them
+        were recorded and all of them are green.
+
+        It is a VERDICT and not a count: a control that was never recorded
+        is a MISSING control, and a missing control is not a green one.
+        """
+        return self.auxiliary_summary()["verdict"] == "PASS"
+
     def counts(self):
         counts = {KIND_DYNAMIC: 0, KIND_SIMULATION: 0, KIND_INSPECTION: 0}
         for case in self.cases:
             counts[case["kind"]] = counts.get(case["kind"], 0) + 1
         return counts
 
+    def auxiliary_summary(self):
+        """The census of the auxiliary controls, with its own verdict.
+
+        The verdict is a VERDICT and not a derived number:
+
+          * 'PASS'          every declared control was recorded and every
+                            one of them is green;
+          * 'FAIL'          a recorded control is red, or the census is
+                            incomplete (a control that was not recorded is
+                            NOT a green one);
+          * 'NOT_EXERCITED' no control was recorded at all: the run aborted
+                            BEFORE the inspection, so the controls were
+                            never reached. It is NOT a green verdict: the
+                            run that reports it did not exercise them.
+
+        Only 'PASS' is an acceptance.
+        """
+        recorded = [case["id"] for case in self.auxiliary]
+        complete = sorted(recorded) == sorted(AUXILIARY_CONTROL_IDS)
+        failed = self.auxiliary_failed
+        if not self.auxiliary:
+            verdict = "NOT_EXERCITED"
+        elif complete and not failed:
+            verdict = "PASS"
+        else:
+            verdict = "FAIL"
+        return {
+            "ids": list(AUXILIARY_CONTROL_IDS),
+            "total": len(self.auxiliary),
+            "passed": len(self.auxiliary) - failed,
+            "failed": failed,
+            "complete": complete,
+            "verdict": verdict,
+        }
+
     def write(self, path, extra=None):
         payload = {
             "batch": "forge-v2-followups Step 2.2",
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "cases": self.cases,
+            "auxiliary_controls": {
+                "ids": list(AUXILIARY_CONTROL_IDS),
+                "cases": self.auxiliary,
+                "summary": self.auxiliary_summary(),
+            },
             "containment": self.containment,
             "libraries": self.libraries,
             "cleanup": self.cleanup,
@@ -1929,21 +2748,28 @@ class Suite(object):
         return found
 
     def case_cleanup(self):
-        """No synthetic process or resource of the batch survives."""
-        survivors = []
-        for entry in os.listdir("/proc"):
-            if not entry.isdigit():
-                continue
-            pid = int(entry)
-            if pid == os.getpid():
-                continue
-            if self.root in cmdline_of(pid):
-                survivors.append(pid)
+        """No synthetic process or resource of the batch survives.
+
+        The criterion is the one of ``observe_batch_cleanup()``: a live
+        process of the batch that is neither the init of the private
+        namespace, nor the observer itself, nor one of its ancestors is a
+        leftover of the PRODUCT.
+
+        The init of the private namespace is the scaffolding that launched
+        this suite (it is its PARENT and its exit is what tears the namespace
+        down), so it is alive BY CONSTRUCTION while the batch runs: counting
+        it would report the scaffolding as a survivor of the product. The
+        criterion is NOT weakened: every other process of the batch is still
+        looked for, over the PRIVATE /proc of the accredited frontier.
+        """
+        value, survivors = observe_batch_cleanup(self.root, os.getpid())
         self.report.record(
             "CLEAN-1",
             KIND_DYNAMIC,
-            not survivors,
-            "supervivientes_propios=%s (esperado [])" % (survivors,),
+            value == "PASS",
+            "supervivientes_propios=%s (esperado []) observacion=%s "
+            "(el init del namespace privado y los antepasados del observador son "
+            "andamiaje vivo por construccion: no son un resto del producto)" % (survivors, value),
         )
         # The real database must never be OPENED by this batch. Its mtime
         # cannot be used as evidence: the live OpenCode session of the user
@@ -1992,19 +2818,38 @@ class Suite(object):
             ),
         )
 
+        # ------------------------------------------------------------------
+        # INSP-2: the PROVENANCE of the modules that the bench really loaded,
+        # as a HARD failure.
+        #
+        # The reference is the file that the REPOSITORY versions, never the
+        # path the module was loaded from: a comparison against the latter is
+        # satisfied by itself and certifies nothing. That was the defect of
+        # this control: it compared the loaded module with the very path it
+        # had been loaded from, so it could never be red.
+        #
+        # A module loaded from another tree (FORGE_V2_EXTERNAL_ROOT pointed
+        # somewhere else) or from a copy is therefore a FAILURE of the bank,
+        # not an informative note.
+        # ------------------------------------------------------------------
         loaded = []
-        for name, module, expected in (
-            ("plugin-sync", self.plugin_sync, plugin_sync_path),
-            ("cutover-safety", self.cutover_safety, safety_path),
+        for name, module, canonical_rel in (
+            ("plugin-sync", self.plugin_sync, PLUGIN_SYNC_REL),
+            ("cutover-safety", self.cutover_safety, CANONICAL_COMPONENT_REL),
         ):
-            actual = os.path.realpath(module.__file__)
+            canonical_abs = os.path.join(self.repo_root, canonical_rel)
+            loaded_file = getattr(module, "__file__", "") or ""
+            ok, detail = verify_module_provenance(
+                self.repo_root, loaded_file, canonical_rel
+            )
             loaded.append(
                 {
                     "name": name,
-                    "path": actual,
-                    "expected": os.path.realpath(expected),
-                    "matches": actual == os.path.realpath(expected),
-                    "sha256": sha256_file(actual),
+                    "path": loaded_file,
+                    "expected": canonical_abs,
+                    "matches": ok,
+                    "sha256": sha256_file(loaded_file) if os.path.isfile(loaded_file) else "-",
+                    "detail": detail,
                 }
             )
         self.report.libraries = loaded
@@ -2013,56 +2858,48 @@ class Suite(object):
             "INSP-2",
             KIND_INSPECTION,
             ok,
-            "bibliotecas_cargadas=%s"
-            % "; ".join("%s@%s" % (item["name"], item["path"]) for item in loaded),
+            "procedencia_dura=%s | %s"
+            % (
+                "OK" if ok else "FALLO",
+                " | ".join(
+                    "%s: cargado=%s canonico=%s :: %s"
+                    % (item["name"], item["path"], item["expected"], item["detail"])
+                    for item in loaded
+                ),
+            ),
         )
 
-        # TWO DIFFERENT PROPERTIES, verified separately:
+        # ------------------------------------------------------------------
+        # INSP-3: the UNIQUENESS of the COMPLETE versioned component inside
+        # the checkout, as a HARD failure.
         #
-        #   (1) UNIQUENESS INSIDE THE CHECKOUT. The repository holds
-        #       EXACTLY ONE copy of lib/cutover_safety.py and it is the
-        #       canonical versioned one
-        #       (tools/cutover/forge-v2/lib/cutover_safety.py). This is
-        #       ALWAYS checked, with or without an override: a second copy of
-        #       the implementation inside the checkout is a duplicated
-        #       implementation, which this inspection has always forbidden.
-        #       The canonical path is derived from the REPOSITORY, never from
-        #       the component that was selected to run.
-        #
-        #   (2) PROVENANCE of the module actually loaded. The bench may be
-        #       pointed at another tree with FORGE_V2_EXTERNAL_ROOT (an
-        #       explicit, documented option that stays supported). The
-        #       evidence then shows the loaded module, its path and its hash,
-        #       WITHOUT requiring it to be the canonical copy of the checkout.
-        canonical_path = os.path.join(self.repo_root, CANONICAL_COMPONENT_REL)
-        copies = []
-        for base, dirs, files in os.walk(self.repo_root):
-            dirs[:] = [name for name in dirs if name not in (".git", "node_modules")]
-            for name in files:
-                if name == "cutover_safety.py":
-                    copies.append(os.path.join(base, name))
-        copies_real = sorted(os.path.realpath(copy) for copy in copies)
-        canonical_real = os.path.realpath(canonical_path)
-        unique_ok = copies_real == [canonical_real]
-
-        loaded_real = os.path.realpath(self.cutover_safety.__file__)
-        if loaded_real == canonical_real:
-            provenance = "copia_canonica_del_checkout"
-        else:
-            provenance = "override_externo:%s" % loaded_real
+        # The set is CANONICAL_COMPONENT_FILES: every implementation file of
+        # the two versioned components (cutover_safety.py, dbtool.py,
+        # cutover.sh, ROLLBACK.sh and plugin-sync.py), not only the exact
+        # name cutover_safety.py. The canonical paths are derived from the
+        # REPOSITORY, never from the component that was selected to run.
+        # ------------------------------------------------------------------
+        duplicates = find_component_duplicates(self.repo_root, CANONICAL_COMPONENT_FILES)
+        unique_ok = all(
+            not entry["name_copies"] and not entry["content_copies"] for entry in duplicates
+        )
         self.report.record(
             "INSP-3",
             KIND_INSPECTION,
             unique_ok,
-            "unicidad_en_el_checkout=%s copias=%s (esperado exactamente [%s]) "
-            "sha256_canonica=%s | procedencia_del_modulo_cargado=%s sha256_cargado=%s"
+            "unicidad_en_el_checkout=%s ficheros=%d | %s"
             % (
-                unique_ok,
-                copies_real,
-                canonical_real,
-                sha256_file(canonical_path) if os.path.isfile(canonical_path) else "-",
-                provenance,
-                sha256_file(loaded_real),
+                "OK" if unique_ok else "FALLO",
+                len(duplicates),
+                " | ".join(
+                    "%s: Copies_por_nombre=%s copias_por_contenido=%s"
+                    % (
+                        os.path.relpath(entry["canonical"], self.repo_root),
+                        entry["name_copies"],
+                        entry["content_copies"],
+                    )
+                    for entry in duplicates
+                ),
             ),
         )
 
@@ -2116,6 +2953,143 @@ class Suite(object):
             % ("todas presentes" if not missing else missing, "; ".join(signatures)),
         )
 
+        # ------------------------------------------------------------------
+        # INSP-6, INSP-7 and INSP-8: the CONTROLS OF THE CONTROLS.
+        #
+        # A control that cannot be red certifies nothing, and a check that
+        # is never exercised against a case that must fail is a check that
+        # might well be satisfied by itself. These three cases close both
+        # gaps:
+        #
+        #   INSP-6  a COPY of the component, placed in a TEMPORARY directory,
+        #           is REJECTED by the criterion of the provenance. The copy
+        #           is never loaded over the personal installation: it is
+        #           written under the synthetic root of the batch and it is
+        #           only a PATH that is submitted to the criterion.
+        #   INSP-7  the LEGITIMATE copy, the one that the repository versions,
+        #           is ACCEPTED by the very same criterion. Without this
+        #           case, INSP-6 would also be satisfied by a criterion that
+        #           rejects everything.
+        #   INSP-8  a tree with a PLANTED duplicate is DETECTED by the
+        #           criterion of the uniqueness. The tree is synthetic and it
+        #           lives under the synthetic root of the batch: the checkout
+        #           is never modified.
+        # ------------------------------------------------------------------
+        controls = self.case_provenance_controls()
+        recorded = []
+        for case_id, ok, detail in controls:
+            # They are recorded as AUXILIARY controls: they are counted
+            # apart from the bank and they have their own verdict. They are
+            # NOT cases of the bank: adding them to the main census would
+            # silently change the contract of the bank (52 -> 55) and it
+            # would bury their verdict inside the aggregate.
+            self.report.record_auxiliary(case_id, KIND_INSPECTION, ok, detail)
+            recorded.append(case_id)
+        missing = [
+            case_id for case_id in AUXILIARY_CONTROL_IDS if case_id not in recorded
+        ]
+        unexpected = [case_id for case_id in recorded if case_id not in AUXILIARY_CONTROL_IDS]
+        if missing or unexpected:
+            # A control that was not recorded is NOT a green control: the
+            # census of the auxiliary controls has to be EXACTLY the declared
+            # one. The verdict of the census (Report.auxiliary_summary) is
+            # what turns this into a failure of the run.
+            self.report.note(
+                "censo auxiliar incompleto: ausentes=%r inesperados=%r (declarados=%r)"
+                % (missing, unexpected, list(AUXILIARY_CONTROL_IDS))
+            )
+
+    def case_provenance_controls(self):
+        """The controls of the provenance and of the uniqueness.
+
+        They are exercised over SYNTHETIC trees under the synthetic root of
+        the batch. Nothing outside that root is written, and the personal
+        installation of OpenCode is never touched: the copy that has to be
+        rejected is a copy in a temporary directory, and it is submitted to
+        the criterion as a PATH (it is never loaded, so no external code is
+        ever executed).
+
+        Returns a list of (case_id, ok, detail).
+        """
+        results = []
+        workspace = os.path.join(self.root, "provenance-controls")
+        canonical_abs = os.path.join(self.repo_root, CANONICAL_COMPONENT_REL)
+
+        def private_dir(path):
+            """Create a directory tree whose EVERY level is private."""
+            path = os.path.abspath(path)
+            missing = []
+            current = path
+            while current and not os.path.isdir(current):
+                missing.append(current)
+                parent = os.path.dirname(current)
+                if parent == current:
+                    break
+                current = parent
+            for level in reversed(missing):
+                os.mkdir(level, 0o700)
+            return path
+
+        # -- INSP-6: an EXTERNAL copy must be REJECTED ---------------------
+        external_root = private_dir(os.path.join(workspace, "external-copy"))
+        external_copy = os.path.join(external_root, CUTOVER_SAFETY_REL)
+        private_dir(os.path.dirname(external_copy))
+        shutil.copyfile(canonical_abs, external_copy)
+        external_ok, external_detail = verify_module_provenance(
+            self.repo_root, external_copy, CANONICAL_COMPONENT_REL
+        )
+        results.append(
+            (
+                "INSP-6",
+                not external_ok,
+                "copia_externa_en_temporal=RECHAZADA=%s ruta=%s :: %s"
+                % (not external_ok, external_copy, external_detail),
+            )
+        )
+
+        # -- INSP-7: the LEGITIMATE copy must be ACCEPTED -------------------
+        legitimate_ok, legitimate_detail = verify_module_provenance(
+            self.repo_root, canonical_abs, CANONICAL_COMPONENT_REL
+        )
+        results.append(
+            (
+                "INSP-7",
+                legitimate_ok,
+                "copia_legitima_del_componente_versionado=ACEPTADA=%s ruta=%s :: %s"
+                % (legitimate_ok, canonical_abs, legitimate_detail),
+            )
+        )
+
+        # -- INSP-8: a PLANTED duplicate must be DETECTED -------------------
+        synthetic_root = os.path.join(workspace, "synthetic-checkout")
+        synthetic_canonical = os.path.join(
+            synthetic_root, os.path.join("tools", "cutover", "forge-v2", CUTOVER_SAFETY_REL)
+        )
+        private_dir(os.path.dirname(synthetic_canonical))
+        shutil.copyfile(canonical_abs, synthetic_canonical)
+        planted = os.path.join(synthetic_root, "otro", "cutover_safety.py")
+        private_dir(os.path.dirname(planted))
+        shutil.copyfile(canonical_abs, planted)
+        planted_entries = find_component_duplicates(
+            synthetic_root, [os.path.join("tools", "cutover", "forge-v2", CUTOVER_SAFETY_REL)]
+        )
+        planted_found = bool(planted_entries) and bool(
+            planted_entries[0]["name_copies"] or planted_entries[0]["content_copies"]
+        )
+        results.append(
+            (
+                "INSP-8",
+                planted_found,
+                "duplicado_plantado=DETECTADO=%s copia_plantada=%s :: %s"
+                % (
+                    planted_found,
+                    planted,
+                    planted_entries[0] if planted_entries else "sin entradas",
+                ),
+            )
+        )
+        return results
+
     # -- driver ------------------------------------------------------------
     def run(self):
         cases = [
@@ -2157,9 +3131,13 @@ class Suite(object):
 # ---------------------------------------------------------------------------
 # role: suite (inside the private namespace)
 # ---------------------------------------------------------------------------
-def role_suite(args):
-    report = Report()
-    root = args.root
+def _role_suite_body(args, report, root):
+    """The execution of the suite role, once its admission was accredited.
+
+    It returns (rc, suite). The suite is None when the role aborted before
+    creating it: the synthetic root then belongs to the supervisor and not to
+    this role, and it is the supervisor that removes it.
+    """
     # This suite loads the production modules BY PATH (load_module), so the
     # import machinery would otherwise write a __pycache__ next to the source:
     # inside the Git working tree (open-code/lib/) and inside the read-only
@@ -2181,9 +3159,8 @@ def role_suite(args):
             False,
             "BLOCKED: contencion no acreditada (%s)" % containment["reason"],
         )
-        report.write(args.report_path)
         print("BLOCKED: la contencion no pudo acreditarse: %s" % containment["reason"])
-        return 3
+        return 3, None
     report.record(
         "PRE-1",
         KIND_DYNAMIC,
@@ -2194,7 +3171,12 @@ def role_suite(args):
     # Fault injection (test harness only): spawn a synthetic child and hang,
     # so the supervisor has to terminate the namespace init AND its
     # descendants through its cleanup chain.
+    #
+    # The synthetic hang IGNORES SIGTERM on purpose: the bounded close of the
+    # containment escalates to SIGKILL, and that is the hard termination the
+    # scenario has to exercise.
     if os.environ.get(FAULT_HANG_SUITE) == "1":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         child = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(3600)"],
             stdin=subprocess.DEVNULL,
@@ -2216,9 +3198,8 @@ def role_suite(args):
     containment["authorization"] = {"granted": granted, "reason": reason}
     if not granted:
         report.record("PRE-2", KIND_DYNAMIC, False, "BLOCKED: %s" % reason)
-        report.write(args.report_path)
         print("BLOCKED: la barra de autorizacion no se libero: %s" % reason)
-        return 4
+        return 4, None
     report.record(
         "PRE-2",
         KIND_DYNAMIC,
@@ -2227,7 +3208,6 @@ def role_suite(args):
     )
 
     suite = Suite(report, root, args.repo_root, args.external_root, args.real_db)
-    report_write_error = None
     try:
         for name in ("db", "private", "scan", "home", "tmp"):
             os.makedirs(os.path.join(root, name), mode=0o700, exist_ok=True)
@@ -2247,8 +3227,79 @@ def role_suite(args):
             False,
             "excepcion: %s" % traceback.format_exc().strip().splitlines()[-1],
         )
+    # The auxiliary controls (the controls of the controls) are HARD: a red
+    # one, or a missing one, fails the run even when the main census of the
+    # bank is green. They are counted apart, but they are NOT optional.
+    if not report.auxiliary_ok:
+        print(
+            "FALLO: los controles auxiliares de la procedencia y de la unicidad no son "
+            "verdes: %r" % (report.auxiliary_summary(),),
+            flush=True,
+        )
+        return 1, suite
+    return (1 if report.failed else 0), suite
+
+
+def role_suite(args):
+    report = Report()
+    root = args.root
+
+    # -------------------------------------------------------------------------
+    # ADMISSION. The suite is a consumer of the product: it may not create a
+    # single file of the batch, nor read a single /proc entry, unless the
+    # containment of THIS invocation is accredited. The accreditation of the
+    # role_suite() itself (the check of the namespace, further below) is NOT
+    # a substitute: it protects this role only and it does not authorize the
+    # runner, the supervisor, the preparation, the controls nor the cleanup.
+    # -------------------------------------------------------------------------
+    admitted, admission_detail = require_admission("suite")
+    if not admitted:
+        print(
+            "BLOCKED: la admision de la contencion no fue acreditada para el rol suite: %s"
+            % admission_detail
+        )
+        print(
+            "Accion: invoque la cadena completa mediante "
+            "tools/verification/forge-contained-run.sh con --receipt-dir "
+            "<directorio de recibos nuevo, o el que declare la invocacion>, un "
+            "--scenario-timeout/--close-timeout revisado y la orden completa tras --."
+        )
+        return ADMISSION_DENIED_RC
+    report.note("admision de contencion acreditada (suite): %s" % admission_detail)
+
+    suite = None
+    report_write_error = None
+    rc = 3
+    try:
+        rc, suite = _role_suite_body(args, report, root)
     finally:
-        suite.cleanup_children()
+        if suite is not None:
+            suite.cleanup_children()
+        # The result of the cleanup of the PRODUCT is declared HERE, over the
+        # PRIVATE /proc of the containment and BEFORE the defensive cleanup
+        # of the entry: a consumer may not presume it and the closure of the
+        # harness does not turn a failure of the product into a success.
+        #
+        # The declaration is made on EVERY path of this role, including the
+        # aborts: an environment that is abandoned still has to declare its
+        # own cleanup. When the process is KILLED (the hang scenario) the
+        # declaration cannot be made at all and the result stays UNKNOWN: the
+        # entry then refuses to certify that invocation.
+        declared_cleanup, declared_survivors = declare_product_cleanup(
+            os.environ.get("FORGE_PRODUCT_CLEANUP_RESULT_FILE", ""),
+            root,
+            os.getpid(),
+        )
+        # It is NOT recorded as an extra case: the declaration is written in
+        # the marker of the entry and its evidence reaches the supervisor
+        # through the receipt (PRODUCT_CLEANUP_RESULT). The census of cases
+        # of the report stays the one that the scenarios expect.
+        print(
+            "[limpieza] producto=%s supervivientes_propios=%s (declarado sobre el /proc "
+            "privado, antes de la limpieza defensiva)"
+            % (declared_cleanup, declared_survivors),
+            flush=True,
+        )
         try:
             report.write(args.report_path)
         except OSError as exc:
@@ -2258,64 +3309,159 @@ def role_suite(args):
                 exc,
             )
             print("FALLO: %s" % report_write_error)
-        shutil.rmtree(root, ignore_errors=True)
+        if suite is not None:
+            shutil.rmtree(root, ignore_errors=True)
     counts = report.counts()
+    auxiliary = report.auxiliary_summary()
     print(
-        "[resumen] casos=%d fallidos=%d dinamicas=%d simulaciones=%d inspecciones=%d"
+        "[resumen] casos=%d fallidos=%d dinamicas=%d simulaciones=%d inspecciones=%d "
+        "auxiliares=%d aux_fallidos=%d aux_veredicto=%s"
         % (
             len(report.cases),
             report.failed,
             counts[KIND_DYNAMIC],
             counts[KIND_SIMULATION],
             counts[KIND_INSPECTION],
+            auxiliary["total"],
+            auxiliary["failed"],
+            auxiliary["verdict"],
         ),
         flush=True,
     )
     if report_write_error:
         return 9
-    return 1 if report.failed else 0
+    return rc
 
 
 # ---------------------------------------------------------------------------
 # role: supervisor (outside any namespace)
 # ---------------------------------------------------------------------------
-def verify_no_survivors(private_ns):
-    """Live (non zombie) processes that still belong to the private namespace."""
-    survivors = []
-    if not private_ns:
-        return survivors
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            if os.readlink("/proc/%s/ns/pid" % entry) != private_ns:
-                continue
-            with open("/proc/%s/stat" % entry, "r", encoding="ascii") as stream:
-                raw = stream.read()
-            fields = raw[raw.rfind(")") + 2 :].split()
-            if fields[0] == "Z":
-                # A zombie is dead, only not reaped yet: it is not a survivor.
-                continue
-            survivors.append(int(entry))
-        except (OSError, ValueError, IndexError):
-            continue
-    return survivors
+AMBIGUOUS_RECEIPT_KEY = "__AMBIGUOUS__"
+"""Marker of an ambiguous receipt.
+
+A receipt that declares the same field twice is ambiguous: the value that a
+consumer would read depends on the order of the lines, so the receipt cannot
+certify anything and the caller MUST reject it.
+"""
 
 
-def group_members(pgid):
-    members = []
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            with open("/proc/%s/stat" % entry, "r", encoding="ascii") as stream:
-                raw = stream.read()
-            fields = raw[raw.rfind(")") + 2 :].split()
-            if int(fields[2]) == pgid and fields[0] != "Z":
-                members.append(int(entry))
-        except (OSError, ValueError, IndexError):
-            continue
-    return members
+def read_receipt(path):
+    """The fields of the receipt of a contained run, as a dictionary.
+
+    An absent, empty or unreadable receipt is an EMPTY dictionary: the
+    evidence is missing and the caller must treat it as such. It is never
+    completed with a default that would read as a PASS.
+
+    A receipt that repeats a field is AMBIGUOUS: it is returned with the
+    marker ``AMBIGUOUS_RECEIPT_KEY`` so the caller rejects it explicitly
+    instead of reading the first occurrence as if it were the only one.
+    """
+    fields = {}
+    ambiguous = False
+    if not path:
+        return fields
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                line = line.rstrip("\n")
+                if not line or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                if not key:
+                    continue
+                if key in fields:
+                    ambiguous = True
+                    continue
+                fields[key] = value
+    except OSError:
+        return {}
+    if ambiguous:
+        fields[AMBIGUOUS_RECEIPT_KEY] = "YES"
+    return fields
+
+
+def exit_code_of(value):
+    """The exit code of a scenario, as the supervisor reports it.
+
+    A scenario that was killed by a signal is reported with the NEGATIVE
+    number of that signal (the convention of the shell and of the subprocess
+    module): a scenario killed by SIGKILL is -9, never 137.
+
+    The conversion accepts BOTH forms of the SAME fact: the raw status that
+    the shell observed (137) and the already normalised one (-9). Before
+    this correction the negative form was rejected as "not a number" and
+    the conversion returned None for it, so a receipt that carried -9 was
+    read as an ABSENT exit code. An absent exit code and a termination by
+    SIGKILL are different facts, and only the first one was accepted.
+
+    The TWO representations are told apart BEFORE any normalisation, and
+    each one is validated against ITS OWN domain:
+
+      * the NEGATIVE form "-N" is the already normalised signal form: N is
+        the number of the signal, so N has to be a REAL signal of this
+        platform (1..MAX_SIGNAL). A negative form whose magnitude is
+        outside that domain is NOT a signal: the shell NEVER publishes a
+        negative status, so "-137" is a CONTRADICTION and not "the signal
+        9". It is rejected, never reinterpreted;
+      * the POSITIVE form is an exit status (0..127) or the "128+N" of the
+        shell for a termination by the signal N (129..128+MAX_SIGNAL).
+        The value 128 is RESERVED (it is neither an exit status nor
+        128+N, because a signal 0 does not exist) and everything above
+        128+MAX_SIGNAL names a signal that does not exist.
+
+    An ABSENT or an INVALID value is NOT an exit code: it returns None, so
+    the caller REJECTS the evidence instead of reading a missing value as a
+    mismatch that happens to satisfy a loose comparison (in Python,
+    ``None != 0`` is true).
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    negative = text.startswith("-")
+    digits = text[1:] if negative else text
+    if not digits or not digits.isascii() or not digits.isdigit():
+        return None
+    number = int(text)
+    if negative:
+        # The NORMALISED form: the scenario was terminated by the signal N.
+        # The domain of the signal is validated BEFORE anything else: a
+        # magnitude outside it is an INVALID state, not another signal.
+        if number == 0 or -number > MAX_SIGNAL:
+            return None
+        return number
+    # The POSITIVE form: an exit status, or the 128+N of the shell.
+    if number < 128:
+        return number
+    if number == 128:
+        # RESERVED: it is not an exit status and it is not 128+N.
+        return None
+    signal = number - 128
+    if signal > MAX_SIGNAL:
+        # It would name a signal that does not exist.
+        return None
+    return -signal
+
+
+def termination_state_of(code):
+    """The OBSERVED termination state of a scenario, kept apart from its RC.
+
+    The state is a DIFFERENT fact from the exit code and it is published
+    apart: a timeout of the scenario and a termination by SIGKILL are two
+    observations, and neither one substitutes the other.
+
+    Returns one of:
+      "EXITED:<rc>"      the scenario returned on its own with that code;
+      "SIGNALLED:<n>"    the scenario was terminated by the signal <n>
+                         (SIGKILL is "SIGNALLED:9");
+      "UNOBSERVABLE"     there is no valid exit code to observe.
+    """
+    if code is None:
+        return "UNOBSERVABLE"
+    if code < 0:
+        return "SIGNALLED:%d" % (-code)
+    return "EXITED:%d" % code
 
 
 def await_authorization(auth_fd):
@@ -2346,83 +3492,6 @@ def await_authorization(auth_fd):
             "the channel without releasing the barrier" % token
         )
     return True, token
-
-
-def terminate_batch_resources(
-    init_pid, init_ticks, private_ns, pidfd, launcher_pid, launcher_ticks
-):
-    """Terminate the private namespace and every descendant of the batch.
-
-    The chain never depends on the tested code:
-
-      1. the stable handle (pidfd) on the namespace init; killing the init
-         tears the whole private PID namespace down,
-      2. a verified kill of the namespace init (namespace + start ticks must
-         still match, so a recycled PID is never signalled),
-      3. as a last resort, the batch's own process group, whose members are
-         the launcher and the init with all its descendants.
-
-    Every step is identity-checked first: no signal is ever sent to a
-    process the batch cannot attribute.
-    """
-    actions = []
-
-    if pidfd is not None:
-        try:
-            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
-            actions.append("pidfd SIGKILL sobre el init del namespace")
-        except OSError as exc:
-            if exc.errno == errno.ESRCH:
-                actions.append("pidfd: el init ya habia terminado (ESRCH)")
-            else:
-                actions.append("pidfd SIGKILL: %s" % exc)
-
-    if init_pid and init_ticks:
-        verified = False
-        try:
-            with open("/proc/%d/stat" % init_pid, "r", encoding="ascii") as stream:
-                raw = stream.read()
-            fields = raw[raw.rfind(")") + 2 :].split()
-            verified = (
-                fields[19] == init_ticks
-                and private_ns is not None
-                and os.readlink("/proc/%d/ns/pid" % init_pid) == private_ns
-            )
-        except (OSError, ValueError, IndexError):
-            verified = False
-        if verified:
-            try:
-                os.kill(init_pid, signal.SIGKILL)
-                actions.append("kill verificado del init (namespace + inicio coinciden)")
-            except OSError as exc:
-                actions.append("kill verificado del init: %s" % exc)
-        else:
-            actions.append("kill del init omitido (identidad no verificada o ya exit)")
-
-    if launcher_pid and launcher_ticks:
-        if not pid_alive(launcher_pid):
-            actions.append("el lanzador ya habia terminado por su cuenta (no se senala)")
-        else:
-            verified = False
-            pgrp = None
-            try:
-                with open("/proc/%d/stat" % launcher_pid, "r", encoding="ascii") as stream:
-                    raw = stream.read()
-                fields = raw[raw.rfind(")") + 2 :].split()
-                verified = fields[19] == launcher_ticks
-                pgrp = int(fields[2])
-            except (OSError, ValueError, IndexError):
-                verified = False
-            if verified and pgrp == launcher_pid:
-                try:
-                    os.killpg(pgrp, signal.SIGKILL)
-                    actions.append("killpg verificado del grupo propio del lote (%d)" % pgrp)
-                except OSError as exc:
-                    actions.append("killpg verificado: %s" % exc)
-            else:
-                actions.append("killpg no aplicable (identidad no verificada)")
-
-    return actions
 
 
 def resolve_report_path(path):
@@ -2477,6 +3546,15 @@ def proc_identity(pid):
     return identity
 
 
+# ---------------------------------------------------------------------------
+# role: supervisor (outside any namespace)
+#
+# The supervisor does NOT create a namespace of its own and it does NOT
+# sweep the process table of the host: the containment is the single
+# authorized entry (tools/verification/forge-contained-run.sh) and the
+# guarantee "no own survivor" is the CLOSURE of that namespace, recorded in
+# its receipt.
+# ---------------------------------------------------------------------------
 def role_supervisor(args):
     evidence = {
         "role": "supervisor",
@@ -2488,6 +3566,33 @@ def role_supervisor(args):
         evidence["steps"].append({"step": name, "ok": bool(ok), "detail": detail})
         print("[supervisor] %s %s :: %s" % (name, "OK" if ok else "FAIL", detail), flush=True)
         return ok
+
+    # ---------------------------------------------------------------------------
+    # ADMISSION. The supervisor is the OUTER consumer of the bank: it reads the
+    # /proc of this namespace, it creates the synthetic root and it launches the
+    # suite. It may do NONE of that unless the containment of THIS invocation
+    # is accredited.
+    #
+    # The accreditation that the suite performs for ITSELF (and the one that
+    # the inner entry performs for the suite) does not authorize the
+    # supervisor, the runner or the preparation: they are all consumers of
+    # the same chain and all of them need the outer accreditation.
+    # ---------------------------------------------------------------------------
+    admitted, admission_detail = require_admission("supervisor")
+    if not admitted:
+        step("admision", False, admission_detail)
+        print(
+            "BLOCKED: la admision de la contencion no fue acreditada para el rol supervisor: %s"
+            % admission_detail
+        )
+        print(
+            "Accion: invoque la cadena completa mediante "
+            "tools/verification/forge-contained-run.sh con --receipt-dir "
+            "<directorio de recibos nuevo, o el que declare la invocacion>, un "
+            "--scenario-timeout/--close-timeout revisado y la orden completa tras --."
+        )
+        return ADMISSION_DENIED_RC
+    step("admision", True, admission_detail)
 
     plugin_sync_path = os.path.join(args.repo_root, PLUGIN_SYNC_REL)
     safety_path = os.path.join(args.external_root, CUTOVER_SAFETY_REL)
@@ -2506,28 +3611,29 @@ def role_supervisor(args):
         % (plugin_sync_path, sha256_file(plugin_sync_path), safety_path, sha256_file(safety_path)),
     )
 
-    try:
-        probe = subprocess.run(
-            ["unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "/bin/true"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=60,
-        )
-        probe_rc = probe.returncode
-        probe_err = probe.stderr.decode("utf-8", "replace").strip()
-    except (OSError, subprocess.SubprocessError) as exc:
-        probe_rc = -1
-        probe_err = "%s: %s" % (type(exc).__name__, exc)
-    if probe_rc != 0:
+    # ---------------------------------------------------------------------------
+    # The containment is the SINGLE authorized entry of this bank.
+    #
+    # The supervisor does NOT create a namespace of its own, it does NOT keep
+    # an external watchdog and it does NOT sweep the process table of the
+    # host: the entry establishes a private PID namespace with a private
+    # /proc, accredits the boundary BY INVOCATION, closes the contained
+    # environment with a bounded budget and records everything in a receipt.
+    #
+    # The guarantee "no own survivor" is therefore NOT a sweep: it is the
+    # CLOSURE of the namespace, which the kernel performs when its PID 1
+    # exits, and the receipt of the run.
+    # ---------------------------------------------------------------------------
+    containment_entry = os.path.join(CHECKOUT_ROOT, "tools", "verification", "forge-contained-run.sh")
+    if not os.path.isfile(containment_entry):
         step(
             "contencion",
             False,
-            "unshare --user --map-root-user --pid --fork --mount-proc rc=%d stderr=%r"
-            % (probe_rc, probe_err),
+            "no existe la entrada de contencion: %s" % containment_entry,
         )
-        print("BLOCKED: no se pudo establecer la contencion; no se llama a ninguna funcion sensible")
+        print("BLOCKED: la entrada de contencion no esta disponible; no se llama a ninguna funcion sensible")
         return 3
-    step("contencion", True, "unshare rootless + PID privado disponible (rc=0)")
+    step("contencion", True, "entrada unica de contencion: %s" % containment_entry)
 
     root = os.path.join(BATCH_ROOT, "safety-run-%d" % os.getpid())
     shutil.rmtree(root, ignore_errors=True)
@@ -2539,42 +3645,87 @@ def role_supervisor(args):
     host_ns_user = os.readlink("/proc/self/ns/user")
     host_ns_mnt = os.readlink("/proc/self/ns/mnt")
 
-    env = {
-        "PATH": "/usr/bin:/bin",
-        "HOME": os.path.join(root, "home"),
-        "TMPDIR": os.path.join(root, "tmp"),
-        "LANG": "C",
-        "LC_ALL": "C",
-        "FORGE_V2_HOST_PIDNS": host_ns_pid,
-        "FORGE_V2_HOST_USERNS": host_ns_user,
-        "FORGE_V2_HOST_MNTNS": host_ns_mnt,
-        "FORGE_V2_REAL_DB": args.real_db,
-        # The suite imports the production modules BY PATH, so it must not be
-        # able to write bytecode next to them: that would create a
-        # __pycache__ inside the Git working tree (open-code/lib/) and inside
-        # the read-only external tree (lib/). The import itself is NOT
-        # disabled: the real functions are still loaded and exercised.
-        "PYTHONDONTWRITEBYTECODE": "1",
-    }
-    # The environment allowlist stays tight: only the two known fault
-    # injection switches of this harness travel to the suite, and only when
-    # they are explicitly exported.
-    for name in (FAULT_NO_PIDFD, FAULT_HANG_SUITE):
-        value = os.environ.get(name)
-        if value:
-            env[name] = value
-
     # The report path is normalised ONCE here: the suite receives the very
     # same absolute file that the supervisor reads back and completes.
     report_path = resolve_report_path(args.report_path)
     os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
+
+    # The environment the suite needs travels as POSITIONAL ARGUMENTS and is
+    # exported by the wrapper: the containment rebuilds the environment with
+    # env -i and inherits nothing.
+    hang_flag = "1" if os.environ.get(FAULT_HANG_SUITE) == "1" else ""
+    wrapper_script = (
+        'export FORGE_V2_HOST_PIDNS="$1" FORGE_V2_HOST_USERNS="$2" '
+        'FORGE_V2_HOST_MNTNS="$3" FORGE_V2_REAL_DB="$4" '
+        'FORGE_V2_TEST_HANG_SUITE="$5" PYTHONDONTWRITEBYTECODE=1; '
+        "shift 5; exec \"$@\""
+    )
+    receipt_pointer = os.path.join(root, "receipt-pointer.txt")
+    # The budget of the contained scenario is expressed in WHOLE SECONDS: the
+    # containment entry only accepts an integer number of seconds and it
+    # refuses (fail-closed, with its usage message) any other format. The
+    # supervisor's own --timeout is a float, so it is normalised HERE, at the
+    # only site that builds the order: the floor never exceeds the declared
+    # budget and the floor of 1 keeps the value inside the accepted range.
+    scenario_timeout_seconds = max(1, int(args.timeout))
+    # The RC contracted for the inner scenario, declared by the runner of the
+    # scenarios. It is validated HERE (fail-closed): a malformed declaration
+    # is never guessed and never defaults to a value that could certify a
+    # mismatch as a match.
+    expected_scenario_rc = os.environ.get(EXPECTED_SCENARIO_RC_ENV, "").strip()
+    if not expected_scenario_rc:
+        expected_scenario_rc = "0"
+    if expected_scenario_rc != "NONE" and not expected_scenario_rc.isdigit():
+        step(
+            "expectativa",
+            False,
+            "declaracion de RC esperado invalida: %r (debe ser un entero no negativo o NONE)"
+            % expected_scenario_rc,
+        )
+        print(
+            "BLOCKED: el RC esperado del escenario no es valido (%r); no se lanza la suite"
+            % expected_scenario_rc
+        )
+        return 2
+    # The directory of receipts of the INNER invocation.
+    #
+    # It is NOT a path of a machine: the consumer may DECLARE one and, when
+    # it does not, the harness creates a directory of ITS OWN invocation.
+    #
+    # It is deliberately a SIBLING of the run root and NOT a child of it:
+    # the run root of the supervisor and the run root of the suite are
+    # named with the PID of each role, and the PIDs of two roles CAN
+    # coincide (each role lives in its own PID namespace, where the
+    # numbering restarts). If the receipts lived inside the run root, the
+    # cleanup of the suite could remove the receipt of the supervisor and
+    # the evidence of the invocation would vanish with it.
+    if CONTAINMENT_RECEIPT_DIR:
+        containment_receipt_dir = CONTAINMENT_RECEIPT_DIR
+    else:
+        containment_receipt_dir = tempfile.mkdtemp(
+            prefix="receipts-supervisor-", dir=BATCH_ROOT
+        )
     command = [
-        "unshare",
-        "--user",
-        "--map-root-user",
-        "--pid",
-        "--fork",
-        "--mount-proc",
+        "/bin/bash",
+        containment_entry,
+        "--receipt-dir",
+        containment_receipt_dir,
+        "--receipt-out",
+        receipt_pointer,
+        "--scenario-timeout",
+        str(scenario_timeout_seconds),
+        "--close-timeout",
+        "5",
+        "--",
+        "/bin/sh",
+        "-c",
+        wrapper_script,
+        "forge-v2-suite",
+        host_ns_pid,
+        host_ns_user,
+        host_ns_mnt,
+        args.real_db,
+        hang_flag,
         sys.executable,
         os.path.abspath(__file__),
         "--role",
@@ -2594,97 +3745,44 @@ def role_supervisor(args):
     ]
 
     # The authorization channel: the suite blocks on it until the supervisor
-    # has accredited the containment AND armed an operational watchdog.
+    # has verified the accreditation of the containment.
     auth_read, auth_write = os.pipe()
+    # The expectation of THIS scenario travels to the containment entry, which
+    # records it in its receipt: the verdict of the entry and the verdict of
+    # this supervisor are then computed against the SAME declaration.
+    entry_env = dict(os.environ)
+    entry_env[CONTAINED_EXPECTED_SCENARIO_RC_ENV] = expected_scenario_rc
     launcher = subprocess.Popen(
         command,
         stdin=auth_read,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        env=env,
         cwd=root,
         start_new_session=True,
+        env=entry_env,
     )
     os.close(auth_read)
 
-    init_pid = None
-    deadline = time.monotonic() + 30.0
-    while time.monotonic() < deadline and init_pid is None:
-        children = read_proc_children(launcher.pid)
-        if children:
-            init_pid = children[0]
+    # The process group that the batch created for its own launcher is
+    # OBSERVED here, while the launcher is alive: the absence of the members
+    # of that group is a later observation, and an observation needs a
+    # subject that was observed too.
+    #
+    # The launcher is spawned with start_new_session=True, so it is a
+    # session leader and its process group is its own PID. The observed
+    # value is preferred and the construction is the fallback.
+    launcher_pgid = launcher.pid
+    launcher_pgid_source = "session-leader (start_new_session=True)"
+    pgid_deadline = time.monotonic() + 2.0
+    while time.monotonic() < pgid_deadline:
+        observed_pgid = process_group_of(launcher.pid)
+        if observed_pgid is None:
             break
-        if launcher.poll() is not None:
+        if observed_pgid == launcher.pid:
+            launcher_pgid = observed_pgid
+            launcher_pgid_source = "observado en /proc/%d/stat" % launcher.pid
             break
         time.sleep(0.02)
-    if init_pid is None:
-        try:
-            os.close(auth_write)
-        except OSError:
-            pass
-        launcher.kill()
-        launcher.wait(timeout=30)
-        step("contencion", False, "no se pudo localizar el init del namespace PID")
-        print("BLOCKED: no se pudo acreditar el namespace PID privado")
-        shutil.rmtree(root, ignore_errors=True)
-        return 3
-    launcher_identity = proc_identity(launcher.pid)
-    step(
-        "contencion",
-        True,
-        "launcher(host)=%d init_del_namespace(host)=%d pgrp=%d"
-        % (launcher.pid, init_pid, launcher.pid),
-    )
-
-    private_ns = None
-    try:
-        private_ns = os.readlink("/proc/%d/ns/pid" % init_pid)
-    except OSError:
-        private_ns = None
-    step(
-        "contencion",
-        private_ns is not None and private_ns != host_ns_pid,
-        "ns_pid_privada=%s ns_pid_anfitrion=%s" % (private_ns, host_ns_pid),
-    )
-
-    # The watchdog is an EFFECTIVE precondition: it is armed and proven
-    # before the barrier is released, and any failure leaves the barrier
-    # closed (the suite aborts with a non zero RC).
-    pidfd = None
-    watchdog_ok = False
-    watchdog_detail = ""
-    if os.environ.get(FAULT_NO_PIDFD) == "1":
-        watchdog_detail = (
-            "inyeccion de fallo (%s=1): el watchdog pidfd no se arma" % FAULT_NO_PIDFD
-        )
-    elif not (hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")):
-        # The interpreter does not expose the pidfd API at all (Python < 3.9
-        # or a build without it). That is a missing CAPABILITY, not an
-        # exception: it takes the very same route as an inoperative
-        # watchdog (closed barrier, explicit BLOCK, non zero RC).
-        watchdog_detail = (
-            "el interprete no expone la API de pidfd (os.pidfd_open / "
-            "signal.pidfd_send_signal): el watchdog no puede armarse"
-        )
-    else:
-        try:
-            pidfd = os.pidfd_open(init_pid, 0)
-            # Signal 0 proves the handle can carry a signal without
-            # delivering anything.
-            signal.pidfd_send_signal(pidfd, 0)
-            watchdog_ok = True
-            watchdog_detail = (
-                "pidfd operativo sobre el init del namespace (pid=%d); "
-                "el handle puede portar senales" % init_pid
-            )
-        except (OSError, ValueError, AttributeError) as exc:
-            pidfd = None
-            watchdog_detail = "no se pudo armar el watchdog pidfd sobre el init: %s" % exc
-    step("watchdog", watchdog_ok, watchdog_detail)
-
-    poller = select.poll()
-    if pidfd is not None:
-        poller.register(pidfd, select.POLLIN)
 
     def pump():
         while True:
@@ -2697,36 +3795,68 @@ def role_supervisor(args):
     pump_thread = threading.Thread(target=pump, daemon=True)
     pump_thread.start()
 
-    # The identity of the namespace init is taken once it has exec'ed the
-    # suite: before that it is still the forked copy of the launcher.
-    init_identity = None
-    identity_deadline = time.monotonic() + 15.0
-    while time.monotonic() < identity_deadline:
-        candidate = proc_identity(init_pid)
-        if candidate.get("exe") != "/usr/bin/unshare":
-            init_identity = candidate
-            break
+    # ---------------------------------------------------------------------------
+    # The accreditation of the boundary is read from the receipt directory of
+    # THIS invocation: it is a file of the batch, never the process table of
+    # the host.
+    # ---------------------------------------------------------------------------
+    receipt_path = ""
+    accreditation_ok = False
+    accreditation_detail = ""
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        if os.path.isfile(receipt_pointer):
+            try:
+                with open(receipt_pointer, "r", encoding="utf-8") as stream:
+                    receipt_path = stream.read().strip()
+            except OSError:
+                receipt_path = ""
+        if receipt_path:
+            status_file = os.path.join(os.path.dirname(receipt_path), "accreditation.status")
+            status = ""
+            try:
+                with open(status_file, "r", encoding="ascii") as stream:
+                    status = stream.read().strip()
+            except OSError:
+                status = ""
+            if status == "PASS":
+                accreditation_ok = True
+                accreditation_detail = "acreditacion por invocacion en %s" % status_file
+                break
+            if status == "FAILED":
+                accreditation_detail = "la contencion no accredito su frontera (%s)" % status_file
+                break
         if launcher.poll() is not None:
             break
-        time.sleep(0.05)
-    if init_identity is None:
-        init_identity = proc_identity(init_pid)
+        time.sleep(0.02)
     step(
-        "identidad",
-        True,
-        "init_del_namespace exe=%s dev:inode=%s ns_pid=%s uid=%s"
-        % (
-            init_identity.get("exe"),
-            init_identity.get("exe_dev_inode"),
-            init_identity.get("ns_pid"),
-            init_identity.get("uid_host"),
-        ),
+        "contencion",
+        accreditation_ok,
+        accreditation_detail or "la contencion no publico su acreditacion a tiempo",
     )
 
-    # The barrier is released ONLY when the containment is accredited and the
-    # watchdog is operational. Otherwise the channel is closed and the suite
-    # aborts before any sensitive call.
-    containment_ok = bool(private_ns) and private_ns != host_ns_pid
+    # The bounded close of the contained environment is the mechanism of the
+    # entry (timeout --kill-after + unshare --kill-child). The fault
+    # injection disarms the AUTHORIZATION, exactly as the retired pidfd
+    # watchdog did: the barrier stays closed and the suite aborts.
+    watchdog_ok = False
+    if os.environ.get(FAULT_NO_PIDFD) == "1":
+        watchdog_detail = (
+            "inyeccion de fallo (%s=1): el cierre acotado de la contencion no se "
+            "considera operativo y la barra de autorizacion no se libera" % FAULT_NO_PIDFD
+        )
+    else:
+        watchdog_ok = True
+        watchdog_detail = (
+            "cierre acotado operativo: la entrada de contencion aplica "
+            "timeout --kill-after y unshare --kill-child sobre el init del namespace"
+        )
+    step("watchdog", watchdog_ok, watchdog_detail)
+
+    # The barrier is released ONLY when the containment accredited its
+    # boundary AND its bounded close is considered operational. Otherwise the
+    # channel is closed and the suite aborts before any sensitive call.
+    containment_ok = bool(accreditation_ok)
     authorized = False
     auth_reason = ""
     if watchdog_ok and containment_ok:
@@ -2734,16 +3864,16 @@ def role_supervisor(args):
             os.write(auth_write, (AUTH_TOKEN + "\n").encode("utf-8"))
             authorized = True
             auth_reason = (
-                "autorizacion concedida: contencion acreditada (ns=%s) y watchdog pidfd operativo"
-                % private_ns
+                "autorizacion concedida: contencion acreditada por invocacion y "
+                "cierre acotado operativo"
             )
         except OSError as exc:
             auth_reason = "no se pudo escribir la autorizacion: %s" % exc
     else:
         auth_reason = "la barra de autorizacion NO se libera: %s" % (
-            "watchdog no operativo"
+            "cierre acotado no operativo"
             if not watchdog_ok
-            else "contencion no acreditada (ns=%s)" % private_ns
+            else "contencion no acreditada"
         )
     try:
         os.close(auth_write)
@@ -2757,76 +3887,374 @@ def role_supervisor(args):
     while True:
         if launcher.poll() is not None:
             break
-        if time.monotonic() - started > args.timeout:
+        if time.monotonic() - started > args.timeout + 120:
             timed_out = True
             break
-        try:
-            if pidfd is not None and poller.poll(200):
-                break
-        except OSError:
-            pass
         time.sleep(0.05)
 
-    if not timed_out:
-        # The launcher reaps the suite and exits on its own. It is waited
-        # for BEFORE the cleanup chain, so the chain never signals a process
-        # that is on its way out and the exit status of the suite is read
-        # from the launcher, not from a signal.
+    # The launcher is waited for BEFORE the cleanup chain, so the chain never
+    # signals a process that is on its way out.
+    try:
+        launcher.wait(timeout=120)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    if launcher.poll() is None:
+        # The only own resource that may still be alive is the launcher this
+        # supervisor created: it is terminated THROUGH ITS IDENTITY, never by
+        # name and never by a sweep of the host.
+        launcher_identity = proc_identity(launcher.pid)
+        launcher.kill()
         try:
             launcher.wait(timeout=30)
         except subprocess.TimeoutExpired:
-            timed_out = True
-
-    # Independent cleanup of the resources created by this batch. It never
-    # depends on the tested code, and it works with or without a pidfd.
-    cleanup_actions = terminate_batch_resources(
-        init_pid,
-        init_identity.get("start_time_ticks") if init_identity else None,
-        private_ns,
-        pidfd,
-        launcher.pid,
-        launcher_identity.get("start_time_ticks") if launcher_identity else None,
-    )
+            pass
+        cleanup_actions = [
+            "el lanzador no termino solo: se termino por su identidad (%s)" % launcher_identity
+        ]
+    else:
+        cleanup_actions = [
+            "el cierre lo aplico la entrada de contencion (timeout --kill-after + "
+            "unshare --kill-child); el lanzador fue esperado y recogido"
+        ]
     step(
         "limpieza_ejecucion",
         True,
         "cadena de limpieza aplicada: %s" % ("; ".join(cleanup_actions) or "sin acciones"),
     )
-    try:
-        launcher.wait(timeout=60)
-    except subprocess.TimeoutExpired:
-        launcher.kill()
-        launcher.wait(timeout=30)
     pump_thread.join(timeout=10)
-    suite_rc = launcher.returncode
+    launcher_rc = launcher.returncode
 
-    if pidfd is not None:
-        try:
-            os.close(pidfd)
-        except OSError:
-            pass
+    # The receipt of the run is the evidence: the accreditation of the
+    # boundary, the RC of the scenario, the result of the cleanup of the
+    # product and the result of the closure.
+    #
+    # The field of the containment evidence was RENAMED to
+    # CONTAINMENT_EVIDENCE_CERTIFIABLE and it has NO alias: the legacy key
+    # "CERTIFIABLE" belongs to the previous contract and a receipt that
+    # carries it is NOT evidence of this one.
+    receipt = read_receipt(receipt_path)
+    scenario_status = receipt.get("SCENARIO_STATUS", "NOT_CERTIFIABLE")
+    closure = receipt.get("CLOSURE", "UNCONFIRMED")
+    completeness = receipt.get("RECEIPT_COMPLETENESS", "INCOMPLETE")
+    receipt_accreditation = receipt.get("ACCREDITATION", "FAILED")
+    containment_evidence_certifiable = receipt.get("CONTAINMENT_EVIDENCE_CERTIFIABLE", "NO")
+    positive_acceptance = receipt.get("POSITIVE_ACCEPTANCE", "NO")
+    # The RC contracted for THIS scenario. The DECLARATION of the runner is
+    # the authority; the receipt has to carry the very same declaration, so
+    # a receipt produced against a different expectation is rejected instead
+    # of being read as a mismatch of the scenario.
+    receipt_expected_scenario_rc = receipt.get("EXPECTED_SCENARIO_RC", "")
+    expected_scenario_rc = expected_scenario_rc
+    product_cleanup = receipt.get("PRODUCT_CLEANUP_RESULT", "UNKNOWN")
+    product_cleanup_observed = receipt.get(
+        "PRODUCT_CLEANUP_OBSERVED_BEFORE_DEFENSIVE_CLEANUP", "NO"
+    )
+    legacy_certifiable = "CERTIFIABLE" in receipt
+    ambiguous_receipt = receipt.get(AMBIGUOUS_RECEIPT_KEY) == "YES"
+    launcher_wait_completed = receipt.get("LAUNCHER_WAIT_COMPLETED", "NO")
+    # The CLOSURE has THREE independent links and all of them are required:
+    # the outer wait over the direct `unshare` child, its RC 0 and the
+    # OBSERVED effective termination of the private PID 1. A signal that was
+    # merely SENT is not an observed termination, and a launcher that was
+    # waited for but returned a non-zero RC did not close cleanly. A receipt
+    # that carries "the signal was sent, and then it ended" does NOT certify
+    # the closure.
+    launcher_rc = receipt.get("LAUNCHER_RC", "")
+    pid1_completion_observed = receipt.get("PID1_COMPLETION_OBSERVED", "")
+    private_ns = receipt.get("PID_NAMESPACE", "") or None
+    # The RAW exit code of the suite (the value that the shell observed) and
+    # the NORMALISED one (the convention of the signals) are two different
+    # facts and both of them are published: the normalised one is what the
+    # contract compares, and the raw one is the evidence it came from.
+    suite_rc_raw = receipt.get("SCENARIO_RC", "")
+    suite_rc = exit_code_of(suite_rc_raw)
+    # The OBSERVED termination state is a third fact, apart from the exit
+    # code: a timeout of the scenario and a termination by SIGKILL are two
+    # observations and neither one substitutes the other.
+    suite_termination_state = termination_state_of(suite_rc)
+    suite_termination_observable = suite_rc is not None
+    # The exit status that THIS supervisor observed for the launcher is kept
+    # apart from the LAUNCHER_RC that the receipt declares: the first one is
+    # the observation, the second one is the link of the contract.
+    launcher_observed_returncode = launcher.returncode
+    if scenario_status == "TIMEOUT":
+        timed_out = True
+
+    # The receipt must be the one of THIS invocation: the pointer published by
+    # the entry (--receipt-out), never a receipt found by enumerating the
+    # directory of receipts. Its identity has to match the directory that
+    # contains it.
+    receipt_identity_ok = bool(
+        receipt_path
+        and receipt.get("IDENTIFIER", "")
+        and receipt.get("IDENTIFIER", "") == os.path.basename(os.path.dirname(receipt_path))
+        and receipt.get("RECEIPT_PATH", "") == receipt_path
+    )
+    step(
+        "recibo",
+        receipt_identity_ok and not ambiguous_receipt,
+        "recibo=%s identidad=%s ambiguo=%s" % (receipt_path or "<ausente>", receipt_identity_ok, ambiguous_receipt),
+    )
+
+    # The semantics of the contract are verified HERE, not taken on trust:
+    #
+    #   * the evidence of the CONTAINMENT certifies that the boundary was
+    #     accredited and that the contained environment was waited for. It
+    #     does NOT imply that the scenario succeeded nor that the product
+    #     cleaned up.
+    #   * the POSITIVE ACCEPTANCE requires, in addition, the expected RC of
+    #     the scenario and PRODUCT_CLEANUP_RESULT=PASS observed BEFORE the
+    #     defensive cleanup. A consumer that certifies "zero survivors"
+    #     cannot accept the containment evidence alone.
+    scenario_rc_matches_expected = (
+        expected_scenario_rc != ""
+        and expected_scenario_rc != "NONE"
+        and receipt_expected_scenario_rc == expected_scenario_rc
+        and receipt.get("SCENARIO_RC", "") == expected_scenario_rc
+    )
+    product_cleanup_ok = product_cleanup == "PASS" and product_cleanup_observed == "YES"
+    containment_evidence_ok = (
+        not legacy_certifiable
+        and not ambiguous_receipt
+        and receipt_identity_ok
+        and receipt_accreditation == "PASS"
+        and completeness == "COMPLETE"
+        and closure == "CONFIRMED"
+        and launcher_wait_completed == "YES"
+        and launcher_rc == "0"
+        and pid1_completion_observed == "PASS"
+        and containment_evidence_certifiable == "YES"
+    )
+    positive_acceptance_ok = (
+        containment_evidence_ok
+        and scenario_rc_matches_expected
+        and product_cleanup_ok
+        and positive_acceptance == "YES"
+    )
+    # ---------------------------------------------------------------------------
+    # The verdict of THIS supervisor about its OWN cleanup (the CONTAINMENT)
+    # is INDEPENDENT from the verdict about the PRODUCT (the positive
+    # acceptance). The two results are kept apart on purpose:
+    #
+    #   * the closure of the arnes never turns a failure of the product into
+    #     a success: the positive acceptance above still requires the product's
+    #     cleanup to have been OBSERVED as PASS;
+    #   * a scenario that injects a fault (whose product cleanup may be
+    #     impossible to observe, because the process that had to declare it is
+    #     killed by the bounded close) does NOT make the closure of the
+    #     containment unaccredited: the facts that accredit it are the
+    #     receipt's accreditation, its completeness and its confirmed closure,
+    #     the absence of survivors of the private namespace, the absence of
+    #     members of the own process group and the removal of the synthetic
+    #     root.
+    #
+    # The verdict of the entry (CONTAINMENT_EVIDENCE_CERTIFIABLE) additionally
+    # requires the DEFENSIVE cleanup of the inner entry, which cannot run when
+    # the bounded close has to eliminate the scenario: that is a property of
+    # the inner invocation, not of the closure of this one.
+    # ---------------------------------------------------------------------------
 
     step(
         "suite",
         suite_rc == 0 and not timed_out,
-        "rc=%d timeout=%s" % (suite_rc, timed_out),
+        "rc=%s estado=%s timeout=%s" % (suite_rc, scenario_status, timed_out),
     )
 
-    init_alive = pid_alive(init_pid)
-    init_gone = wait_process_gone(init_pid)
-    survivors = verify_no_survivors(private_ns)
-    members = group_members(launcher.pid)
+    # ---------------------------------------------------------------------------
+    # The declaration of the cleanup of the PRODUCT of THIS invocation.
+    #
+    # The supervisor is the outermost process of the batch in this namespace:
+    # the launcher it created has already been waited for and reaped, and the
+    # product itself ran in the INNER namespace, where the suite declared its
+    # own cleanup over the inner private /proc and that declaration reached
+    # the receipt of the inner invocation.
+    #
+    # The declaration combines two INDEPENDENT observations:
+    #   * the OUTER one: over the private /proc of THIS namespace, no live
+    #     process of the batch survives (the criterion of the case CLEAN-1);
+    #   * the INNER one: the receipt of the inner invocation declares the
+    #     cleanup of the product as PASS and observed before its defensive
+    #     cleanup.
+    #
+    # If any of them cannot be observed the result is UNKNOWN. It is NEVER
+    # turned into a PASS because the harness closed correctly: the closure of
+    # the arnes and the cleanup of the product are two independent results,
+    # and an invocation whose product cleanup could not be observed can never
+    # be a positive acceptance.
+    # ---------------------------------------------------------------------------
+    outer_cleanup_value, outer_cleanup_survivors = observe_batch_cleanup(root, os.getpid())
+    if product_cleanup == "FAIL" or outer_cleanup_value == "FAIL":
+        declared_product_cleanup = "FAIL"
+    elif product_cleanup != "PASS" or outer_cleanup_value != "PASS":
+        declared_product_cleanup = "UNKNOWN"
+    else:
+        declared_product_cleanup = "PASS"
+    marker_published = write_product_cleanup_marker(
+        os.environ.get("FORGE_PRODUCT_CLEANUP_RESULT_FILE", ""),
+        declared_product_cleanup,
+    )
+    if not marker_published:
+        declared_product_cleanup = "UNKNOWN"
+    # The very same declaration is published in the evidence of the scenario,
+    # so a caller that chains several scenarios can AGGREGATE the
+    # declarations instead of assuming a single one.
+    try:
+        with open(
+            os.path.join(os.path.dirname(report_path), "product-cleanup.result"),
+            "w",
+            encoding="utf-8",
+        ) as stream:
+            stream.write(declared_product_cleanup + "\n")
+    except OSError as exc:
+        print("no se pudo publicar la declaracion en la evidencia: %s" % exc)
+    step(
+        "limpieza_producto",
+        declared_product_cleanup == "PASS",
+        "declarada=%s observacion_exterior=%s supervivientes_exteriores=%s "
+        "recibo_interior=%s marcador_publicado=%s"
+        % (
+            declared_product_cleanup,
+            outer_cleanup_value,
+            outer_cleanup_survivors,
+            product_cleanup,
+            marker_published,
+        ),
+    )
+
+    # There is NO sweep of the host: the absence of survivors of the private
+    # namespace is a CONSEQUENCE of the closure of that namespace (the kernel
+    # tears it down when its PID 1 exits), and the absence of members of the
+    # own process group is a consequence of the launcher having been waited
+    # for and reaped.
+    #
+    # That consequence is OBSERVED, never declared: the survivors, the
+    # members and the init of the namespace are read from the PRIVATE /proc
+    # of this frontier, after the launcher was waited for and reaped. A
+    # value that could not be observed is NOT_VERIFIABLE and it is never
+    # published as a verified absence.
+    aftermath = observe_containment_aftermath(private_ns, launcher_pgid)
+    survivors = aftermath["survivors"]
+    members = aftermath["members"]
+    init_alive = aftermath["init_alive"]
+    init_gone = aftermath["init_gone"]
+    aftermath_state = aftermath["state"]
+    survivors_absence_verified = (
+        True if aftermath_state == "COMPLETE" and survivors == [] else
+        (False if survivors else None)
+    )
+    members_absence_verified = (
+        True if aftermath_state == "COMPLETE" and members == [] else
+        (False if members else None)
+    )
+    init_absence_verified = (
+        True if aftermath_state == "COMPLETE" and init_gone is True else
+        (False if init_alive else None)
+    )
     root_present = os.path.exists(root)
     if root_present:
         shutil.rmtree(root, ignore_errors=True)
         root_present = os.path.exists(root)
-    cleanup_ok = (not init_alive) and not survivors and not members and not root_present
+    # A consumer that certifies "zero own survivors" cannot accept the
+    # evidence of the containment alone: it also checks the expected RC of
+    # the scenario and PRODUCT_CLEANUP_RESULT=PASS observed before the
+    # defensive cleanup. The result of the PRODUCT stays a verdict of its
+    # own: the correct closure of the harness never turns a failure of the
+    # product into a success.
+    #
+    # The verdict of THIS supervisor about its own cleanup is the CONTAINMENT
+    # verdict (containment_ok), which is independent from the verdict about
+    # the product (positive_acceptance_ok). Both are published in the report.
+    #
+    # The verdict of the CLOSURE is conditioned on ALL of its independent
+    # links, and not only on the declaration that the closure happened:
+    #
+    #   * LAUNCHER_WAIT_COMPLETED=YES  the launcher was waited for;
+    #   * LAUNCHER_RC=0                it returned a clean status;
+    #   * PID1_COMPLETION_OBSERVED=PASS the effective termination of the
+    #                                    private PID 1 was OBSERVED;
+    #   * CLOSURE=CONFIRMED            the receipt declares the closure.
+    #
+    # A receipt that declares the closure but that does not carry the other
+    # three links does NOT certify a closure: the declaration alone is not
+    # the evidence.
+    #
+    # The verdict of the CONTAINMENT is ALSO conditioned on the OBSERVED
+    # absence of the leftovers of the batch, and not only on the links of the
+    # receipt:
+    #
+    #   * aftermath_observation_state=COMPLETE the observation of the
+    #                                    aftermath over the private /proc was
+    #                                    COMPLETE (a partial observation does
+    #                                    not certify anything);
+    #   * survivors_absence_verified=True  the absence of survivors of the
+    #                                    private namespace was VERIFIED;
+    #   * members_absence_verified=True   the absence of members of the own
+    #                                    process group was VERIFIED;
+    #   * init_absence_verified=True       the disappearance of the private
+    #                                    PID 1 was VERIFIED.
+    #
+    # The three flags are EXPLICITLY TRUE: they distinguish "the absence was
+    # VERIFIED" from "the absence was DISPROVED" and from "the absence could
+    # NOT be observed" (None). A verdict that accepted a None (or that
+    # ignored the state of the observation) certified a containment whose
+    # zero-survivors claim had never been observed.
+    closure_links_ok = (
+        launcher_wait_completed == "YES"
+        and launcher_rc == "0"
+        and pid1_completion_observed == "PASS"
+        and closure == "CONFIRMED"
+    )
+    absence_verified_ok = (
+        aftermath_state == "COMPLETE"
+        and survivors_absence_verified is True
+        and members_absence_verified is True
+        and init_absence_verified is True
+    )
+    containment_ok = (
+        closure_links_ok
+        and receipt_accreditation == "PASS"
+        and completeness == "COMPLETE"
+        and receipt_identity_ok
+        and not ambiguous_receipt
+        and not root_present
+        and absence_verified_ok
+    )
+    cleanup_ok = containment_ok
     step(
         "limpieza",
         cleanup_ok,
-        "init_vivo=%s init_desaparecido=%s supervivientes_en_el_ns=%s miembros_del_grupo=%s "
-        "raiz_privada_presente=%s"
-        % (init_alive, init_gone, survivors, members, root_present),
+        "cierre=%s enlaces_del_cierre=%s acreditacion=%s completitud=%s "
+        "evidencia_certificable=%s contencion_acreditada=%s aceptacion_positiva=%s "
+        "(declarada=%s verificada=%s) rc_escenario=%s (crudo=%s) estado_terminacion=%s "
+        "rc_esperado=%s limpieza_del_producto=%s supervivientes_en_el_ns=%s "
+        "miembros_del_grupo=%s observacion=%s init_vivo=%s init_desaparecido=%s "
+        "raiz_privada_presente=%s ausencias_verificadas=%s "
+        "(el namespace privado se cierra con su PID 1: "
+        "no hay barrido del host; la contencion acreditada y la aceptacion positiva "
+        "son dos resultados independientes)"
+        % (
+            closure,
+            closure_links_ok,
+            receipt_accreditation,
+            completeness,
+            containment_evidence_certifiable,
+            containment_ok,
+            positive_acceptance_ok,
+            positive_acceptance,
+            positive_acceptance_ok,
+            suite_rc,
+            suite_rc_raw,
+            suite_termination_state,
+            expected_scenario_rc,
+            product_cleanup,
+            survivors,
+            members,
+            aftermath_state,
+            init_alive,
+            init_gone,
+            root_present,
+            absence_verified_ok,
+        ),
     )
 
     report = {}
@@ -2839,10 +4267,17 @@ def role_supervisor(args):
     report["cleanup"] = {
         "supervisor_pid": os.getpid(),
         "launcher_host_pid": launcher.pid,
-        "namespace_init_host_pid": init_pid,
+        "namespace_init_host_pid": None,
         "private_pid_namespace": private_ns,
         "host_pid_namespace": host_ns_pid,
         "suite_returncode": suite_rc,
+        "suite_returncode_raw": suite_rc_raw,
+        "suite_termination_state": suite_termination_state,
+        "suite_termination_observable": suite_termination_observable,
+        "launcher_returncode": launcher_rc,
+        "launcher_observed_returncode": launcher_observed_returncode,
+        "launcher_process_group": launcher_pgid,
+        "launcher_process_group_source": launcher_pgid_source,
         "timed_out": timed_out,
         "watchdog_operational": watchdog_ok,
         "watchdog_detail": watchdog_detail,
@@ -2851,11 +4286,53 @@ def role_supervisor(args):
         "cleanup_actions": cleanup_actions,
         "namespace_init_alive_after": init_alive,
         "namespace_init_gone_after": init_gone,
+        "namespace_init_observed_pid": aftermath["init_pid"],
         "survivors_in_private_namespace": survivors,
         "members_of_own_process_group": members,
+        # The state of the OBSERVATION of the aftermath. An absence that was
+        # not observed is not a verified absence: the three flags below say
+        # whether each absence was VERIFIED, was DISPROVED or is simply NOT
+        # VERIFIABLE.
+        "aftermath_observation_state": aftermath_state,
+        "aftermath_observation_detail": aftermath["detail"],
+        "survivors_absence_verified": survivors_absence_verified,
+        "members_absence_verified": members_absence_verified,
+        "init_absence_verified": init_absence_verified,
+        "absence_verified_ok": absence_verified_ok,
+        "closure_links_ok": closure_links_ok,
         "synthetic_root": root,
         "synthetic_root_present_after": root_present,
+        # "ok" is the verdict of THIS supervisor about its OWN cleanup (the
+        # containment). The verdict about the product is published apart, in
+        # "product_cleanup_declared" and "positive_acceptance_verified": the
+        # two results are independent and neither one hides the other.
         "ok": cleanup_ok,
+        "containment_ok": containment_ok,
+        "positive_acceptance_verified": positive_acceptance_ok,
+        "expected_scenario_rc": expected_scenario_rc,
+        "receipt_path": receipt_path,
+        "receipt_scenario_status": scenario_status,
+        "receipt_closure": closure,
+        "receipt_completeness": completeness,
+        "receipt_containment_evidence_certifiable": containment_evidence_certifiable,
+        "receipt_positive_acceptance": positive_acceptance,
+        "receipt_positive_acceptance_verified": positive_acceptance_ok,
+        "receipt_expected_scenario_rc": expected_scenario_rc,
+        "receipt_scenario_rc_matches_expected": scenario_rc_matches_expected,
+        "receipt_product_cleanup": product_cleanup,
+        "receipt_product_cleanup_observed_before_defensive_cleanup": (
+            product_cleanup_observed
+        ),
+        "receipt_legacy_certifiable_key_present": legacy_certifiable,
+        "receipt_containment_evidence_ok": containment_evidence_ok,
+        "receipt_ambiguous": ambiguous_receipt,
+        "receipt_identity_ok": receipt_identity_ok,
+        "receipt_launcher_wait_completed": launcher_wait_completed,
+        "product_cleanup_declared": declared_product_cleanup,
+        "product_cleanup_declared_outer_observation": outer_cleanup_value,
+        "product_cleanup_declared_outer_survivors": outer_cleanup_survivors,
+        "product_cleanup_declared_inner_receipt": product_cleanup,
+        "product_cleanup_marker_published": marker_published,
         "resources": [
             {
                 "id": "watchdog-supervisor",
@@ -2867,19 +4344,17 @@ def role_supervisor(args):
             },
             {
                 "id": "pid-namespace-launcher",
-                "type": "pid-namespace-launcher",
+                "type": "containment-entry-launcher",
                 "root_path": root,
-                "cleanup_method": "reaped by wait() after the namespace init exited",
-                "identity": launcher_identity,
-                "verified_absent_after_cleanup": not pid_alive(launcher.pid),
+                "cleanup_method": "reaped by wait() after the contained environment was closed",
+                "verified_absent_after_cleanup": launcher.poll() is not None,
             },
             {
                 "id": "namespace-init-suite",
                 "type": "own-synthetic-suite",
                 "root_path": root,
-                "cleanup_method": "cadena de limpieza propia del supervisor: pidfd SIGKILL, kill verificado del init (ns+inicio) y, como ultimo recurso, killpg verificado del grupo propio; nunca depende del codigo probado",
-                "identity": init_identity,
-                "verified_absent_after_cleanup": not init_alive,
+                "cleanup_method": "cadena de cierre propia de la entrada de contencion: el namespace PID privado se destruye con su init y el lanzador se recoge con wait(); nunca depende del codigo probado",
+                "verified_absent_after_cleanup": init_gone,
             },
             {
                 "id": "synthetic-root",
@@ -2927,8 +4402,8 @@ def role_supervisor(args):
         return 8
     if not watchdog_ok:
         print(
-            "BLOCKED: el watchdog no quedo operativo (%s); la barra de autorizacion no se libero "
-            "y la suite aborta con RC no cero (timeout=%s, suite_rc=%s)"
+            "BLOCKED: el cierre acotado no se considero operativo (%s); la barra de autorizacion "
+            "no se libero y la suite aborta con RC no cero (timeout=%s, suite_rc=%s)"
             % (watchdog_detail, timed_out, suite_rc)
         )
         return 6
