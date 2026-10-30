@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- rechaza constantes JSON no estandar y cubre el cierre por defecto
+- resolve pinned executable from package bin
+
 ## [0.8.3] - 2026-10-30
 
 ### Changed
