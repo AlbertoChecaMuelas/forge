@@ -123,6 +123,128 @@ fail() { echo "  FAIL  $1" >&2; FAIL=1; }
 EXPECTED_VERSION="2.1.4"
 
 # ---------------------------------------------------------------------------
+# The runtime of the scenario and the filesystem of its sandbox.
+# ---------------------------------------------------------------------------
+
+# npm_runtime_candidates
+# The paths that can hold the real runtime in a GLOBAL npm installation, in
+# the order of preference. It is the SINGLE source of truth of those paths:
+# the resolution and the choice of the filesystem of the sandbox read them
+# from here, so they can never diverge.
+npm_runtime_candidates() {
+  local npm_prefix npm_root
+  npm_prefix="$(npm prefix -g 2>/dev/null || true)"
+  npm_root="$(npm root -g 2>/dev/null || true)"
+  [ -n "$npm_prefix" ] && printf '%s\n' "$npm_prefix/bin/opencode"
+  [ -n "$npm_root" ] && printf '%s\n' "$npm_root/@opencode/cli/bin/opencode.exe"
+  return 0
+}
+
+# real_runtime_device
+# The device (the filesystem) of the real runtime, when it can be told
+# WITHOUT running it: the explicit override, or the two layouts of a global
+# npm installation. It NEVER installs anything, never reaches the network
+# and never runs the runtime: it only stats the paths that can hold it.
+real_runtime_device() {
+  local candidate resolved device
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    [ -e "$candidate" ] || continue
+    resolved="$(readlink -f "$candidate" 2>/dev/null || printf '%s' "$candidate")"
+    device="$(stat -c '%d' "$resolved" 2>/dev/null || true)"
+    if [ -n "$device" ]; then
+      printf '%s\n' "$device"
+      return 0
+    fi
+  done <<EOF
+${FORGE_TEST_REAL_OPENCODE_BIN:-}
+$(npm_runtime_candidates)
+EOF
+  return 1
+}
+
+# sandbox_base
+# The base of the sandbox of the scenario.
+#
+# The real runtime has to be materialised INSIDE the pinned package (the
+# launcher resolves the registered executable with realpath() and REJECTS a
+# link that leaves the package), so the sandbox is created on the
+# FILESYSTEM of the real runtime when that can be told cheaply: a HARD LINK
+# (the very same inode, without a copy and without space) is only possible
+# there.
+#
+# The decision never changes WHAT the scenario tests: it only decides WHERE
+# the sandbox lives. FORGE_TEST_SANDBOX_BASE overrides it.
+sandbox_base() {
+  local explicit="${FORGE_TEST_SANDBOX_BASE:-}"
+  local device candidate candidate_device
+
+  if [ -n "$explicit" ]; then
+    printf '%s\n' "$explicit"
+    return 0
+  fi
+
+  device="$(real_runtime_device)" || device=""
+  if [ -n "$device" ]; then
+    for candidate in \
+      "$FORGE_TEST_REAL_HOME/.cache" \
+      "${TMPDIR:-/tmp}" \
+      "$TEST_TMP_ROOT"; do
+      [ -d "$candidate" ] || continue
+      [ -w "$candidate" ] || continue
+      candidate_device="$(stat -c '%d' "$candidate" 2>/dev/null || true)"
+      if [ -n "$candidate_device" ] && [ "$candidate_device" = "$device" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    done
+  fi
+
+  printf '%s\n' "$TEST_TMP_ROOT"
+}
+
+# materialise_real_runtime <package-dir> <real-binary>
+#
+# The REAL layout of the pinned package: the executable of the package IS
+# the real runtime, at the path that the package DECLARES in its own
+# package.json.
+#
+# A link that leaves the package is exactly what the launcher must REJECT
+# (it resolves the registered executable with realpath() and compares it
+# with the declared one), so the real runtime is materialised INSIDE the
+# package, the way the global npm installation does.
+#
+# A HARD LINK is used when both share the filesystem: it is the very same
+# inode, so the runtime that runs IS the real one and nothing is copied.
+# Otherwise the file is COPIED (a reflink when the filesystem supports it).
+# When neither is possible the scenario FAILS with the cause: the real
+# runtime is NEVER replaced by a fake.
+materialise_real_runtime() {
+  local package_dir="$1" real_bin="$2"
+  local relative target
+
+  relative="$(forge_declared_package_binary "$package_dir")" || return 1
+  target="$package_dir/$relative"
+
+  mkdir -p "$(dirname "$target")" || return 1
+  rm -f "$target"
+
+  if ln "$real_bin" "$target" 2>/dev/null; then
+    printf 'hard-link\n'
+    return 0
+  fi
+  if cp --reflink=auto -- "$real_bin" "$target" 2>/dev/null; then
+    printf 'copy-reflink\n'
+    return 0
+  fi
+  if cp -- "$real_bin" "$target" 2>/dev/null; then
+    printf 'copy\n'
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # The protected state of the real installation.
 # ---------------------------------------------------------------------------
 
@@ -446,14 +568,11 @@ resolve_real_opencode_bin() {
     return 1
   fi
 
-  local npm_prefix npm_root
-  npm_prefix="$(npm prefix -g 2>/dev/null || true)"
-  npm_root="$(npm root -g 2>/dev/null || true)"
+  local candidates
+  candidates="$(npm_runtime_candidates)"
 
   local candidate resolved rejected=""
-  for candidate in \
-    "${npm_prefix:+$npm_prefix/bin/opencode}" \
-    "${npm_root:+$npm_root/@opencode/cli/bin/opencode.exe}"; do
+  while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
     [ -e "$candidate" ] || continue
     resolved="$(resolve_link "$candidate")" || continue
@@ -466,14 +585,16 @@ resolve_real_opencode_bin() {
     fi
     printf '%s\n' "$resolved"
     return 0
-  done
+  done <<CANDIDATES_EOF
+$candidates
+CANDIDATES_EOF
 
   if [ -n "$rejected" ]; then
     echo "el wrapper del usuario ($rejected) no se puede usar: puede instalar o actualizar paquetes" >&2
     return 1
   fi
 
-  echo "no hay instalacion global de @opencode/cli (no existen $npm_prefix/bin/opencode ni $npm_root/@opencode/cli/bin/opencode.exe): instala @opencode/cli@$EXPECTED_VERSION o exporta FORGE_TEST_REAL_OPENCODE_BIN" >&2
+  echo "no hay instalacion global de @opencode/cli (no existe ninguno de: $(printf '%s' "$candidates" | tr '\n' ' ')): instala @opencode/cli@$EXPECTED_VERSION o exporta FORGE_TEST_REAL_OPENCODE_BIN" >&2
   return 1
 }
 
@@ -656,7 +777,15 @@ echo "================================"
 # The sandbox is created BEFORE the runtime is resolved: the resolution
 # controls of section 2 live inside it, so they run in EVERY execution, even
 # when the scenario later fails because no real runtime is available.
-SANDBOX="$(mktemp -d "$TEST_TMP_ROOT/real-runtime.XXXXXX")"
+#
+# Its BASE is chosen on the FILESYSTEM of the real runtime when that can be
+# told cheaply: the real runtime has to be materialised INSIDE the pinned
+# package (the launcher rejects a link that leaves it) and a HARD LINK (the
+# very same inode, without a copy and without space) is only possible on the
+# same filesystem. The choice never changes WHAT the scenario tests.
+SANDBOX_BASE="$(sandbox_base)"
+mkdir -p "$SANDBOX_BASE"
+SANDBOX="$(mktemp -d "$SANDBOX_BASE/real-runtime.XXXXXX")"
 chmod 700 "$SANDBOX"
 mkdir -p "$SANDBOX/home" "$SANDBOX/tmp" "$SANDBOX/work" "$SANDBOX/run"
 chmod 700 "$SANDBOX/tmp" "$SANDBOX/run"
@@ -729,9 +858,53 @@ if [ ! -e "$PINNED" ]; then
   echo " Passed: $PASS_COUNT"
   exit 1
 fi
-rm -f "$PINNED"
-ln -s "$REAL_BIN" "$PINNED"
-pass "el binario pinado de la instalacion aislada es el runtime real ($REAL_BIN)"
+
+# The REAL layout of the pinned package: the executable of the package IS
+# the real runtime, at the path that the package DECLARES.
+#
+# A link from the entry of `.bin` to the runtime OUTSIDE the package is
+# exactly what the launcher must REJECT (it resolves the registered
+# executable with realpath() and compares it with the declared one), so the
+# runtime is materialised INSIDE the package, the way the global npm
+# installation does. The entry of `.bin` is NOT touched: it keeps resolving
+# to the executable of the package.
+PACKAGE_DIR="$SANDBOX/home/.local/share/forge/opencode-v2/node_modules/@opencode/cli"
+if ! RUNTIME_MATERIALISATION="$(materialise_real_runtime "$PACKAGE_DIR" "$REAL_BIN")"; then
+  fail "no se pudo materializar el runtime real dentro del paquete pinado ($PACKAGE_DIR)"
+  assert_protected_unchanged || true
+  echo "================================"
+  echo " Passed: $PASS_COUNT"
+  exit 1
+fi
+pass "el binario pinado de la instalacion aislada es el runtime real ($REAL_BIN, $RUNTIME_MATERIALISATION)"
+
+# The pinned entry resolves INSIDE the package (the property the launcher
+# accredits) and it is the real runtime: the very same inode when it was
+# linked, the same content when it had to be copied.
+PINNED_REAL="$(readlink -f "$PINNED" 2>/dev/null || printf '')"
+case "$PINNED_REAL" in
+  "$PACKAGE_DIR"/*)
+    pass "el binario pinado resuelve DENTRO del paquete (la acreditacion del launcher lo exige)"
+    ;;
+  *)
+    fail "el binario pinado no resuelve dentro del paquete ($PINNED_REAL)"
+    ;;
+esac
+if [ "$RUNTIME_MATERIALISATION" = "hard-link" ]; then
+  if [ "$(stat -c '%d:%i' "$PINNED_REAL" 2>/dev/null || printf '')" \
+    = "$(stat -c '%d:%i' "$REAL_BIN" 2>/dev/null || printf '')" ]; then
+    pass "el ejecutable del paquete es el MISMO inodo que el runtime real"
+  else
+    fail "el ejecutable del paquete no es el mismo inodo que el runtime real"
+  fi
+else
+  if [ "$(sha256sum "$PINNED_REAL" 2>/dev/null | cut -d' ' -f1)" \
+    = "$(sha256sum "$REAL_BIN" 2>/dev/null | cut -d' ' -f1)" ]; then
+    pass "el ejecutable del paquete tiene el MISMO contenido que el runtime real"
+  else
+    fail "el ejecutable del paquete no tiene el mismo contenido que el runtime real"
+  fi
+fi
 
 # The isolated database: a valid, EMPTY SQLite file created by the scenario.
 # The real database is never opened, copied or read.

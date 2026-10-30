@@ -499,10 +499,17 @@ EOF
   # passed to it: the config it resolved and the token loaded from
   # ~/.opencode-tokens through env.sh.
   #
-  # The replacement happens on the EXECUTABLE of the package: the entry of
-  # `.bin` must keep resolving to it, or the launcher would refuse to run it
-  # (the accreditation of the pinned package).
-  cat > "$tmp_home/.local/share/forge/opencode-v2/node_modules/@opencode/cli/bin/opencode" <<'EOF'
+  # The replacement happens on the EXECUTABLE of the package, at the path
+  # that the package DECLARES: the entry of `.bin` must keep resolving to
+  # it, or the launcher would refuse to run it (the accreditation of the
+  # pinned package). The name of the executable is never hardcoded here.
+  local package_dir package_binary
+  package_dir="$tmp_home/.local/share/forge/opencode-v2/node_modules/@opencode/cli"
+  if ! package_binary="$package_dir/$(forge_declared_package_binary "$package_dir")"; then
+    fail "el paquete pinado no declara ningun ejecutable"
+    return
+  fi
+  cat > "$package_binary" <<'EOF'
 #!/usr/bin/env sh
 printf '%s\n' "${OPENAI_API_KEY:-missing}"
 printf 'ARGV=%s\n' "$*"
@@ -513,7 +520,7 @@ if [ -n "${OPENCODE_CONFIG:-}" ] && [ -f "${OPENCODE_CONFIG:-}" ]; then
   cat "${OPENCODE_CONFIG}"
 fi
 EOF
-  chmod +x "$tmp_home/.local/share/forge/opencode-v2/node_modules/@opencode/cli/bin/opencode"
+  chmod +x "$package_binary"
 
   run_isolated "$tmp_home" PATH="$tmp_home/fakebin:$PATH" "$tmp_home/.local/bin/forge-opencode" \
     debug config > "$tmp_home/debug-config.out" 2> "$tmp_home/debug-config.err" || launch_rc=$?
@@ -3119,7 +3126,18 @@ test_launcher_isolates_mcp_list_from_the_shared_service() {
   # the package @opencode/cli. The fixture replaces the EXECUTABLE of the
   # package (never the link), so the accreditation of the launcher stays
   # intact: a `sed -i` on the link would replace the link itself.
-  package_binary="$home/.local/share/forge/opencode-v2/node_modules/@opencode/cli/bin/opencode"
+  #
+  # The executable lives at the path that the package DECLARES, and so does
+  # the link of `.bin`: neither of them hardcodes the name of the executable.
+  local package_dir package_relative
+  package_dir="$home/.local/share/forge/opencode-v2/node_modules/@opencode/cli"
+  if ! package_relative="$(forge_declared_package_binary "$package_dir")"; then
+    fail "el paquete pinado no declara ningun ejecutable"
+    TMP_TEST_HOME=""
+    rm -rf "$sandbox"
+    return
+  fi
+  package_binary="$package_dir/$package_relative"
   log_file="$sandbox/fake-calls.log"
 
   # The identities of the processes this fixture creates. The fake runtime
@@ -3155,7 +3173,7 @@ EOF
   write_fake_private_service "$package_binary" "$log_file" "$own_identities"
 
   if [ ! -L "$pinned_binary" ] \
-    || [ "$(readlink "$pinned_binary")" != "../@opencode/cli/bin/opencode" ]; then
+    || [ "$(readlink "$pinned_binary")" != "../@opencode/cli/$package_relative" ]; then
     fail "el fixture de mcp conserva el enlace acreditado de .bin"
   else
     pass "el fixture de mcp conserva el enlace acreditado de .bin"
@@ -3695,21 +3713,29 @@ test_pinned_binary_lives_in_the_isolated_prefix() {
   # executable of the package @opencode/cli, and the package.json of that
   # package accredits the pinned identity and version. The launcher refuses
   # to run anything else, so the installation must produce exactly this.
-  local package_dir expected_package_binary package_name package_version
+  #
+  # The executable lives at the path that the package DECLARES: neither the
+  # link nor the assertion hardcodes the name of the executable, so the
+  # suite keeps working with the layout that the real package publishes.
+  local package_dir expected_package_binary package_relative package_name package_version
   package_dir="$expected_prefix/node_modules/@opencode/cli"
-  expected_package_binary="$package_dir/bin/opencode"
+  if ! package_relative="$(forge_declared_package_binary "$package_dir")"; then
+    fail "el paquete instalado no declara ningun ejecutable"
+    package_relative=""
+  fi
+  expected_package_binary="$package_dir/$package_relative"
 
   if [ -L "$expected_binary" ] \
-    && [ "$(readlink "$expected_binary")" = "../@opencode/cli/bin/opencode" ]; then
+    && [ "$(readlink "$expected_binary")" = "../@opencode/cli/$package_relative" ]; then
     pass "el binario pinado es el enlace acreditado de .bin"
   else
     fail "el binario pinado no es el enlace acreditado de .bin"
   fi
 
   if [ -x "$expected_package_binary" ]; then
-    pass "el paquete @opencode/cli instala su ejecutable en bin/"
+    pass "el paquete @opencode/cli instala su ejecutable en la ruta que declara ($package_relative)"
   else
-    fail "el paquete @opencode/cli no instala su ejecutable en bin/"
+    fail "el paquete @opencode/cli no instala su ejecutable en la ruta que declara ($package_relative)"
   fi
 
   package_name="$(jq -r '.name // ""' "$package_dir/package.json" 2>/dev/null || true)"

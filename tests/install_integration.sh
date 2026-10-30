@@ -1960,6 +1960,175 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
+# The ISOLATION of a suite has to publish its CAUSE.
+#
+# A suite that the runner does not execute and does not count as approved is
+# INDISTINGUISHABLE from a preparation that went wrong when it does not say
+# why. The reason is published with a stable code (a program can tell the
+# causes apart) and with a detail that names WHAT was searched and WHY it was
+# not found (a person can act on it).
+#
+# The three causes that the runner knows are exercised here:
+#
+#   * the runtime is not declared and the global installation of
+#     @opencode/cli does not exist;
+#   * the runtime is not declared and npm is not available at all, so the
+#     global installation cannot even be looked for;
+#   * the runtime IS declared, so the suite is EXECUTED and it is not
+#     isolated at all.
+# ---------------------------------------------------------------------------
+test_run_all_isolation_reports_the_concrete_cause() {
+  echo ""
+  echo "--- test_run_all_isolation_reports_the_concrete_cause"
+
+  local runner="$FORGE_ROOT/tests/run-all.sh"
+  local SANDBOX sandbox_tests minimal_bin output rc
+  local isolated_lines reason_code
+
+  SANDBOX="$(mktemp -d "$FORGE_TEST_TMP_ROOT/run-all-isolation.XXXXXX")"
+  install_exit_cleanup "$SANDBOX"
+  sandbox_tests="$SANDBOX/tests"
+  mkdir -p "$sandbox_tests" "$SANDBOX/bin" "$SANDBOX/empty-prefix" "$SANDBOX/empty-root"
+
+  # The real runner, byte for byte: only the suites are replaced by stubs.
+  cp "$runner" "$sandbox_tests/run-all.sh"
+
+  # The stub of the isolated suite: it prints a MARKER, so "it was not
+  # executed" is an OBSERVED fact and not an inference.
+  cat > "$sandbox_tests/opencode_real_runtime_integration.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'REAL_RUNTIME_STUB_EXECUTED\n'
+exit 0
+STUB
+
+  # Another suite, so the battery is not a battery of one.
+  cat > "$sandbox_tests/stub_unit.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'STUB_OK\n'
+exit 0
+STUB
+
+  # The npm of the sandbox: it reports a prefix and a root where NOTHING is
+  # installed, so the cause is the same in every machine.
+  cat > "$SANDBOX/bin/npm" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}" in
+  prefix) printf '%s\n' "$SANDBOX/empty-prefix" ;;
+  root) printf '%s\n' "$SANDBOX/empty-root" ;;
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/npm"
+
+  # --- A) the runtime is neither declared nor installed globally ----------
+  rc=0
+  output="$(cd "$sandbox_tests" && env -u FORGE_TEST_REAL_OPENCODE_BIN \
+    PATH="$SANDBOX/bin:$PATH" bash "$sandbox_tests/run-all.sh" 2>&1)" || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    pass "run-all: the battery without a runtime exits 0"
+  else
+    fail "run-all: the battery without a runtime exited $rc (expected 0)"
+  fi
+
+  isolated_lines="$(printf '%s\n' "$output" | grep -c '^ISOLATED  opencode_real_runtime_integration\.sh' || true)"
+  if [ "${isolated_lines:-0}" = "1" ]; then
+    pass "run-all: the suite without a runtime is reported as ISOLATED exactly once"
+  else
+    fail "run-all: the suite without a runtime is reported as ISOLATED $isolated_lines times (expected 1)"
+  fi
+
+  reason_code="$(printf '%s\n' "$output" \
+    | grep -m1 '^ISOLATED  opencode_real_runtime_integration\.sh' \
+    | sed -n 's/.*motivo=\([A-Z_][A-Z_]*\):.*/\1/p')"
+  if [ "$reason_code" = "NO_DECLARATION_AND_NO_GLOBAL_INSTALL" ]; then
+    pass "run-all: the isolation publishes the code NO_DECLARATION_AND_NO_GLOBAL_INSTALL"
+  else
+    fail "run-all: the isolation published the code '${reason_code:-<none>}' (expected NO_DECLARATION_AND_NO_GLOBAL_INSTALL)"
+    printf '%s\n' "$output" | grep '^ISOLATED' | sed 's/^/      /' >&2 || true
+  fi
+
+  if printf '%s\n' "$output" | grep '^ISOLATED  opencode_real_runtime_integration\.sh' \
+    | grep -qF "FORGE_TEST_REAL_OPENCODE_BIN"; then
+    pass "run-all: the isolation names the declaration that is absent"
+  else
+    fail "run-all: the isolation does not name the declaration that is absent"
+  fi
+
+  if printf '%s\n' "$output" | grep '^ISOLATED  opencode_real_runtime_integration\.sh' \
+    | grep -qF "$SANDBOX/empty-prefix/bin/opencode" \
+    && printf '%s\n' "$output" | grep '^ISOLATED  opencode_real_runtime_integration\.sh' \
+    | grep -qF "$SANDBOX/empty-root/@opencode/cli/bin/opencode.exe"; then
+    pass "run-all: the isolation names the paths that were searched"
+  else
+    fail "run-all: the isolation does not name the paths that were searched"
+    printf '%s\n' "$output" | grep '^ISOLATED' | sed 's/^/      /' >&2 || true
+  fi
+
+  if printf '%s\n' "$output" | grep -qF "REAL_RUNTIME_STUB_EXECUTED"; then
+    fail "run-all: the isolated suite was executed"
+  else
+    pass "run-all: the isolated suite was never executed"
+  fi
+
+  # --- B) npm is not available at all -------------------------------------
+  # The PATH of the sandbox has the tools that the runner needs and NOTHING
+  # else, so npm cannot be found and the global installation cannot even be
+  # looked for.
+  minimal_bin="$SANDBOX/minbin"
+  mkdir -p "$minimal_bin"
+  local tool resolved
+  for tool in bash find sort basename rm cat dirname; do
+    resolved="$(command -v "$tool" 2>/dev/null || true)"
+    [ -n "$resolved" ] && ln -sfn "$resolved" "$minimal_bin/$tool"
+  done
+
+  rc=0
+  output="$(cd "$sandbox_tests" && env -u FORGE_TEST_REAL_OPENCODE_BIN \
+    PATH="$minimal_bin" bash "$sandbox_tests/run-all.sh" 2>&1)" || rc=$?
+
+  reason_code="$(printf '%s\n' "$output" \
+    | grep -m1 '^ISOLATED  opencode_real_runtime_integration\.sh' \
+    | sed -n 's/.*motivo=\([A-Z_][A-Z_]*\):.*/\1/p')"
+  if [ "$reason_code" = "NO_DECLARATION_AND_NO_NPM" ]; then
+    pass "run-all: the isolation publishes the code NO_DECLARATION_AND_NO_NPM when npm is missing"
+  else
+    fail "run-all: the isolation published the code '${reason_code:-<none>}' (expected NO_DECLARATION_AND_NO_NPM)"
+    printf '%s\n' "$output" | grep '^ISOLATED' | sed 's/^/      /' >&2 || true
+  fi
+
+  # --- C) the runtime IS declared: the suite is EXECUTED ------------------
+  printf '#!/usr/bin/env bash\nprintf "FAKE_RUNTIME\\n"\n' > "$SANDBOX/fake-runtime"
+  chmod +x "$SANDBOX/fake-runtime"
+
+  rc=0
+  output="$(cd "$sandbox_tests" && \
+    FORGE_TEST_REAL_OPENCODE_BIN="$SANDBOX/fake-runtime" \
+    PATH="$SANDBOX/bin:$PATH" bash "$sandbox_tests/run-all.sh" 2>&1)" || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    pass "run-all: the battery with a declared runtime exits 0"
+  else
+    fail "run-all: the battery with a declared runtime exited $rc (expected 0)"
+  fi
+
+  if printf '%s\n' "$output" | grep -qF "REAL_RUNTIME_STUB_EXECUTED"; then
+    pass "run-all: with a declared runtime the suite is EXECUTED"
+  else
+    fail "run-all: with a declared runtime the suite was NOT executed"
+  fi
+
+  if printf '%s\n' "$output" | grep -qF "ISOLATED  opencode_real_runtime_integration.sh"; then
+    fail "run-all: with a declared runtime the suite is still reported as ISOLATED"
+  else
+    pass "run-all: with a declared runtime the suite is not reported as ISOLATED"
+  fi
+
+  rm -rf "$SANDBOX"
+  trap - EXIT
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 echo "=============================="
@@ -1996,6 +2165,7 @@ test_full_uninstall_rtk_default_and_keep
 test_uninstall_sanitizes_restored_broken_settings
 test_purge_removes_pre_forge
 test_run_all_executes_every_candidate_suite
+test_run_all_isolation_reports_the_concrete_cause
 
 # ---------------------------------------------------------------------------
 # Leak guard: the suite must never create the real pinned OpenCode prefix and
