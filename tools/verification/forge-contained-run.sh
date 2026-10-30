@@ -171,6 +171,7 @@ timeout_log=$run_dir/timeout.stderr
 context_root=$run_dir/context
 infrastructure_stdout=$run_dir/infrastructure.stdout
 infrastructure_stderr=$run_dir/infrastructure.stderr
+launcher_stderr=$run_dir/launcher.stderr
 
 # Preserve the consumer's stream descriptors before routing every later
 # diagnostic from the entry/containment machinery into this invocation's own
@@ -253,6 +254,7 @@ scenario_rc='NOT_AVAILABLE'
 scenario_status='NOT_STARTED'
 accreditation='FAILED'
 accreditation_reason='NO_INTERIOR_ATTESTATION'
+accreditation_detail='NOT_AVAILABLE'
 pid_namespace='UNKNOWN'
 mount_namespace='UNKNOWN'
 inner_pid='UNKNOWN'
@@ -310,6 +312,7 @@ PROCFS_TYPE=$procfs_type
 PROC_MOUNT_PRIVATE=$proc_mount
 ACCREDITATION=$accreditation
 ACCREDITATION_REASON=$accreditation_reason
+ACCREDITATION_DETAIL=$accreditation_detail
 SCENARIO_STATUS=$scenario_status
 SCENARIO_RC=$scenario_rc
 INTERRUPTION_CAUSE=$interruption
@@ -481,14 +484,19 @@ else
 fi
 
 accreditation_reason=PASS
+accreditation_detail=PASS
 if [ "$$" != 1 ] || [ "$pid1_stat" != 1 ] || [ "$pid1_namespace" != "$pid_namespace" ]; then
   accreditation_reason=PID_BOUNDARY_MISMATCH
+  accreditation_detail="PID namespace boundary mismatch (PID1=$pid1_namespace, current=$pid_namespace, PID=$$)"
 elif [ "$nspid" != 1 ] || [ "$pid1_nspid" != 1 ]; then
   accreditation_reason=NSPID_MISMATCH
+  accreditation_detail="NSpid mismatch (current=$nspid, PID1=$pid1_nspid)"
 elif [ "$procfs_type" != proc ] || [ "$proc_mount" != YES ]; then
   accreditation_reason=PROCFS_MISSING_OR_WRONG
+  accreditation_detail="Private procfs not accredited (type=$procfs_type, mounted=$proc_mount)"
 elif [ "$mount_namespace" = UNKNOWN ]; then
   accreditation_reason=MOUNT_NAMESPACE_UNREADABLE
+  accreditation_detail='Mount namespace could not be read from /proc/self/ns/mnt'
 fi
 
 {
@@ -503,10 +511,12 @@ fi
 if [ "$accreditation_reason" != PASS ]; then
   write_status accreditation.status FAILED || exit 70
   write_status accreditation.reason "$accreditation_reason" || exit 70
+  write_status accreditation.detail "$accreditation_detail" || exit 70
   finish_pid1
 fi
 write_status accreditation.status PASS || exit 70
 write_status accreditation.reason PASS || exit 70
+write_status accreditation.detail PASS || exit 70
 
 if ! /bin/mkdir -p -- "$context_root/home" "$context_root/xdg-config" "$context_root/xdg-data" "$context_root/xdg-cache" "$context_root/xdg-state" "$context_root/tmp"; then
   write_status setup.status FAILED || exit 73
@@ -644,7 +654,7 @@ fi
     "$SETSID" "$UN_SHARE" --user --map-root-user --pid --fork --kill-child=KILL --mount-proc \
     /usr/bin/env --default-signal=INT --default-signal=TERM --default-signal=HUP \
     /bin/sh -c "$INNER_SCRIPT" forge-contained-run-inner "$run_dir" "${scenario_argv[@]}" \
-    <&5 &
+    <&5 2>"$launcher_stderr" &
   runner_pid=$!
   set +m
   exec 5<&-
@@ -749,6 +759,26 @@ if [[ -f $run_dir/accreditation.status ]]; then
 fi
 if [[ -f $run_dir/accreditation.reason ]]; then
   IFS= read -r accreditation_reason < "$run_dir/accreditation.reason" || accreditation_reason=NO_REASON_RECORDED
+fi
+if [[ -f $run_dir/accreditation.detail ]]; then
+  IFS= read -r accreditation_detail < "$run_dir/accreditation.detail" || accreditation_detail=NO_DETAIL_RECORDED
+fi
+if [[ $accreditation != PASS ]]; then
+  if [[ $accreditation_detail == NOT_AVAILABLE && -s $launcher_stderr ]]; then
+    launcher_diagnostic=$(<"$launcher_stderr")
+    launcher_diagnostic=${launcher_diagnostic//$'\r'/ }
+    launcher_diagnostic=${launcher_diagnostic//$'\n'/; }
+    launcher_diagnostic=${launcher_diagnostic#"${launcher_diagnostic%%[![:space:]]*}"}
+    launcher_diagnostic=${launcher_diagnostic%"${launcher_diagnostic##*[![:space:]]}"}
+    if [[ -n $launcher_diagnostic ]]; then
+      accreditation_detail=${launcher_diagnostic:0:512}
+    fi
+  fi
+  if [[ $accreditation_detail == NOT_AVAILABLE ]]; then
+    accreditation_detail="Launcher did not report inner accreditation (launcher rc=$runner_rc)"
+  fi
+  printf 'Containment accreditation failed (reason=%s): %s\n' \
+    "$accreditation_reason" "$accreditation_detail" >&2
 fi
 if [[ -f $run_dir/accreditation.details ]]; then
   while IFS='=' read -r key value; do
