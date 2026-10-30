@@ -130,8 +130,9 @@ case "$recorded_binary" in
 esac
 
 # The manifest's absolute path is not sufficient proof of a pinned install:
-# require npm's expected .bin entry, its package-owned target, and the exact
-# package identity/version installed under the prefix inferred from that entry.
+# require npm's .bin entry, its package-owned target as declared by that
+# package's own metadata, and the exact package identity/version installed
+# under the prefix inferred from that entry.
 forge_validate_pinned_binary() {
   python3 - "$1" "2.1.4" <<'PY'
 import json
@@ -143,43 +144,76 @@ def fail(message):
     raise ValueError(message)
 
 
-binary = os.path.abspath(sys.argv[1])
-version = sys.argv[2]
-suffix = os.path.join("node_modules", ".bin", "opencode")
-if not binary.endswith(os.sep + suffix):
-    fail("binary is not under the expected <prefix>/node_modules/.bin/opencode layout")
-
-prefix = binary[: -(len(suffix) + 1)]
-if not prefix or not os.path.isdir(prefix):
-    fail("the registered Forge binary prefix is missing or invalid")
-
-real_prefix = os.path.realpath(prefix)
-package_dir = os.path.join(prefix, "node_modules", "@opencode", "cli")
-real_package_dir = os.path.realpath(package_dir)
-expected_binary = os.path.join(package_dir, "bin", "opencode")
-real_expected_binary = os.path.realpath(expected_binary)
-real_binary = os.path.realpath(binary)
-
 try:
-    if os.path.commonpath((real_prefix, real_package_dir)) != real_prefix:
+    binary = os.path.abspath(sys.argv[1])
+    version = sys.argv[2]
+    binary_name = os.path.basename(binary)
+    bin_directory = os.path.dirname(binary)
+    node_modules_directory = os.path.dirname(bin_directory)
+    if (
+        os.path.basename(bin_directory) != ".bin"
+        or os.path.basename(node_modules_directory) != "node_modules"
+        or not binary_name
+    ):
+        fail("binary is not under the expected <prefix>/node_modules/.bin/<executable> layout")
+
+    prefix = os.path.dirname(node_modules_directory)
+    if not prefix or not os.path.isdir(prefix):
+        fail("the registered Forge binary prefix is missing or invalid")
+
+    real_prefix = os.path.realpath(prefix)
+    package_dir = os.path.join(node_modules_directory, "@opencode", "cli")
+    real_package_dir = os.path.realpath(package_dir)
+    real_binary = os.path.realpath(binary)
+
+    def is_within(path, directory):
+        try:
+            return os.path.commonpath((directory, path)) == directory
+        except ValueError:
+            return False
+
+    if not is_within(real_package_dir, real_prefix):
         fail("the @opencode/cli package resolves outside the registered prefix")
-    if os.path.commonpath((real_package_dir, real_binary)) != real_package_dir:
+    if not is_within(real_binary, real_package_dir):
         fail("the registered executable resolves outside the @opencode/cli package")
-except ValueError:
-    fail("the registered executable and prefix are on incompatible paths")
 
-if real_binary != real_expected_binary:
-    fail("the .bin executable does not resolve to @opencode/cli/bin/opencode")
-if not os.path.isfile(real_binary) or not os.access(real_binary, os.X_OK):
-    fail("the package executable is missing or not executable")
+    def reject_duplicate_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                fail("the installed package metadata has ambiguous duplicate keys")
+            result[key] = value
+        return result
 
-package_json = os.path.join(real_package_dir, "package.json")
-with open(package_json, encoding="utf-8") as package_file:
-    package = json.load(package_file)
-if not isinstance(package, dict):
-    fail("the installed package metadata is invalid")
-if package.get("name") != "@opencode/cli" or package.get("version") != version:
-    fail("installed package identity/version is not @opencode/cli@" + version)
+    package_json = os.path.join(real_package_dir, "package.json")
+    with open(package_json, encoding="utf-8") as package_file:
+        package = json.load(package_file, object_pairs_hook=reject_duplicate_keys)
+    if not isinstance(package, dict):
+        fail("the installed package metadata is invalid")
+    if package.get("name") != "@opencode/cli" or package.get("version") != version:
+        fail("installed package identity/version is not @opencode/cli@" + version)
+
+    bin_entries = package.get("bin")
+    if not isinstance(bin_entries, dict) or binary_name not in bin_entries:
+        fail("the installed package does not declare a bin entry named " + repr(binary_name))
+    declared_bin = bin_entries[binary_name]
+    if not isinstance(declared_bin, str) or not declared_bin:
+        fail("the package bin entry for " + repr(binary_name) + " is invalid")
+    if os.path.isabs(declared_bin):
+        fail("the package bin entry for " + repr(binary_name) + " must be relative")
+
+    resolved_declared_bin = os.path.realpath(os.path.join(real_package_dir, declared_bin))
+    if not is_within(resolved_declared_bin, real_package_dir):
+        fail("the package bin entry for " + repr(binary_name) + " resolves outside the package")
+    if not os.path.isfile(resolved_declared_bin) or not os.access(resolved_declared_bin, os.X_OK):
+        fail("the package bin entry for " + repr(binary_name) + " is missing or not executable")
+    if real_binary != resolved_declared_bin:
+        fail("the registered executable does not resolve to the package-declared bin entry for " + repr(binary_name))
+    if not os.path.isfile(real_binary) or not os.access(real_binary, os.X_OK):
+        fail("the registered package executable is missing or not executable")
+except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+    print("forge: ERROR: pinned package accreditation failed: " + str(error), file=sys.stderr)
+    raise SystemExit(1)
 PY
 }
 

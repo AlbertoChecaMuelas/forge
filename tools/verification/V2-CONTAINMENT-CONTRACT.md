@@ -37,3 +37,19 @@ consumidor; si se omite, la entrada crea un directorio único y privado bajo
 Impedir invocaciones del host deliberadamente falsificadas por el mismo usuario
 requiere otra frontera de confianza. La puerta actual no satisface ese
 requisito.
+
+## Acreditación del ejecutable OpenCode fijado
+
+El launcher resuelve el ejecutable esperado desde la entrada `bin` del
+`package.json` instalado de `@opencode/cli`, usando como clave el nombre del
+ejecutable registrado en `node_modules/.bin`. Resuelve esa ruta relativa dentro
+del paquete y compara su REALPATH con el REALPATH del ejecutable registrado;
+no debe asumir un nombre bajo `bin/` ni sustituir el dato declarado por el
+paquete por una ruta codificada.
+
+Esto es necesario porque el paquete real `@opencode/cli@2.1.4` declara
+`opencode: ./bin/opencode.exe`, aunque el enlace registrado se llame
+`node_modules/.bin/opencode`. Un fixture que sólo cree `bin/opencode` sin
+extensión no reproduce ese layout y puede ocultar un fallo del launcher. Los
+fixtures de acreditación deben cubrir el layout declarado, y las declaraciones
+ausentes, ambiguas, inválidas o fuera del paquete deben rechazarse sin fallback.
